@@ -1,0 +1,27 @@
+# Entorno virtual local
+Lib/
+lib/
+Scripts/
+scripts/
+share/
+etc/
+Include/
+include/
+pyvenv.cfg
+
+# Python
+**/__pycache__/
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+
+# Datos locales (Excel)
+*.xlsx
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Otros
+.DS_Store
+*.log

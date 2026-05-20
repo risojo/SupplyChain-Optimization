@@ -1,7 +1,7 @@
-streamlit 
-pandas
-openpyxl
-plotly
-numpy
-openai-whisper
-streamlit-mic-recorder
+streamlit 
+pandas
+openpyxl
+plotly
+numpy
+SpeechRecognition
+streamlit-mic-recorder

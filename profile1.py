@@ -7,14 +7,9 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import speech_recognition as sr
 import streamlit as st
 from streamlit_mic_recorder import mic_recorder
-
-# LIBRERÍA DE INTELIGENCIA ARTIFICIAL PARA RECONOCIMIENTO DE VOZ
-import whisper
-
-# TRUCO DIRECTO: Le dice a tu computadora exactamente dónde está FFmpeg en el Disco C
-os.environ["PATH"] += os.pathsep + r"C:\FFmpeg\bin"
 
 # 1. CONFIGURACIÓN DE PÁGINA Y ESTILO DARK
 st.set_page_config(page_title="Perfilado de Datos por Voz - LRI", layout="wide")
@@ -39,14 +34,6 @@ if "lri_man_top_n" not in st.session_state:
     st.session_state["lri_man_top_n"] = 0
 if "comando_voz_detectado" not in st.session_state:
     st.session_state["comando_voz_detectado"] = None
-
-# Carga el modelo de Whisper en memoria una sola vez (Caché de Streamlit)
-@st.cache_resource
-def cargar_modelo_whisper_ia():
-    return whisper.load_model("base")
-
-model_whisper = cargar_modelo_whisper_ia()
-
 
 def _norm_col_ident(nombre: str) -> str:
     """Normaliza cadenas eliminando acentos, espacios y caracteres especiales para comparar."""
@@ -174,7 +161,7 @@ def render_perfilado_manual_panel(df: pd.DataFrame, dict_ops: dict, viewport_h_u
         st.plotly_chart(fig, use_container_width=True)
 
 
-# 3. CEREBRO INTEGRADO CON WHISPER OPTIMIZADO PARA LAS NUEVAS COLUMNAS
+# 3. CEREBRO DE VOZ (Google Speech — sin Whisper local)
 def procesar_comando_voz_estructurado(comando_texto: str, df: pd.DataFrame):
     cmd = _norm_col_ident(comando_texto)
     st.session_state["comando_voz_detectado"] = comando_texto
@@ -295,7 +282,7 @@ if df is not None:
     with st.sidebar:
         st.title("⚙️ Configuración LRI")
         st.markdown("### 🎙️ Control por Voz Activo")
-        st.caption("Tecnología: OpenAI Whisper IA (Local)")
+        st.caption("Transcripción en línea (Google Speech, es-CR). Requiere internet.")
         
         audio = mic_recorder(
             start_prompt="Presiona para Hablar 🎙️",
@@ -305,20 +292,20 @@ if df is not None:
         )
         
         if audio is not None:
+            r = sr.Recognizer()
             try:
-                temp_audio_path = "temp_voice_input.wav"
-                with open(temp_audio_path, "wb") as f:
-                    f.write(audio["bytes"])
-                
-                resultado = model_whisper.transcribe(temp_audio_path, language="es")
-                texto_dictado = resultado["text"]
-                
+                with sr.AudioFile(io.BytesIO(audio["bytes"])) as source:
+                    r.adjust_for_ambient_noise(source, duration=0.2)
+                    audio_data = r.record(source)
+                texto_dictado = r.recognize_google(audio_data, language="es-CR")
                 procesar_comando_voz_estructurado(texto_dictado, df)
-                
-                if os.path.exists(temp_audio_path):
-                    os.remove(temp_audio_path)
+                st.sidebar.success("Comando aplicado.")
+            except sr.UnknownValueError:
+                st.sidebar.error("No se entendió el audio. Intente de nuevo, más claro.")
+            except sr.RequestError:
+                st.sidebar.error("Error de conexión con el servicio de reconocimiento de voz.")
             except Exception as e:
-                st.sidebar.error(f"Error de procesamiento en Whisper IA: {e}")
+                st.sidebar.error(f"Error al procesar audio: {e}")
 
         if st.session_state["comando_voz_detectado"]:
             st.info(f"Escuchado: *\"{st.session_state['comando_voz_detectado']}\"*")

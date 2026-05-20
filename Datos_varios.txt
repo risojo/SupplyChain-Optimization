@@ -1,0 +1,3 @@
+C:\Users\ricar\OneDrive\Documents\env_inventarios\inventarios
+
+streamlit run LRI_inventarios1.0.py
