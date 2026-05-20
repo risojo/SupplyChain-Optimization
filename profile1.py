@@ -17,13 +17,13 @@ st.set_page_config(page_title="Perfilado de Datos por Voz - LRI", layout="wide")
 REF_VIEWPORT_W = 1920
 REF_VIEWPORT_H = 1080
 
-# Ruta fija al nuevo archivo oficial
+# Ruta fija al archivo oficial
 ARCHIVO_EXCEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "LRI_data.xlsx")
 
 RESERVA_VERTICAL_REF = 320
 USABLE_ROW_H_REF = max(520, REF_VIEWPORT_H - RESERVA_VERTICAL_REF)
 
-# Inicializar estados de la sesión para el panel gráfico y manual
+# === CORRECCIÓN MAESTRA: Inicializar estados de la sesión con valores por defecto ===
 if "lri_man_eje_x" not in st.session_state:
     st.session_state["lri_man_eje_x"] = None
 if "lri_man_eje_y" not in st.session_state:
@@ -34,6 +34,11 @@ if "lri_man_top_n" not in st.session_state:
     st.session_state["lri_man_top_n"] = 0
 if "comando_voz_detectado" not in st.session_state:
     st.session_state["comando_voz_detectado"] = None
+
+# Variables para el soporte de Drill-Down (Análisis Multinivel / 3D)
+if "drill_down_categoria" not in st.session_state:
+    st.session_state["drill_down_categoria"] = None
+
 
 def _norm_col_ident(nombre: str) -> str:
     """Normaliza cadenas eliminando acentos, espacios y caracteres especiales para comparar."""
@@ -75,6 +80,11 @@ def fig_ranking_barras(df_resumen: pd.DataFrame, col_cat: str, col_val: str, ope
     size_ejes = base_font_size
     size_titulos = base_font_size + 4
 
+    # Añadir un título dinámico si estamos en modo Drill-Down
+    titulo_grafico = f"Análisis de {operacion}: {col_val} por {col_cat}"
+    if st.session_state["drill_down_categoria"]:
+        titulo_grafico += f" (Filtrado por: {st.session_state['drill_down_categoria']})"
+
     fig = go.Figure(
         go.Bar(
             x=d[col_cat].astype(str), 
@@ -96,7 +106,7 @@ def fig_ranking_barras(df_resumen: pd.DataFrame, col_cat: str, col_val: str, ope
     
     fig.update_layout(
         title=dict(
-            text=f"Análisis de {operacion}: {col_val} por {col_cat}",
+            text=titulo_grafico,
             font=dict(size=size_titulos, color="#ffffff") 
         ),
         height=max(400, altura_grafico_adaptativa(n, viewport_h)), 
@@ -117,7 +127,15 @@ def fig_ranking_barras(df_resumen: pd.DataFrame, col_cat: str, col_val: str, ope
 
 
 def render_perfilado_manual_panel(df: pd.DataFrame, dict_ops: dict, viewport_h_ui: int, base_font_size: int) -> None:
-    st.title("Panel de Perfilado de Datos (LRI_data)")
+    # Título principal adaptativo si hay Drill-Down
+    if st.session_state["drill_down_categoria"]:
+        st.title(f"Panel de Perfilado: Detalle de Artículos en '{st.session_state['drill_down_categoria']}'")
+        if st.button("⬅️ Volver a vista general (Categorías)"):
+            st.session_state["drill_down_categoria"] = None
+            st.session_state["lri_man_eje_x"] = "categoria"  # Forzar regreso al eje macro
+            st.rerun()
+    else:
+        st.title("Panel de Perfilado de Datos (LRI_data)")
     
     eje_x_real = st.session_state["lri_man_eje_x"]
     eje_y_real = st.session_state["lri_man_eje_y"]
@@ -125,6 +143,11 @@ def render_perfilado_manual_panel(df: pd.DataFrame, dict_ops: dict, viewport_h_u
     top_n_real = st.session_state["lri_man_top_n"]
 
     df_filtrado = df.copy()
+
+    # === APLICACIÓN DE LA LÓGICA DRILL-DOWN (3D) ===
+    # Si tenemos guardada una categoría en memoria, filtramos el Excel para ver solo sus artículos
+    if st.session_state["drill_down_categoria"] and "categoria" in df_filtrado.columns:
+        df_filtrado = df_filtrado[df_filtrado["categoria"] == st.session_state["drill_down_categoria"]]
 
     val_total = df_filtrado[eje_y_real].sum()
     cats_count = df_filtrado[eje_x_real].nunique()
@@ -161,7 +184,7 @@ def render_perfilado_manual_panel(df: pd.DataFrame, dict_ops: dict, viewport_h_u
         st.plotly_chart(fig, use_container_width=True)
 
 
-# 3. CEREBRO DE VOZ (Google Speech — sin Whisper local)
+# 3. CEREBRO DE VOZ 
 def procesar_comando_voz_estructurado(comando_texto: str, df: pd.DataFrame):
     cmd = _norm_col_ident(comando_texto)
     st.session_state["comando_voz_detectado"] = comando_texto
@@ -211,7 +234,18 @@ def procesar_comando_voz_estructurado(comando_texto: str, df: pd.DataFrame):
     if columna_seleccionada and columna_seleccionada in cols_num:
         st.session_state["lri_man_eje_y"] = columna_seleccionada
 
-    # Mapeo Inteligente Eje X (Garantiza separar subcategoría sin importar errores del Excel)
+    # === CAPTURA DE COMANDO POR VOZ PARA EL DRILL-DOWN ===
+    # Si el usuario dice por ejemplo "desplegame los artículos" o "ver artículos", activamos el cambio dinámico
+    if "articulo" in cmd or "producto" in cmd:
+        if st.session_state["drill_down_categoria"]:
+            # Si ya hay una categoría guardada, forzamos el eje X a la descripción detallada
+            for ct in cols_texto:
+                norm_ct = _norm_col_ident(ct)
+                if "desc" in norm_ct or "prod" in norm_ct or "cod" in norm_ct:
+                    st.session_state["lri_man_eje_x"] = ct
+                    return
+
+    # Mapeo Inteligente Eje X estándar
     for ct in cols_texto:
         norm_ct = _norm_col_ident(ct)
         
@@ -249,8 +283,7 @@ def cargar_datos() -> tuple[Optional[pd.DataFrame], Optional[str]]:
     try: 
         df_read = pd.read_excel(ARCHIVO_EXCEL_PATH, engine="openpyxl")
         
-        # TRUCO MAESTRO: Si por algún motivo la columna no se renombró en la migración,
-        # obligamos a mapearla de forma interna para sanar el DataFrame en vivo.
+        # Limpieza interna automática de nombres
         nuevos_nombres = {}
         for col in df_read.columns:
             col_norm = col.lower().strip()
@@ -274,6 +307,7 @@ if df is not None:
     cols_texto = df.select_dtypes(include=["object", "category"]).columns.tolist()
     cols_num = df.select_dtypes(include=["number"]).columns.tolist()
 
+    # Garantizar estados iniciales válidos
     if st.session_state["lri_man_eje_x"] not in cols_texto:
         st.session_state["lri_man_eje_x"] = cols_texto[0] if cols_texto else None
     if st.session_state["lri_man_eje_y"] not in cols_num:
@@ -282,7 +316,6 @@ if df is not None:
     with st.sidebar:
         st.title("⚙️ Configuración LRI")
         st.markdown("### 🎙️ Control por Voz Activo")
-        st.caption("Transcripción en línea (Google Speech, es-CR). Requiere internet.")
         
         audio = mic_recorder(
             start_prompt="Presiona para Hablar 🎙️",
@@ -303,7 +336,7 @@ if df is not None:
             except sr.UnknownValueError:
                 st.sidebar.error("No se entendió el audio. Intente de nuevo, más claro.")
             except sr.RequestError:
-                st.sidebar.error("Error de conexión con el servicio de reconocimiento de voz.")
+                st.sidebar.error("Error de conexión con el servicio.")
             except Exception as e:
                 st.sidebar.error(f"Error al procesar audio: {e}")
 
@@ -313,14 +346,45 @@ if df is not None:
         st.divider()
         st.markdown("##### Ajustes Manuales")
         
-        # Aquí Streamlit leerá las columnas corregidas dinámicamente
-        st.selectbox("Dimensión de Análisis (Eje X)", options=cols_texto, key="lri_man_eje_x")
-        st.selectbox("Métrica de Negocio (Eje Y)", options=cols_num, key="lri_man_eje_y")
-        st.radio("Operación", ["Suma", "Promedio", "Máximo", "Mínimo"], key="lri_man_operacion")
+        # === SOLUCIÓN AL CONFLICTO SINCRO (Voz vs Manual) ===
+        # Leemos el estado actual del session_state para colocarlo como índice predeterminado
+        idx_x = cols_texto.index(st.session_state["lri_man_eje_x"]) if st.session_state["lri_man_eje_x"] in cols_texto else 0
+        idx_y = cols_num.index(st.session_state["lri_man_eje_y"]) if st.session_state["lri_man_eje_y"] in cols_num else 0
+        
+        ops_lista = ["Suma", "Promedio", "Máximo", "Mínimo"]
+        idx_op = ops_lista.index(st.session_state["lri_man_operacion"]) if st.session_state["lri_man_operacion"] in ops_lista else 0
+
+        # Almacenamos la selección del usuario en variables normales y luego actualizamos el estado
+        sel_x = st.selectbox("Dimensión de Análisis (Eje X)", options=cols_texto, index=idx_x)
+        sel_y = st.selectbox("Métrica de Negocio (Eje Y)", options=cols_num, index=idx_y)
+        sel_op = st.radio("Operación", ops_lista, index=idx_op)
+        
+        st.session_state["lri_man_eje_x"] = sel_x
+        st.session_state["lri_man_eje_y"] = sel_y
+        st.session_state["lri_man_operacion"] = sel_op
         
         dict_ops = {"Suma": "sum", "Promedio": "mean", "Máximo": "max", "Mínimo": "min"}
-        st.number_input("Top N elementos (0 = ver todos)", min_value=0, max_value=50000, value=0, step=5, key="lri_man_top_n")
         
+        st.number_input("Top N elementos (0 = ver todos)", min_value=0, max_value=50000, value=int(st.session_state["lri_man_top_n"]), step=5, key="lri_man_top_n_widget")
+        st.session_state["lri_man_top_n"] = st.session_state["lri_man_top_n_widget"]
+
+        # Selector manual extra para controlar el Drill-Down desde el menú lateral si se desea
+        st.divider()
+        st.markdown("##### Filtro 3D (Drill-Down)")
+        if "categoria" in cols_texto:
+            lista_cats = ["Ver Todas"] + sorted(df["categoria"].dropna().unique().tolist())
+            idx_cat_drill = lista_cats.index(st.session_state["drill_down_categoria"]) if st.session_state["drill_down_categoria"] in lista_cats else 0
+            sel_drill = st.selectbox("Profundizar por Categoría", options=lista_cats, index=idx_cat_drill)
+            
+            if sel_drill == "Ver Todas":
+                st.session_state["drill_down_categoria"] = None
+            else:
+                st.session_state["drill_down_categoria"] = sel_drill
+                # Si el usuario selecciona manualmente una categoría para profundizar, le sugerimos ver artículos
+                for ct in cols_texto:
+                    if _norm_col_ident(ct) in ["descripcion", "descripcionarticulo", "articulo"]:
+                        st.session_state["lri_man_eje_x"] = ct
+
         st.divider()
         st.markdown("##### Visibilidad")
         base_font_size = st.slider("Tamaño de Letra (px)", min_value=12, max_value=32, value=15, step=1, key="lri_fontsize_ui")
