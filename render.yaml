@@ -1,0 +1,16 @@
+# Despliegue en Render como código (Infrastructure as Code).
+#
+# Por ahora la app desplegada es Perfilado (profile1.py), que ya funciona y
+# está validada. Cuando el orquestador (app.py) integre todos los módulos,
+# basta con cambiar el startCommand a "streamlit run app.py".
+services:
+  - type: web
+    name: lri-supply-chain-optimization
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run modules/perfilado/profile1.py --server.port $PORT --server.address 0.0.0.0
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.4
