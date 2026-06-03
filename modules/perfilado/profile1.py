@@ -22,6 +22,19 @@ from audio_recorder_streamlit import audio_recorder
 # ==============================================================================
 st.set_page_config(page_title="LRI Analytics Pro", layout="wide")
 
+# ------------------------------------------------------------------------------
+# Escala visual FIJA de la interfaz (independiente del zoom del navegador).
+# Garantiza que la app se vea igual en local y en Render para cualquier usuario,
+# sin que nadie tenga que tocar Ctrl +/-. Se expresa en PORCENTAJE de tamaño:
+#   100 = nativo, 95 = 5% reducido, 90 = 10% reducido, etc.
+# Ajusta solo este número para agrandar (subir) o achicar (bajar) toda la interfaz.
+# ------------------------------------------------------------------------------
+ESCALA_INTERFAZ_PCT = 97
+st.markdown(
+    f"<style>.stApp {{ zoom: {ESCALA_INTERFAZ_PCT / 100}; }}</style>",
+    unsafe_allow_html=True,
+)
+
 REF_VIEWPORT_W = 1920
 REF_VIEWPORT_H = 1080
 # profile1.py vive en modules/perfilado/. La raíz del proyecto está 2 niveles
