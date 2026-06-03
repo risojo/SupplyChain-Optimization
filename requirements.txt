@@ -1,8 +1,7 @@
-streamlit 
-pandas
-openpyxl
-plotly
-numpy
-SpeechRecognition
-streamlit-mic-recorder
-audio-recorder-streamlit
+streamlit==1.56.0
+pandas==3.0.2
+numpy==2.4.4
+plotly==6.7.0
+openpyxl==3.1.5
+SpeechRecognition==3.16.1
+audio-recorder-streamlit==0.0.10
