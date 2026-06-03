@@ -1337,7 +1337,7 @@ def _proporcion_tabla_vs_grafico(n_cols_tabla: int, pareto_activo: bool) -> Tupl
 def _dims_tabla_metricas(clase: str, tabla_font_size: int) -> dict[str, Any]:
     """Anchos fijos; fs_celda compacta para ver más filas (ABC Pareto usa base_font_size)."""
     fs = max(10, min(28, tabla_font_size))
-    fs_celda = max(10, fs - 1)
+    fs_celda = max(10, fs)
     pad_v, pad_h = 1, 3
     if clase == "lri-tabla-col-4col":
         anchos = list(_ANCHOS_TABLA_4COL)
@@ -1446,11 +1446,16 @@ def _aplicar_estilo_celdas_html(
     return html[: tbody_m.start()] + cuerpo + html[tbody_m.end() :]
 
 
-def _css_tabla_metricas(dims: dict[str, Any]) -> str:
+def _css_tabla_metricas(dims: dict[str, Any], fluido: bool = False) -> str:
+    # Fluido: la tabla llena el ancho del contenedor (mismo ancho que el botón
+    # «Guardar en Excel», que usa use_container_width) y las columnas conservan
+    # su proporción actual mediante porcentajes. Fijo: anchos en px (modo Pareto).
+    ancho_total_px = sum(dims["anchos_cols"])
+    ancho_tabla_css = "100%" if fluido else f"{dims['ancho_tabla']}px"
     reglas = [
         ".lri-tabla-wrap table.lri-perfil-table {",
         f"table-layout: fixed !important;",
-        f"width: {dims['ancho_tabla']}px !important;",
+        f"width: {ancho_tabla_css} !important;",
         f"border-collapse: collapse !important;",
         "background-color: #131722 !important;",
         "}",
@@ -1469,9 +1474,16 @@ def _css_tabla_metricas(dims: dict[str, Any]) -> str:
         "}",
     ]
     for i, w in enumerate(dims["anchos_cols"]):
+        if fluido and ancho_total_px > 0:
+            pct = round(w / ancho_total_px * 100, 4)
+            regla_ancho = f"width: {pct}% !important;"
+        else:
+            regla_ancho = (
+                f"width: {w}px !important; min-width: {w}px !important; max-width: {w}px !important;"
+            )
         reglas.append(
             f".lri-tabla-wrap table.lri-perfil-table .col{i} {{"
-            f"width: {w}px !important; min-width: {w}px !important; max-width: {w}px !important;"
+            f"{regla_ancho}"
             "overflow: hidden !important; text-overflow: ellipsis !important;"
             "}"
         )
@@ -1517,6 +1529,7 @@ def _html_tabla_metricas_panel(
     dims: dict[str, Any],
     estilos_por_fila: Optional[list[str]] = None,
     estilos_por_celda: Optional[list[list[str]]] = None,
+    fluido: bool = False,
 ) -> str:
     tabla_html = _extraer_tabla_html_pandas(
         styler.to_html(index=False, border=0, classes="lri-perfil-table")
@@ -1528,12 +1541,15 @@ def _html_tabla_metricas_panel(
         estilos_por_celda=estilos_por_celda,
     )
     ancho = dims["ancho_tabla"]
-    css = _css_tabla_metricas(dims)
+    css = _css_tabla_metricas(dims, fluido=fluido)
+    # En modo fluido el panel ocupa el 100% del contenedor (igual que el botón
+    # «Guardar en Excel»); en fijo conserva el ancho en px (modo Pareto).
+    ancho_panel_css = "100%" if fluido else f"{ancho + 14}px"
     return dedent(
         f"""\
 {css}
 <div class="lri-tabla-wrap {clase_tabla}">
-<div class="lri-tabla-col" style="padding:5px;border:1px solid #2d3142;border-radius:8px;background:#131722;width:{ancho + 14}px;">
+<div class="lri-tabla-col" style="padding:5px;border:1px solid #2d3142;border-radius:8px;background:#131722;width:{ancho_panel_css};box-sizing:border-box;">
 <div class="lri-tabla-title" style="font-size:{_FS_TITULO_PANEL_TABLA}px;font-weight:600;color:#f8fafc;padding:0.4rem 0.55rem;border-bottom:1px solid #2d3142;background:#161b26;margin-bottom:6px;">{titulo_tabla}</div>
 <div class="lri-html-table-scroll-container" style="height:{altura_scroll}px;min-height:{altura_scroll}px;max-height:{altura_scroll}px;overflow-y:auto;overflow-x:auto;">
 {tabla_html}
@@ -2684,6 +2700,7 @@ def render_perfilado_manual_panel(
                 dims_tabla,
                 estilos_por_fila=colores_pareto_filas,
                 estilos_por_celda=estilos_por_celda,
+                fluido=not pareto_activo_prev,
             ),
             unsafe_allow_html=True,
         )
@@ -2908,7 +2925,7 @@ if df is not None:
             "Texto de la tabla (px)",
             min_value=10,
             max_value=28,
-            value=int(st.session_state.get("lri_tabla_fontsize", 18)),
+            value=int(st.session_state.get("lri_tabla_fontsize", 19)),
             step=1,
             key="lri_tabla_fontsize_ui",
             help="Solo la tabla de métricas detalladas (datos y encabezados).",
