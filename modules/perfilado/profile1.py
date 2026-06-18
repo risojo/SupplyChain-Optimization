@@ -392,16 +392,26 @@ def generar_diccionario_semantico_dinamico(df: pd.DataFrame) -> dict:
             
         # PILAR: Financiero Comercial Logístico (Costos / Ventas / Utilidades)
         elif "venta" in col_norm or "costo" in col_norm or "ingreso" in col_norm or "utili" in col_norm or "marge" in col_norm:
-            sinonimos_detectados.extend(["ventas", "ingresos", "facturacion", "costo", "utilidad", "margen", "costologistico", "margendeutilidad", "margendeutilidadventas", "ventastotales"])
+            if "inventario" not in col_norm:
+                sinonimos_detectados.extend(
+                    ["ventas", "ingresos", "facturacion", "costo", "utilidad", "margen",
+                     "costologistico", "margendeutilidad", "margendeutilidadventas", "ventastotales"]
+                )
+            elif "mantener" in col_norm:
+                sinonimos_detectados.extend(["costomantenerinventario", "costodeinventario", "mantenerinventario"])
         
         elif "unid" in col_norm or "cant" in col_norm:
             sinonimos_detectados.extend(["unidades", "piezas", "cantidades", "unidadesvendidas"])
 
-        # Columnas mixtas (p. ej. inventario promedio bultos): conservar sinónimo inventario
+        # Columnas mixtas (p. ej. inventario promedio bultos): sinónimos de inventario
         if "inventario" in col_norm or "stock" in col_norm:
             sinonimos_detectados.extend(
                 ["inventario", "stock", "existencias", "inventariopromedio", "inventariofinal"]
             )
+            if "valor" in col_norm or "promedio" in col_norm:
+                sinonimos_detectados.extend(
+                    ["montoinventario", "valorinventario", "montodeinventario", "importeinventario"]
+                )
         if "promedio" in col_norm and "inventario" in col_norm:
             sinonimos_detectados.extend(["inventariopromedio", "promedioinventario", "inventariopromediobultos"])
 
@@ -420,9 +430,27 @@ def _resolver_columna_existente(df: pd.DataFrame, *candidatos: str) -> Optional[
     return None
 
 
+def _comando_solicita_inventario(cmd_limpio: str) -> bool:
+    """True si el dictado trata de inventario/stock (prioridad sobre ventas)."""
+    return any(
+        k in cmd_limpio
+        for k in (
+            "inventario",
+            "inventariopromedio",
+            "inventariofinal",
+            "inventariotransito",
+            "stock",
+            "existencias",
+            "mesesdeinventario",
+        )
+    )
+
+
 def _comando_solicita_ventas(cmd_limpio: str) -> bool:
-    """True si el usuario pidió ventas (evita confundir 'vent' con inventario u otras palabras)."""
-    return any(tok in cmd_limpio for tok in ["ventas", "venta", "facturacion", "ingresos"])
+    """True si pidió ventas. «inventario» contiene «venta» como subcadena: no confundir."""
+    if _comando_solicita_inventario(cmd_limpio):
+        return False
+    return any(tok in cmd_limpio for tok in ("ventas", "ventastotales", "facturacion", "ingresos", "venta"))
 
 
 def _preprocesar_comando_voz(cmd_limpio: str) -> str:
@@ -471,6 +499,11 @@ def _coincide_sinonimo_en_comando(cmd_limpio: str, sinonimo: str) -> bool:
 
 def _resolver_dimension_eje_x_voz(cmd_limpio: str, df: pd.DataFrame) -> Optional[str]:
     """Resuelve dimensión del eje X con patrones explícitos 'por …'."""
+    if any(
+        k in cmd_limpio
+        for k in ("porproducto", "porarticulo", "poritem", "porsku", "pordescripcion", "porcodigo")
+    ):
+        return _resolver_columna_existente(df, "descripcion", "codigo")
     if _comando_menciona_subcategoria(cmd_limpio):
         return _resolver_columna_existente(df, "subcategoria")
     if "porcategoria" in cmd_limpio or (
@@ -487,10 +520,19 @@ def _resolver_dimension_eje_x_voz(cmd_limpio: str, df: pd.DataFrame) -> Optional
 
 
 def _resolver_metrica_inventario_voz(cmd_limpio: str, df: pd.DataFrame) -> Optional[str]:
-    """Inventario promedio / final / tránsito según el dictado."""
-    if not any(k in cmd_limpio for k in ["inventario", "inventariopromedio", "stock", "existencias"]):
+    """Inventario promedio / final / tránsito / valor según el dictado."""
+    if not _comando_solicita_inventario(cmd_limpio):
         return None
+    if any(k in cmd_limpio for k in ("monto", "valor", "importe", "dinero")) and "mantener" not in cmd_limpio:
+        return _resolver_columna_existente(
+            df,
+            "valor inventario promedio",
+            "valor inventario transito",
+            "costo mantener inventario",
+        )
     if "promedio" in cmd_limpio or "promedi" in cmd_limpio or "inventariopromedio" in cmd_limpio:
+        if any(k in cmd_limpio for k in ("monto", "valor", "importe", "dinero")):
+            return _resolver_columna_existente(df, "valor inventario promedio")
         return _resolver_columna_existente(
             df,
             "inventario promedio bultos",
@@ -620,6 +662,8 @@ def _resolver_metrica_fragmento_voz(
         hit = _resolver_columna_existente(df, "ordenes", "órdenes", "orden", "pedidos")
         if hit:
             return hit
+    if any(k in frag for k in ["inventario", "stock", "existencias"]):
+        return _resolver_metrica_inventario_voz(frag, df)
     if _comando_solicita_ventas(frag) and not any(k in frag for k in ["util", "marg", "brut"]):
         return _resolver_columna_existente(df, "ventas totales", "ventas total")
     if any(k in frag for k in ["util", "marg", "brut"]):
@@ -632,8 +676,6 @@ def _resolver_metrica_fragmento_voz(
         )
     if "rotacion" in frag or "rotación" in frag:
         return _resolver_columna_existente(df, "rotacion", "rotación", "rotacion inventario")
-    if any(k in frag for k in ["inventario", "stock", "existencias"]):
-        return _resolver_metrica_inventario_voz(frag, df)
     coincidencias: list = []
     for col_real, sinonimos in diccionario["eje_y"].items():
         for sinonimo in sinonimos:
@@ -715,9 +757,9 @@ def procesar_comando_voz_estructurado(comando_texto: str, df: pd.DataFrame) -> d
                             break
                 return config
 
-    columna_seleccionada_y = _resolver_metrica_ventas_voz(cmd_limpio, df)
+    columna_seleccionada_y = _resolver_metrica_inventario_voz(cmd_limpio, df)
     if not columna_seleccionada_y:
-        columna_seleccionada_y = _resolver_metrica_inventario_voz(cmd_limpio, df)
+        columna_seleccionada_y = _resolver_metrica_ventas_voz(cmd_limpio, df)
 
     # 3. ESCANEO DEL EJE Y (solo si no se pidió ventas de forma explícita)
     if not columna_seleccionada_y and not _comando_solicita_ventas(cmd_limpio):
