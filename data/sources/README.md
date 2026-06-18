@@ -1,15 +1,14 @@
 # data/sources
 
-Fuentes de datos compartidas de la plataforma. **Una por módulo**, con el
-nombre de la clave del módulo:
+Fuentes de datos compartidas. **Una por módulo** (orden LRI):
 
 | Archivo | Módulo |
 |---|---|
-| `perfilado.xlsx` | 1. Perfilado |
-| `template_inventarios.xlsx` | 2. Inventarios |
-| `pronostico.xlsx` | 3. Pronóstico *(pendiente)* |
-| `compras.xlsx` | 4. Compras *(pendiente)* |
-| `almacenaje.xlsx` | 5. Almacenaje *(pendiente)* |
+| `almacenaje.xlsx` | 1. Almacenaje *(pendiente)* |
+| `compras.xlsx` | 2. Compras *(pendiente)* |
+| `template_inventarios.xlsx` | 3. Inventarios ✅ |
+| `perfilado.xlsx` | 4. Perfilado ✅ |
+| `pronostico.xlsx` | 5. Pronóstico *(pendiente)* |
 | `transportes.xlsx` | 6. Transportes *(pendiente)* |
 
 Todos los módulos acceden a estos datos **a través de `data/loaders.py`**

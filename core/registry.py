@@ -21,13 +21,14 @@ class Modulo:
     disponible: bool = False
 
 
-# Orden de negocio definido por el equipo LRI.
+# Orden de negocio LRI (ver docs/MODULOS.md):
+# 1 Almacenaje · 2 Compras · 3 Inventarios · 4 Perfilado · 5 Pronóstico · 6 Transportes
 MODULOS: tuple[Modulo, ...] = (
-    Modulo("perfilado", "1. Perfilado", "modules.perfilado.view", ("admin", "analista"), True),
-    Modulo("inventarios", "2. Inventarios", "modules.inventarios.view", ("admin", "analista"), False),
-    Modulo("pronostico", "3. Pronóstico", "modules.pronostico.view", ("admin", "analista"), False),
-    Modulo("compras", "4. Compras", "modules.compras.view", ("admin", "analista"), False),
-    Modulo("almacenaje", "5. Almacenaje", "modules.almacenaje.view", ("admin", "analista"), False),
+    Modulo("almacenaje", "1. Almacenaje", "modules.almacenaje.view", ("admin", "analista"), False),
+    Modulo("compras", "2. Compras", "modules.compras.view", ("admin", "analista"), False),
+    Modulo("inventarios", "3. Inventarios", "modules.inventarios.view", ("admin", "analista"), False),
+    Modulo("perfilado", "4. Perfilado", "modules.perfilado.view", ("admin", "analista"), True),
+    Modulo("pronostico", "5. Pronóstico", "modules.pronostico.view", ("admin", "analista"), False),
     Modulo("transportes", "6. Transportes", "modules.transportes.view", ("admin", "analista"), False),
 )
 

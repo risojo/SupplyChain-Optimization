@@ -1,4 +1,4 @@
-# Módulo 3 — Pronóstico
+# Módulo 5 — Pronóstico
 
 Pronóstico de demanda: análisis de tendencia, estacionalidad, simulación
 Monte Carlo, distribución normal y certificación de demanda.

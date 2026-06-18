@@ -1,4 +1,4 @@
-# Módulo 4 — Compras
+# Módulo 2 — Compras
 
 Gestión de compras: órdenes de compra, proveedores, precios, entregas y
 seguimiento.

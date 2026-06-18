@@ -1,4 +1,4 @@
-# Módulo 1 — Perfilado (Profile)
+# Módulo 4 — Perfilado (Profile)
 
 Análisis y perfilado de productos/inventario: ranking por dimensión, métricas,
 segmentación Pareto ABC, comparativos de dos métricas, control por voz y

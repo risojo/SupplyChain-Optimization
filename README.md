@@ -9,14 +9,18 @@ control de acceso por roles.
 
 ## Módulos
 
+Orden de negocio LRI (detalle en [`docs/MODULOS.md`](docs/MODULOS.md)):
+
 | # | Módulo | Estado |
 |---|--------|--------|
-| 1 | Perfilado (Profile) | ✅ Operativo (`modules/perfilado/profile1.py`) |
-| 2 | Inventarios | ✅ Operativo (`modules/inventarios/inventario_app.py`) |
-| 3 | Pronóstico | 🚧 En construcción |
-| 4 | Compras | 🚧 En construcción |
-| 5 | Almacenaje | 🚧 En construcción |
-| 6 | Transportes | 🚧 En construcción |
+| 1 | Almacenaje | 🚧 En construcción (`modules/almacenaje/`) |
+| 2 | Compras | 🚧 En construcción (`modules/compras/`) |
+| 3 | Inventarios | 🔧 En desarrollo — **`inventario_app.py`** |
+| 4 | Perfilado | ✅ Terminado — **`profile1.py`** |
+| 5 | Pronóstico | 🚧 En construcción (`modules/pronostico/`) |
+| 6 | Transportes | ⏳ Pendiente (`modules/transportes/`) |
+
+**Todo el árbol `modules/` está versionado en GitHub** (esqueletos + apps operativas).
 
 ## Estructura
 
@@ -32,12 +36,12 @@ control de acceso por roles.
 │   ├── loaders.py          # "El mostrador": obtener_datos() — Excel hoy, SQL mañana
 │   ├── transform.py        # Transformaciones y métricas
 │   └── sources/            # Una base por módulo (perfilado.xlsx, ...)
-├── modules/                # Los 6 módulos (cada uno con view.py -> render())
-│   ├── perfilado/          # incluye profile1.py (app operativa)
-│   ├── inventarios/
-│   ├── pronostico/
-│   ├── compras/
+├── modules/                # Los 6 módulos (orden LRI: almacenaje → … → transportes)
 │   ├── almacenaje/
+│   ├── compras/
+│   ├── inventarios/        # inventario_app.py (app operativa)
+│   ├── perfilado/          # profile1.py (app operativa)
+│   ├── pronostico/
 │   └── transportes/
 ├── assets/                 # Logo, imágenes (compartidos)
 ├── .streamlit/             # Configuración de Streamlit

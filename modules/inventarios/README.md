@@ -1,4 +1,4 @@
-# Módulo 2 — Inventarios
+# Módulo 3 — Inventarios
 
 ## App oficial (la que va a GitHub y Render)
 

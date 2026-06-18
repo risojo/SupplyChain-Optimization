@@ -1,4 +1,4 @@
-# Módulo 5 — Almacenaje
+# Módulo 1 — Almacenaje
 
 Gestión de almacén: layout, uso de espacios, cubicaje, costos de almacenaje y
 reportes.
