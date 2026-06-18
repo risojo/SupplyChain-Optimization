@@ -1,19 +1,20 @@
 # Despliegue en Render (Blueprint / Infrastructure as Code).
 #
-# IMPORTANTE: subir render.yaml a GitHub NO crea servicios solos.
-# Debe sincronizar el Blueprint en https://dashboard.render.com
-# (ver docs/DEPLOY_RENDER.md).
+# IMPORTANTE: el código en GitHub NO crea la URL solo. Debe crear el servicio
+# en https://dashboard.render.com (ver docs/DEPLOY_RENDER.md).
 #
-# Servicios:
-#   - lri-supply-chain-optimization → Perfilado (profile1.py)
-#   - lri-inventarios               → Inventarios (inventario_app.py)
+# URLs (después de crear los servicios):
+#   Perfilado:  https://lri-supply-chain-optimization.onrender.com
+#   Inventarios: https://lri-inventarios.onrender.com
 services:
   - type: web
     name: lri-supply-chain-optimization
     runtime: python
     plan: free
+    repo: https://github.com/risojo/SupplyChain-Optimization
+    branch: main
     buildCommand: pip install -r requirements.txt
-    startCommand: streamlit run modules/perfilado/profile1.py --server.port $PORT --server.address 0.0.0.0
+    startCommand: streamlit run modules/perfilado/profile1.py --server.port $PORT --server.address 0.0.0.0 --server.headless true --browser.gatherUsageStats false
     autoDeploy: true
     envVars:
       - key: PYTHON_VERSION
@@ -22,8 +23,10 @@ services:
     name: lri-inventarios
     runtime: python
     plan: free
+    repo: https://github.com/risojo/SupplyChain-Optimization
+    branch: main
     buildCommand: pip install -r requirements.txt
-    startCommand: streamlit run modules/inventarios/inventario_app.py --server.port $PORT --server.address 0.0.0.0
+    startCommand: streamlit run modules/inventarios/inventario_app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true --browser.gatherUsageStats false
     autoDeploy: true
     envVars:
       - key: PYTHON_VERSION

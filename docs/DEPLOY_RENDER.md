@@ -1,66 +1,85 @@
-# Despliegue en Render
+# Desplegar Perfilado e Inventarios en Render
 
-Subir `render.yaml` a GitHub **no crea** servicios en Render automáticamente.
-Hay que **conectar el repositorio** y **sincronizar el Blueprint** (o crear el servicio manualmente).
+## Por qué sale «Not Found» (404)
 
-Repositorio: https://github.com/risojo/SupplyChain-Optimization
+**GitHub ≠ Render.** El código ya está en GitHub, pero la URL
+`https://lri-supply-chain-optimization.onrender.com` solo existe **después**
+de crear el servicio web en [Render](https://dashboard.render.com).
 
-## URLs esperadas (tras crear los servicios)
-
-| Servicio | URL |
-|----------|-----|
-| Perfilado | https://lri-supply-chain-optimization.onrender.com |
-| Inventarios | https://lri-inventarios.onrender.com |
-
-Si la URL responde **404 Not Found**, el servicio **aún no existe** en Render.
+Un 404 significa: **ese servicio aún no está creado** (o fue eliminado).
 
 ---
 
-## Opción A — Blueprint (recomendada, crea ambos módulos)
+## URLs finales (cuando el deploy esté Live)
 
-1. Entre a [Render Dashboard](https://dashboard.render.com).
-2. **New → Blueprint**.
-3. Conecte el repo `risojo/SupplyChain-Optimization` (rama `main`).
-4. Render leerá `render.yaml` y propondrá crear:
-   - `lri-supply-chain-optimization` (Perfilado)
-   - `lri-inventarios` (Inventarios)
-5. Confirme **Apply** / **Sync**.
-6. Espere a que cada servicio termine el deploy (Build → Live).
+| Módulo | URL |
+|--------|-----|
+| **Perfilado** (`profile1.py`) | https://lri-supply-chain-optimization.onrender.com |
+| **Inventarios** (`inventario_app.py`) | https://lri-inventarios.onrender.com |
 
-Enlace directo para nuevo Blueprint:
-
-https://dashboard.render.com/blueprint/new?repo=https://github.com/risojo/SupplyChain-Optimization
-
-Si ya tiene un Blueprint del mismo repo: abra el Blueprint → **Manual Sync** (o active Auto Sync).
+Repositorio GitHub: https://github.com/risojo/SupplyChain-Optimization
 
 ---
 
-## Opción B — Solo Inventarios (servicio manual)
+## Opción 1 — Blueprint (crea los dos módulos a la vez)
 
-Si ya tiene Perfilado desplegado y solo falta Inventarios:
+1. Abra: https://dashboard.render.com/blueprint/new?repo=https://github.com/risojo/SupplyChain-Optimization
+2. Inicie sesión y autorice acceso a GitHub si lo pide.
+3. Render mostrará 2 servicios del archivo `render.yaml`:
+   - `lri-supply-chain-optimization`
+   - `lri-inventarios`
+4. Pulse **Apply** (o **Create**).
+5. Espere 3–8 minutos hasta que cada servicio diga **Live** (verde).
 
-1. **New → Web Service**.
-2. Repo: `risojo/SupplyChain-Optimization`, rama `main`.
-3. **Name:** `lri-inventarios`
-4. **Runtime:** Python
-5. **Build command:** `pip install -r requirements.txt`
-6. **Start command:**
-
-   ```bash
-   streamlit run modules/inventarios/inventario_app.py --server.port $PORT --server.address 0.0.0.0
-   ```
-
-7. **Create Web Service** y espere el deploy.
+Si ya tiene un Blueprint del mismo repo: **Blueprints → su blueprint → Manual Sync**.
 
 ---
 
-## Plan free
+## Opción 2 — Solo Perfilado (un servicio manual)
 
-- El primer acceso tras inactividad puede tardar ~30–60 s (cold start).
-- Cada módulo es un **servicio aparte** (dos URLs distintas).
+1. https://dashboard.render.com → **New +** → **Web Service**
+2. Conecte el repo **risojo/SupplyChain-Optimization**, rama **main**
+3. Complete:
 
-## Verificación local
+| Campo | Valor |
+|-------|--------|
+| **Name** | `lri-supply-chain-optimization` |
+| **Region** | Oregon (o la más cercana) |
+| **Branch** | `main` |
+| **Runtime** | Python |
+| **Build Command** | `pip install -r requirements.txt` |
+| **Start Command** | ver abajo |
+
+**Start Command (Perfilado):**
 
 ```bash
-streamlit run modules/inventarios/inventario_app.py
+streamlit run modules/perfilado/profile1.py --server.port $PORT --server.address 0.0.0.0 --server.headless true --browser.gatherUsageStats false
 ```
+
+4. En **Environment** agregue: `PYTHON_VERSION` = `3.13.4`
+5. Plan **Free** → **Create Web Service**
+6. Cuando diga **Live**, abra: https://lri-supply-chain-optimization.onrender.com
+
+Repita **New → Web Service** con name `lri-inventarios` y este Start Command para Inventarios:
+
+```bash
+streamlit run modules/inventarios/inventario_app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true --browser.gatherUsageStats false
+```
+
+---
+
+## Comprobar que funcionó
+
+- En Render, el servicio debe estar **Live** (no Failed).
+- La primera visita en plan free puede tardar ~30–60 s (arranque en frío).
+- Local (misma app): `streamlit run modules/perfilado/profile1.py`
+
+---
+
+## Si el deploy falla (Failed en Render)
+
+Abra **Logs** del servicio y busque el error. Causas frecuentes:
+
+- Nombre del servicio distinto al esperado → la URL cambia (`https://<nombre>.onrender.com`).
+- Rama incorrecta (debe ser `main`).
+- Falta `PYTHON_VERSION=3.13.4` en variables de entorno.
