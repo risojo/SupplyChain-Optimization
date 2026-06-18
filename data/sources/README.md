@@ -6,7 +6,7 @@ nombre de la clave del módulo:
 | Archivo | Módulo |
 |---|---|
 | `perfilado.xlsx` | 1. Perfilado |
-| `inventarios.xlsx` | 2. Inventarios *(pendiente)* |
+| `template_inventarios.xlsx` | 2. Inventarios |
 | `pronostico.xlsx` | 3. Pronóstico *(pendiente)* |
 | `compras.xlsx` | 4. Compras *(pendiente)* |
 | `almacenaje.xlsx` | 5. Almacenaje *(pendiente)* |

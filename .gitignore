@@ -18,10 +18,19 @@ __pycache__/
 
 # Datos locales (Excel)
 *.xlsx
+!data/sources/perfilado.xlsx
+!data/sources/template_inventarios.xlsx
 
 # Streamlit
 .streamlit/secrets.toml
 
+# Parámetros guardados por el usuario (Inventarios)
+modules/inventarios/parametros_guardados.json
+modules/inventarios/drivers_guardados.json
+
 # Otros
 .DS_Store
 *.log
+
+# Zona temporal de trabajo (importación de inventarios del freelance)
+_inbox_inventarios/
