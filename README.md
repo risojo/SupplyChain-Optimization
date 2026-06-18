@@ -69,6 +69,9 @@ Ver detalles en [`docs/ARQUITECTURA.md`](docs/ARQUITECTURA.md).
 
 ## Despliegue (Render)
 
+> **Si `https://lri-inventarios.onrender.com` dice Not Found:** el servicio **no está creado**
+> en Render todavía. Siga **[DEPLOY_AHORA.md](DEPLOY_AHORA.md)** (5 minutos en el navegador).
+
 Hay **dos apps** en `render.yaml`:
 
 | Servicio | Módulo | Comando |
