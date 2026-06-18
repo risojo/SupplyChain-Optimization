@@ -12,7 +12,7 @@ control de acceso por roles.
 | # | Módulo | Estado |
 |---|--------|--------|
 | 1 | Perfilado (Profile) | ✅ Operativo (`modules/perfilado/profile1.py`) |
-| 2 | Inventarios | 🚧 En construcción |
+| 2 | Inventarios | ✅ Operativo (`modules/inventarios/inventario_app.py`) |
 | 3 | Pronóstico | 🚧 En construcción |
 | 4 | Compras | 🚧 En construcción |
 | 5 | Almacenaje | 🚧 En construcción |
@@ -49,8 +49,11 @@ control de acceso por roles.
 ## Ejecutar en local
 
 ```bash
-# Módulo Perfilado (producción actual)
+# Módulo Perfilado (producción)
 streamlit run modules/perfilado/profile1.py
+
+# Módulo Inventarios (producción)
+streamlit run modules/inventarios/inventario_app.py
 
 # Orquestador modular (armazón con todos los módulos)
 streamlit run app.py

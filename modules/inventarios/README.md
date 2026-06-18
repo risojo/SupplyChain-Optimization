@@ -1,17 +1,26 @@
 # Módulo 2 — Inventarios
 
-Gestión y optimización de inventarios: punto de reorden, stock de seguridad,
-rotación, EOQ, clasificación ABC, reportes.
+## App oficial (la que va a GitHub y Render)
 
-## Parámetros (JSON en esta carpeta)
+| Qué | Dónde |
+|-----|--------|
+| **Programa principal** | `modules/inventarios/inventario_app.py` |
+| **Excel de datos** | `data/sources/template_inventarios.xlsx` |
+| **Ejecutar en local** | `streamlit run modules/inventarios/inventario_app.py` |
+| **Render** | `lri-inventarios` → mismo comando que arriba |
+
+Archivos de soporte en esta carpeta: `data_loader.py`, `scorecard.py`,
+`parametros.py`, `ui_theme.py`, assets.
+
+## No confundir con
+
+- **`view.py`** — solo un aviso para el orquestador `app.py`; **no** es la app de inventarios.
+- **`_inbox_inventarios/`** (raíz del repo) — copia temporal del freelance; **no** se sube a GitHub (está en `.gitignore`).
+
+## Parámetros (JSON)
 
 | Archivo | Uso |
 |---------|-----|
 | `parametros_defaults.json` | Valores estándar al iniciar (versionado en git). |
-| `parametros_backup.json` | Respaldo validado; restaurar copiando a defaults o guardados. |
-| `parametros_guardados.json` | Últimos valores del botón «Guardar parámetros» (local, gitignored). |
-
-## Estado
-
-En construcción. Coloca aquí el script del módulo y expón una función
-`render()` en `view.py`; luego marca `disponible=True` en `core/registry.py`.
+| `parametros_backup.json` | Respaldo validado. |
+| `parametros_guardados.json` | Últimos valores guardados en la UI (local, gitignored). |
