@@ -66,6 +66,16 @@ Ver detalles en [`docs/ARQUITECTURA.md`](docs/ARQUITECTURA.md).
 
 ## Despliegue (Render)
 
-La app desplegada hoy es **Perfilado** (`modules/perfilado/profile1.py`). El
-`render.yaml` ya deja configurado el servicio; cuando el orquestador integre
-todos los módulos, solo se cambia el `startCommand` a `streamlit run app.py`.
+Hay **dos apps** en `render.yaml`:
+
+| Servicio | Módulo | Comando |
+|----------|--------|---------|
+| `lri-supply-chain-optimization` | Perfilado | `streamlit run modules/perfilado/profile1.py` |
+| `lri-inventarios` | Inventarios | `streamlit run modules/inventarios/inventario_app.py` |
+
+**Subir a GitHub no basta:** hay que crear o sincronizar el Blueprint en Render.
+Instrucciones paso a paso: [`docs/DEPLOY_RENDER.md`](docs/DEPLOY_RENDER.md).
+
+```bash
+streamlit run modules/inventarios/inventario_app.py
+```

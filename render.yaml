@@ -1,11 +1,15 @@
-# Despliegue en Render como código (Infrastructure as Code).
+# Despliegue en Render (Blueprint / Infrastructure as Code).
 #
-# Dos apps Streamlit independientes (módulos separados, mismo repo):
-#   - Perfilado: profile1.py
-#   - Inventarios: inventario_app.py
+# IMPORTANTE: subir render.yaml a GitHub NO crea servicios solos.
+# Debe sincronizar el Blueprint en https://dashboard.render.com
+# (ver docs/DEPLOY_RENDER.md).
+#
+# Servicios:
+#   - lri-supply-chain-optimization → Perfilado (profile1.py)
+#   - lri-inventarios               → Inventarios (inventario_app.py)
 services:
   - type: web
-    name: lri-perfilado
+    name: lri-supply-chain-optimization
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
