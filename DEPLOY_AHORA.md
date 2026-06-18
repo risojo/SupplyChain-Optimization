@@ -31,11 +31,14 @@ Pulse **Apply** (Aplicar).
 
 En el dashboard, servicio **lri-inventarios** → Events → cuando diga **Live** (verde).
 
-### Paso 5 — Abra la URL
+### Paso 5 — Abra las URLs
 
-**https://lri-inventarios.onrender.com**
+| App | URL |
+|-----|-----|
+| **Inventarios** | https://lri-inventarios.onrender.com |
+| **Perfilado** | https://lri-supply-chain-optimization.onrender.com |
 
-(Primera visita en plan free: puede tardar 30–60 segundos.)
+(Primera visita en plan free: puede tardar 30–60 segundos en arrancar.)
 
 ---
 

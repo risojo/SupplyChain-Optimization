@@ -1,20 +1,20 @@
-# Despliegue en Render (Blueprint / Infrastructure as Code).
+# LRI Supply Chain Optimization — Render Blueprint
+# Apps operativas desplegables hoy:
+#   Perfilado  → modules/perfilado/profile1.py
+#   Inventarios → modules/inventarios/inventario_app.py
 #
-# IMPORTANTE: el código en GitHub NO crea la URL solo. Debe crear el servicio
-# en https://dashboard.render.com (ver docs/DEPLOY_RENDER.md).
-#
-# URLs (después de crear los servicios):
-#   Perfilado:  https://lri-supply-chain-optimization.onrender.com
-#   Inventarios: https://lri-inventarios.onrender.com
+# Crear servicios: https://dashboard.render.com/blueprint/new?repo=https://github.com/risojo/SupplyChain-Optimization
 services:
   - type: web
     name: lri-supply-chain-optimization
     runtime: python
     plan: free
+    region: oregon
     repo: https://github.com/risojo/SupplyChain-Optimization
     branch: main
-    buildCommand: pip install -r requirements.txt
-    startCommand: streamlit run modules/perfilado/profile1.py --server.port $PORT --server.address 0.0.0.0 --server.headless true --browser.gatherUsageStats false
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: streamlit run modules/perfilado/profile1.py --server.port $PORT --server.address 0.0.0.0
+    healthCheckPath: /_stcore/health
     autoDeploy: true
     envVars:
       - key: PYTHON_VERSION
@@ -23,10 +23,12 @@ services:
     name: lri-inventarios
     runtime: python
     plan: free
+    region: oregon
     repo: https://github.com/risojo/SupplyChain-Optimization
     branch: main
-    buildCommand: pip install -r requirements.txt
-    startCommand: streamlit run modules/inventarios/inventario_app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true --browser.gatherUsageStats false
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: streamlit run modules/inventarios/inventario_app.py --server.port $PORT --server.address 0.0.0.0
+    healthCheckPath: /_stcore/health
     autoDeploy: true
     envVars:
       - key: PYTHON_VERSION
