@@ -1,12 +1,12 @@
-# LRI Supply Chain Optimization — Render Blueprint
-# Apps operativas desplegables hoy:
-#   Perfilado  → modules/perfilado/profile1.py
-#   Inventarios → modules/inventarios/inventario_app.py
+# LRI Supply Chain Optimization — Render Blueprint (repo / carpeta raíz del proyecto)
+# Cada servicio = un módulo operativo con su propia URL:
+#   Perfilado   → lri-analytics-pro   → modules/perfilado/profile1.py
+#   Inventarios → lri-inventarios     → modules/inventarios/inventario_app.py
 #
 # Crear servicios: https://dashboard.render.com/blueprint/new?repo=https://github.com/risojo/SupplyChain-Optimization
 services:
   - type: web
-    name: lri-supply-chain-optimization
+    name: lri-analytics-pro
     runtime: python
     plan: free
     region: oregon

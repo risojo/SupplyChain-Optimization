@@ -3,7 +3,7 @@
 ## Por qué sale «Not Found» (404)
 
 **GitHub ≠ Render.** El código ya está en GitHub, pero la URL
-`https://lri-supply-chain-optimization.onrender.com` solo existe **después**
+`https://lri-analytics-pro.onrender.com` solo existe **después**
 de crear el servicio web en [Render](https://dashboard.render.com).
 
 Un 404 significa: **ese servicio aún no está creado** (o fue eliminado).
@@ -14,7 +14,7 @@ Un 404 significa: **ese servicio aún no está creado** (o fue eliminado).
 
 | Módulo | URL |
 |--------|-----|
-| **Perfilado** (`profile1.py`) | https://lri-supply-chain-optimization.onrender.com |
+| **Perfilado** (`profile1.py`) | https://lri-analytics-pro.onrender.com |
 | **Inventarios** (`inventario_app.py`) | https://lri-inventarios.onrender.com |
 
 Repositorio GitHub: https://github.com/risojo/SupplyChain-Optimization
@@ -26,7 +26,7 @@ Repositorio GitHub: https://github.com/risojo/SupplyChain-Optimization
 1. Abra: https://dashboard.render.com/blueprint/new?repo=https://github.com/risojo/SupplyChain-Optimization
 2. Inicie sesión y autorice acceso a GitHub si lo pide.
 3. Render mostrará 2 servicios del archivo `render.yaml`:
-   - `lri-supply-chain-optimization`
+   - `lri-analytics-pro`
    - `lri-inventarios`
 4. Pulse **Apply** (o **Create**).
 5. Espere 3–8 minutos hasta que cada servicio diga **Live** (verde).
@@ -43,7 +43,7 @@ Si ya tiene un Blueprint del mismo repo: **Blueprints → su blueprint → Manua
 
 | Campo | Valor |
 |-------|--------|
-| **Name** | `lri-supply-chain-optimization` |
+| **Name** | `lri-analytics-pro` |
 | **Region** | Oregon (o la más cercana) |
 | **Branch** | `main` |
 | **Runtime** | Python |
@@ -58,7 +58,7 @@ streamlit run modules/perfilado/profile1.py --server.port $PORT --server.address
 
 4. En **Environment** agregue: `PYTHON_VERSION` = `3.13.4`
 5. Plan **Free** → **Create Web Service**
-6. Cuando diga **Live**, abra: https://lri-supply-chain-optimization.onrender.com
+6. Cuando diga **Live**, abra: https://lri-analytics-pro.onrender.com
 
 Repita **New → Web Service** con name `lri-inventarios` y este Start Command para Inventarios:
 

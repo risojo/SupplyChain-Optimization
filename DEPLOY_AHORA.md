@@ -23,7 +23,7 @@ Render leerá `render.yaml` y mostrará **2 servicios**:
 | Nombre en Render | App |
 |------------------|-----|
 | `lri-inventarios` | `modules/inventarios/inventario_app.py` |
-| `lri-supply-chain-optimization` | `modules/perfilado/profile1.py` |
+| `lri-analytics-pro` | `modules/perfilado/profile1.py` |
 
 Pulse **Apply** (Aplicar).
 
@@ -36,9 +36,22 @@ En el dashboard, servicio **lri-inventarios** → Events → cuando diga **Live*
 | App | URL |
 |-----|-----|
 | **Inventarios** | https://lri-inventarios.onrender.com |
-| **Perfilado** | https://lri-supply-chain-optimization.onrender.com |
+| **Perfilado (Analytics Pro)** | https://lri-analytics-pro.onrender.com |
 
 (Primera visita en plan free: puede tardar 30–60 segundos en arrancar.)
+
+---
+
+## Nomenclatura
+
+| Nivel | Nombre | Qué es |
+|-------|--------|--------|
+| Repositorio / carpeta | **LRI Supply Chain Optimization** | Contenedor de todos los módulos (1–6) |
+| Servicio Render Perfilado | **`lri-analytics-pro`** | App `profile1.py` — título **LRI Analytics Pro** |
+| Servicio Render Inventarios | **`lri-inventarios`** | App `inventario_app.py` — título **LRI Inventory Pro** |
+
+Si aún tiene el servicio antiguo `lri-supply-chain-optimization`, sincronice el Blueprint
+y **elimine** ese servicio en el dashboard (Settings → Delete) para evitar duplicados.
 
 ---
 

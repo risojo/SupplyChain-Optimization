@@ -80,7 +80,7 @@ Hay **dos apps** en `render.yaml`:
 
 | Servicio | Módulo | Comando |
 |----------|--------|---------|
-| `lri-supply-chain-optimization` | Perfilado | `streamlit run modules/perfilado/profile1.py` |
+| `lri-analytics-pro` | Perfilado | `streamlit run modules/perfilado/profile1.py` |
 | `lri-inventarios` | Inventarios | `streamlit run modules/inventarios/inventario_app.py` |
 
 **Subir a GitHub no basta:** hay que crear o sincronizar el Blueprint en Render.

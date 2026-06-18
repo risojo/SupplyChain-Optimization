@@ -20,7 +20,7 @@ from audio_recorder_streamlit import audio_recorder
 # ==============================================================================
 # CONFIGURACIÓN GLOBAL DE LA APLICACIÓN
 # ==============================================================================
-st.set_page_config(page_title="LRI Analytics Pro", layout="wide")
+st.set_page_config(page_title="LRI Analytics Pro", page_icon="📊", layout="wide")
 
 # ------------------------------------------------------------------------------
 # Escala visual FIJA de la interfaz (independiente del zoom del navegador).
