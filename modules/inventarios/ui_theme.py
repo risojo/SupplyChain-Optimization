@@ -900,6 +900,23 @@ div[data-testid="stVerticalBlock"]:has(.inv-param-bloque-tabla) {{
 .inv-tabla-scroll.inv-tabla-alternada-wrap {{
     overscroll-behavior: contain;
 }}
+.inv-tabla-head-flow .inv-tabla-ws thead th {{
+    position: relative !important;
+    top: auto !important;
+    z-index: 20 !important;
+    min-height: 52px !important;
+    height: auto !important;
+    overflow: visible !important;
+    white-space: normal !important;
+    word-break: break-word !important;
+    line-height: 1.3 !important;
+    vertical-align: middle !important;
+}}
+.inv-tabla-head-flow .inv-tabla-ws thead th[style*="left:"] {{
+    position: sticky !important;
+    top: auto !important;
+    z-index: 30 !important;
+}}
 .inv-tabla-scorecard-wrap {{
     box-shadow: inset 0 0 0 1px #334155;
     overflow-x: scroll !important;
@@ -1278,6 +1295,7 @@ def _estilo_celda_alternada(
     left_fijo: int | None = None,
     resaltar_negativo: bool = False,
     color_texto: str | None = None,
+    cabecera_sticky_vertical: bool = True,
 ) -> str:
     pad = _padding_celda(font_px)
     alto = max(38, int(font_px * 1.45))
@@ -1313,10 +1331,11 @@ def _estilo_celda_alternada(
                 if col_i == WS_COLUMNAS_FIJAS - 1
                 else ""
             )
-            sticky = f"position:sticky;top:0;left:{left_fijo}px;z-index:{z};{sombra}"
-        elif col_i < WS_COLUMNAS_FIJAS:
+            top = "top:0;" if cabecera_sticky_vertical else ""
+            sticky = f"position:sticky;{top}left:{left_fijo}px;z-index:{z};{sombra}"
+        elif col_i < WS_COLUMNAS_FIJAS and cabecera_sticky_vertical:
             sticky = "position:sticky;top:0;z-index:35;"
-        wrap = "white-space:nowrap;overflow:visible;text-overflow:clip;"
+        wrap = "white-space:normal;word-break:break-word;overflow:visible;"
     else:
         bg, fg = PALETA_FILAS_ALTERNADAS[fila_i % len(PALETA_FILAS_ALTERNADAS)]
         peso = "font-weight:500;"
@@ -1493,6 +1512,7 @@ def _aplicar_font_inline_html(
     anchos_manual: dict[str, int] | None = None,
     evai_neg_filas: frozenset[int] | None = None,
     colores_columna: dict[str, str] | None = None,
+    cabecera_sticky_vertical: bool = True,
 ) -> str:
     usar_ws = layout == "ancha" and columnas
     usar_alternada = layout == "alternada" and columnas
@@ -1583,6 +1603,7 @@ def _aplicar_font_inline_html(
                 es_header=es_header,
                 columnas=columnas,
                 left_fijo=_left_fijo(col_i),
+                cabecera_sticky_vertical=cabecera_sticky_vertical,
             )
         elif usar_ws:
             estilo = _estilo_columna_ws(
@@ -1733,6 +1754,19 @@ def altura_tabla_px(n_filas: int, font_px: int, min_h: int = 280, max_h: int = 7
     return int(min(max_h, max(min_h, 40 + n_filas * alto_fila)))
 
 
+def altura_tabla_con_encabezado_px(
+    n_filas: int,
+    font_px: int,
+    *,
+    min_h: int = 280,
+    max_h: int = 780,
+) -> int:
+    """Altura del contenedor incluyendo fila de encabezado (evita recorte de títulos)."""
+    alto_hdr = max(52, int(font_px * 2.0))
+    alto_fila = max(30, int(font_px * 1.45))
+    return int(min(max_h, max(min_h, alto_hdr + 14 + n_filas * alto_fila)))
+
+
 def altura_tabla_scorecard_completa_px(
     n_filas: int,
     font_px: int,
@@ -1808,6 +1842,7 @@ def mostrar_tabla_html(
     mostrar_completa: bool = False,
     evai_neg_filas: frozenset[int] | None = None,
     colores_columna: dict[str, str] | None = None,
+    cabecera_sticky_vertical: bool = True,
 ) -> None:
     """Tabla HTML con letra grande y columnas juntas (controlada por el slider)."""
     if hide_index and hasattr(styler, "hide"):
@@ -1854,6 +1889,7 @@ def mostrar_tabla_html(
             anchos_manual=anchos_manual,
             evai_neg_filas=evai_neg_filas,
             colores_columna=colores_columna,
+            cabecera_sticky_vertical=cabecera_sticky_vertical,
         )
     if n_filas is None and isinstance(df, pd.DataFrame):
         n_filas = len(df)
@@ -1872,6 +1908,8 @@ def mostrar_tabla_html(
         borde = WS_BORDE_TABLA
     elif layout == "alternada" and columnas:
         clase_origen += " inv-tabla-ws-wrap inv-tabla-alternada-wrap"
+        if not cabecera_sticky_vertical:
+            clase_origen += " inv-tabla-head-flow"
         fondo = WS_FONDO_TABLA
         borde = WS_BORDE_TABLA
     elif layout == "scorecard":

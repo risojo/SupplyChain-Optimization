@@ -863,13 +863,13 @@ def vista_gmroi_evai(df: pd.DataFrame, params: dict) -> None:
     if mostrar_tabla:
         anchos = ui_theme.controles_ancho_columnas_tabla()
         scorecard.render_tabla_gmroi_evai(tabla, anchos_manual=anchos)
-        export = tabla.drop(columns=["_etiqueta"], errors="ignore")
+        export = scorecard.tabla_export_gmroi(tabla)
         st.caption("Exportar tabla:")
         col_a, col_b = st.columns(2)
         base = f"gmroi_evai_{nivel}"
         col_a.download_button(
             "Descargar CSV",
-            data=export.to_csv(index=False).encode("utf-8"),
+            data=export.to_csv(index=False).encode("utf-8-sig"),
             file_name=f"{base}.csv",
             use_container_width=True,
             key="gmroi_evai_dl_csv",

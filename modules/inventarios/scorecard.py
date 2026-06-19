@@ -20,6 +20,7 @@ import parametros
 from ui_theme import (
     TABLA_FONT_SIZE_DEFAULT,
     TABLA_FONT_SIZE_MIN,
+    altura_tabla_con_encabezado_px,
     altura_tabla_px,
     leyenda_scorecard_colores,
     leyenda_scorecard_columnas,
@@ -793,19 +794,19 @@ _COLUMNAS_GMROI_ORDEN: tuple[str, ...] = (
 )
 
 _ANCHOS_GMROI_DEFECTO: dict[str, int] = {
-    "codigo": 128,
+    "codigo": 132,
     "descripcion": 250,
-    "categoria": 130,
-    "subcategoria": 155,
-    "Inv. prom. bultos": 108,
-    "Valor inv. prom.": 112,
-    "ventas totales": 92,
-    "Margen bruto": 98,
-    "ICC asignado": 92,
-    "GMROI": 68,
-    "% margen bruto": 88,
-    "% ICC": 72,
-    "EVAI": 84,
+    "categoria": 132,
+    "subcategoria": 158,
+    "Inv. prom. bultos": 118,
+    "Valor inv. prom.": 118,
+    "ventas totales": 96,
+    "Margen bruto": 102,
+    "ICC asignado": 96,
+    "GMROI": 72,
+    "% margen bruto": 92,
+    "% ICC": 78,
+    "EVAI": 88,
 }
 
 _NIVELES_GMROI = ("codigo", "categoria", "subcategoria")
@@ -1186,6 +1187,22 @@ def grafico_gmroi_barras(
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def _ordenar_vista_gmroi(vista: pd.DataFrame) -> pd.DataFrame:
+    sort_cols = [c for c in ("GMROI", "EVAI") if c in vista.columns]
+    if not sort_cols:
+        return vista.reset_index(drop=True)
+    return vista.sort_values(
+        sort_cols,
+        ascending=[True] * len(sort_cols),
+        na_position="last",
+    ).reset_index(drop=True)
+
+
+def tabla_export_gmroi(tabla: pd.DataFrame) -> pd.DataFrame:
+    """DataFrame para CSV/Excel: mismas columnas, orden y títulos que la tabla en pantalla."""
+    return _ordenar_vista_gmroi(_vista_tabla_gmroi(tabla))
+
+
 def _vista_tabla_gmroi(tabla: pd.DataFrame) -> pd.DataFrame:
     """Orden, etiquetas cortas y columnas visibles para la tabla GMROI/EVAI."""
     cols = [c for c in _COLUMNAS_GMROI_ORDEN if c in tabla.columns]
@@ -1217,14 +1234,7 @@ def render_tabla_gmroi_evai(
     anchos_manual: dict[str, int] | None = None,
 ) -> None:
     """Muestra la tabla detallada (solo si el usuario la solicita)."""
-    vista = _vista_tabla_gmroi(tabla)
-    sort_cols = [c for c in ("GMROI", "EVAI") if c in vista.columns]
-    if sort_cols:
-        vista = vista.sort_values(
-            sort_cols,
-            ascending=[True] * len(sort_cols),
-            na_position="last",
-        ).reset_index(drop=True)
+    vista = _ordenar_vista_gmroi(_vista_tabla_gmroi(tabla))
     evai_neg_filas: frozenset[int] | None = None
     if "EVAI" in vista.columns:
         neg = {
@@ -1241,11 +1251,12 @@ def render_tabla_gmroi_evai(
         vista.style.format(fmt),
         fs,
         n_filas=len(vista),
-        altura_px=altura_tabla_px(len(vista), fs, min_h=480, max_h=860),
+        altura_px=altura_tabla_con_encabezado_px(len(vista), fs, min_h=500, max_h=880),
         layout="alternada",
         anchos_manual=anchos,
         evai_neg_filas=evai_neg_filas,
         colores_columna={"GMROI": "#facc15"},
+        cabecera_sticky_vertical=False,
     )
 
 
