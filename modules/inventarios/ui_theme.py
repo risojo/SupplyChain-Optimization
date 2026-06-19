@@ -11,7 +11,7 @@ from typing import Any, Literal
 import pandas as pd
 import streamlit as st
 
-TABLA_FONT_SIZE_DEFAULT = 20
+TABLA_FONT_SIZE_DEFAULT = 17
 TABLA_FONT_SIZE_MIN = 12
 TABLA_FONT_SIZE_MAX = 32
 
@@ -294,7 +294,7 @@ def _css_setbox_number_input(
 {extra_input}
 """
 TABLA_ZOOM_REF_PX = 16
-LayoutTabla = Literal["auto", "parametros", "ancha", "scorecard"]
+LayoutTabla = Literal["auto", "parametros", "ancha", "scorecard", "alternada"]
 OrigenDato = Literal["neutro", "editable", "calculado"]
 
 # Paleta tipo terminal financiero (Bloomberg / Wall Street).
@@ -359,13 +359,13 @@ def _categoria_columna_ws(nombre: str) -> str:
         return "identidad"
     if "demanda mes" in cl:
         return "demanda"
-    if any(k in cl for k in ("ventas totales", "margen bruto total", "valor inventario")):
+    if any(k in cl for k in ("ventas totales", "margen bruto total", "valor inventario", "icc asignado", "evai")):
         return "financiero"
     if "costo" in cl and "margen" not in cl:
         return "costo"
     if "precio" in cl:
         return "precio"
-    if cl in ("rotacion", "meses inventario", "factor escazes", "margen utilidad ventas"):
+    if cl in ("rotacion", "meses inventario", "factor escazes", "margen utilidad ventas", "gmroi"):
         return "metrica"
     if any(
         k in cl
@@ -417,7 +417,7 @@ def _ancho_columna_ws(
     titulo = _ancho_titulo_compacto(nombre, font_px)
 
     if cl == "codigo":
-        return max(96, min(titulo, 108))
+        return max(118, min(titulo, 132))
     if cl == "proveedor":
         return max(108, titulo)
     if "demanda mes" in cl:
@@ -561,11 +561,12 @@ PALETA_FILAS_SCORECARD: list[tuple[str, str]] = [
     ("#1e293b", "#ffffff"),
     ("#2a1a38", "#ede9fe"),
 ]
-# Solo tabla «Resumen y métricas» (KPI): fila 1 azul, 2 gris, 3 azul…
-PALETA_FILAS_RESUMEN_KPI: list[tuple[str, str]] = [
-    ("#0c4a6e", "#bae6fd"),
-    ("#334155", "#e2e8f0"),
+# Tablas ROI / KPI: fila celeste, fila gris — texto blanco en datos.
+PALETA_FILAS_ALTERNADAS: list[tuple[str, str]] = [
+    ("#0c4a6e", "#ffffff"),
+    ("#334155", "#ffffff"),
 ]
+PALETA_FILAS_RESUMEN_KPI = PALETA_FILAS_ALTERNADAS
 
 
 def es_tag_calculado_sistema(tag: str | None) -> bool:
@@ -877,10 +878,21 @@ div[data-testid="stVerticalBlock"]:has(.inv-param-bloque-tabla) {{
 .inv-tabla-ws-wrap::-webkit-scrollbar-thumb:hover {{
     background: linear-gradient(180deg, #93c5fd 0%, #3b82f6 55%, #2563eb 100%);
 }}
-.inv-tabla-ws-wrap::-webkit-scrollbar-corner {{
-    background: #0a0f1a;
+.inv-tabla-alternada-wrap {{
+    box-shadow: inset 0 0 0 1px {WS_BORDE_TABLA};
 }}
-.inv-tabla-scorecard-wrap {{
+.inv-tabla-alternada-wrap .inv-tabla-ws thead th {{
+    position: sticky !important;
+    top: 0 !important;
+    z-index: 35 !important;
+    background-clip: padding-box !important;
+}}
+.inv-tabla-alternada-wrap .inv-tabla-ws thead th[style*="left:"] {{
+    z-index: 55 !important;
+}}
+.inv-tabla-scroll.inv-tabla-alternada-wrap {{
+    overscroll-behavior: contain;
+}}
     box-shadow: inset 0 0 0 1px #334155;
     overflow-x: scroll !important;
     overflow-y: auto !important;
@@ -1248,6 +1260,74 @@ def _sticky_scorecard(
     return ""
 
 
+def _estilo_celda_alternada(
+    col_i: int,
+    fila_i: int,
+    font_px: int,
+    *,
+    es_header: bool,
+    columnas: list[str] | None,
+    left_fijo: int | None = None,
+    resaltar_negativo: bool = False,
+    color_texto: str | None = None,
+) -> str:
+    pad = _padding_celda(font_px)
+    alto = max(38, int(font_px * 1.45))
+    base = (
+        f"font-size:{font_px}px;line-height:{TABLA_LINE_HEIGHT};vertical-align:middle;"
+        f"padding:{pad};min-height:{alto}px;height:{alto}px;"
+        f"box-sizing:border-box;border-bottom:1px solid #334155;"
+    )
+    nombre = columnas[col_i] if columnas and col_i < len(columnas) else ""
+    align = (
+        _align_columna_ws(nombre, col_i, columnas)
+        if columnas
+        else ("left" if col_i < 4 else "right")
+    )
+    if es_header:
+        est = _WS_ESTILOS[_categoria_columna_ws(nombre)]
+        bg = est.th_bg if col_i % 2 == 0 else est.th_bg_alt
+        fg = est.th_fg
+        peso = "font-weight:700;"
+        sticky = ""
+        if left_fijo is not None:
+            z = 55 + col_i
+            sombra = (
+                "box-shadow:6px 0 12px rgba(0,0,0,0.45);"
+                if col_i == WS_COLUMNAS_FIJAS - 1
+                else ""
+            )
+            sticky = f"position:sticky;top:0;left:{left_fijo}px;z-index:{z};{sombra}"
+        elif col_i < WS_COLUMNAS_FIJAS:
+            sticky = "position:sticky;top:0;z-index:35;"
+        wrap = "white-space:normal;word-break:break-word;overflow:visible;"
+    else:
+        bg, fg = PALETA_FILAS_ALTERNADAS[fila_i % len(PALETA_FILAS_ALTERNADAS)]
+        peso = "font-weight:500;"
+        if color_texto:
+            fg = color_texto
+            peso = "font-weight:700;"
+        elif resaltar_negativo:
+            fg = "#ff3333"
+            peso = "font-weight:700;"
+        sticky = ""
+        if left_fijo is not None:
+            z = 20 + col_i
+            sombra = (
+                "box-shadow:6px 0 12px rgba(0,0,0,0.45);"
+                if col_i == WS_COLUMNAS_FIJAS - 1
+                else ""
+            )
+            sticky = f"position:sticky;left:{left_fijo}px;z-index:{z};{sombra}"
+        wrap = (
+            "white-space:normal;word-break:break-word;overflow:visible;"
+            if col_i < 4
+            else "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
+        )
+    nums = "font-variant-numeric:tabular-nums;" if align != "left" else ""
+    return f"{base}{peso}color:{fg};background:{bg};text-align:{align};{wrap}{sticky}{nums}"
+
+
 def _estilo_celda_scorecard(
     col_i: int,
     fila_i: int,
@@ -1350,6 +1430,12 @@ def _colgroup_html(
             f'<col style="width:{w}px;min-width:{w}px">' for w in anchos
         ]
         return "<colgroup>" + "".join(partes) + "</colgroup>"
+    if layout == "alternada" and columnas:
+        anchos = _anchos_columnas_ws(columnas, font_px, anchos_manual=anchos_manual)
+        partes = [
+            f'<col style="width:{w}px;min-width:{w}px">' for w in anchos
+        ]
+        return "<colgroup>" + "".join(partes) + "</colgroup>"
     if layout == "parametros":
         return '<colgroup><col style="width:64%"><col style="width:36%"></colgroup>'
     if layout == "scorecard" and columnas:
@@ -1389,11 +1475,14 @@ def _aplicar_font_inline_html(
     ancho_tabla_px: int | None = None,
     columnas: list[str] | None = None,
     anchos_manual: dict[str, int] | None = None,
+    evai_neg_filas: frozenset[int] | None = None,
+    colores_columna: dict[str, str] | None = None,
 ) -> str:
     usar_ws = layout == "ancha" and columnas
+    usar_alternada = layout == "alternada" and columnas
     pad = _padding_celda(font_px)
 
-    if not usar_ws:
+    if not usar_ws and not usar_alternada:
         if origen == "calculado":
             color_txt, color_num = COLOR_SISTEMA_TEXTO, COLOR_SISTEMA_VALOR
             bg_td = COLOR_SISTEMA_FONDO
@@ -1440,7 +1529,7 @@ def _aplicar_font_inline_html(
     idx_td = 0
     anchos_ws = (
         _anchos_columnas_ws(columnas, font_px, anchos_manual=anchos_manual)
-        if usar_ws and columnas
+        if (usar_ws or usar_alternada) and columnas
         else []
     )
     anchos_sc = (
@@ -1470,7 +1559,16 @@ def _aplicar_font_inline_html(
             col_i = idx_th % n_cols
             fila_i = 0
             es_header = es_header_celda
-        if usar_ws:
+        if usar_alternada:
+            estilo = _estilo_celda_alternada(
+                col_i,
+                fila_i if not es_header else 0,
+                font_px,
+                es_header=es_header,
+                columnas=columnas,
+                left_fijo=_left_fijo(col_i),
+            )
+        elif usar_ws:
             estilo = _estilo_columna_ws(
                 _nombre_col(col_i),
                 es_header=es_header,
@@ -1504,7 +1602,29 @@ def _aplicar_font_inline_html(
         else:
             col_i = idx_td % n_cols
             fila_i = idx_td // n_cols
-        if usar_ws:
+        if usar_alternada:
+            nombre_col = columnas[col_i] if columnas and col_i < len(columnas) else ""
+            resaltar = (
+                nombre_col == "EVAI"
+                and evai_neg_filas is not None
+                and fila_i in evai_neg_filas
+            )
+            color_col = (
+                colores_columna.get(nombre_col)
+                if colores_columna and nombre_col
+                else None
+            )
+            estilo = _estilo_celda_alternada(
+                col_i,
+                fila_i,
+                font_px,
+                es_header=False,
+                columnas=columnas,
+                left_fijo=_left_fijo(col_i),
+                resaltar_negativo=resaltar,
+                color_texto=color_col if not resaltar else None,
+            )
+        elif usar_ws:
             estilo = _estilo_columna_ws(
                 _nombre_col(col_i),
                 es_header=False,
@@ -1550,6 +1670,13 @@ def _aplicar_font_inline_html(
             "border-collapse:separate;border-spacing:0;"
             f"table-layout:fixed;width:{ancho_total}px;min-width:100%;"
         )
+    elif usar_alternada and columnas:
+        ancho_total = sum(anchos_ws)
+        table_style = (
+            "border-collapse:separate;border-spacing:0;"
+            f"table-layout:fixed;width:{ancho_total}px;"
+            "font-family:Consolas,'IBM Plex Mono','Segoe UI',system-ui,sans-serif;"
+        )
     elif usar_ws and columnas:
         ancho_total = sum(anchos_ws)
         table_style = (
@@ -1570,6 +1697,8 @@ def _aplicar_font_inline_html(
     )
     if layout == "scorecard":
         clase = ' class="inv-tabla-scorecard"'
+    elif usar_alternada:
+        clase = ' class="inv-tabla-ws inv-tabla-alternada"'
     elif usar_ws:
         clase = ' class="inv-tabla-ws"'
     else:
@@ -1661,6 +1790,8 @@ def mostrar_tabla_html(
     anchos_manual: dict[str, int] | None = None,
     format_items: tuple[tuple[str, str], ...] | None = None,
     mostrar_completa: bool = False,
+    evai_neg_filas: frozenset[int] | None = None,
+    colores_columna: dict[str, str] | None = None,
 ) -> None:
     """Tabla HTML con letra grande y columnas juntas (controlada por el slider)."""
     if hide_index and hasattr(styler, "hide"):
@@ -1705,6 +1836,8 @@ def mostrar_tabla_html(
             ancho_tabla_px=ancho_tabla_px,
             columnas=columnas,
             anchos_manual=anchos_manual,
+            evai_neg_filas=evai_neg_filas,
+            colores_columna=colores_columna,
         )
     if n_filas is None and isinstance(df, pd.DataFrame):
         n_filas = len(df)
@@ -1721,6 +1854,10 @@ def mostrar_tabla_html(
         clase_origen += " inv-tabla-ws-wrap"
         fondo = WS_FONDO_TABLA
         borde = WS_BORDE_TABLA
+    elif layout == "alternada" and columnas:
+        clase_origen += " inv-tabla-ws-wrap inv-tabla-alternada-wrap"
+        fondo = WS_FONDO_TABLA
+        borde = WS_BORDE_TABLA
     elif layout == "scorecard":
         clase_origen += " inv-tabla-scorecard-wrap"
         if mostrar_completa:
@@ -1731,6 +1868,8 @@ def mostrar_tabla_html(
         fondo = "#0e1117"
         borde = "#2d3142"
     if layout == "ancha" and columnas:
+        overflow = "overflow-x:scroll;overflow-y:auto;"
+    elif layout == "alternada" and columnas:
         overflow = "overflow-x:scroll;overflow-y:auto;"
     elif layout == "scorecard" and mostrar_completa:
         overflow = "overflow-x:scroll;overflow-y:hidden;"

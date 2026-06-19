@@ -6,6 +6,8 @@ proyecto original del freelance, pero leyendo directamente el Excel maestro en
 
 Ejecutar:
     streamlit run modules/inventarios/inventario_app.py
+
+    En el navegador: http://localhost:8501 (o el puerto que indique la terminal)
 """
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ from textwrap import dedent
 from typing import Callable
 
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import streamlit as st
 
@@ -346,7 +349,6 @@ def vista_base_datos(df: pd.DataFrame, _params: dict) -> None:
         f"({n_entrada} de entrada + {n_calc} calculadas). "
         "Desplácese horizontalmente para ver demanda, inventarios y métricas financieras."
     )
-    ui_theme.leyenda_tabla_wall_street()
     anchos_manual = ui_theme.controles_ancho_columnas_tabla()
     st.caption(
         "Columnas fijas: **código, categoría, subcategoría, descripción**. "
@@ -562,6 +564,319 @@ def vista_asignacion_drivers(df: pd.DataFrame, params: dict) -> None:
         st.caption(
             "Aún no hay archivo guardado. Los cambios en sesión aplican al Scorecard; "
             "use el botón de arriba para conservarlos al cerrar la app."
+        )
+
+
+def _inicializar_controles_gmroi() -> None:
+    """Valores por defecto de los controles GMROI/EVAI (sidebar)."""
+    for clave, valor in (
+        ("inv_gmroi_nivel", "codigo"),
+        ("inv_gmroi_icc_por", "categoria"),
+        ("inv_gmroi_mostrar_tabla", False),
+        ("inv_gmroi_top_n", 20),
+        ("inv_gmroi_pareto_set", "Desactivado (Paleta Azul)"),
+        ("inv_gmroi_pareto_acumulado", False),
+        ("inv_gmroi_filtro_categoria", "— Todas las categorías —"),
+        ("inv_gmroi_filtro_subcategoria", "— Todas las subcategorías —"),
+        ("inv_gmroi_filtro_codigo", "— Todos los códigos —"),
+    ):
+        if clave not in st.session_state:
+            st.session_state[clave] = valor
+    st.session_state["inv_gmroi_nivel"] = scorecard.normalizar_nivel_gmroi(
+        str(st.session_state["inv_gmroi_nivel"])
+    )
+
+
+_CLAVE_TOGGLE_TABLA_GMROI = "_inv_gmroi_tabla_toggle_pendiente"
+
+
+def _aplicar_toggle_tabla_gmroi_pendiente() -> None:
+    """Aplica el toggle del botón 📋 antes de instanciar el checkbox del sidebar."""
+    if _CLAVE_TOGGLE_TABLA_GMROI in st.session_state:
+        st.session_state["inv_gmroi_mostrar_tabla"] = st.session_state.pop(_CLAVE_TOGGLE_TABLA_GMROI)
+
+
+def _sidebar_gmroi_evai(df: pd.DataFrame, params: dict) -> None:
+    """Controles GMROI/EVAI en sidebar: nivel, tabla opcional y acceso al análisis."""
+    _inicializar_controles_gmroi()
+    en_vista = st.session_state.get("inv_vista") == "GMROI y EVAI"
+    with st.expander("GMROI y EVAI", expanded=en_vista):
+        st.caption(
+            "GMROI = margen bruto ÷ valor inv. promedio · "
+            "EVAI = margen bruto − ICC asignado"
+        )
+        st.selectbox(
+            "Asignar ICC por",
+            options=["categoria", "subcategoria"],
+            format_func=lambda x: "Categoría" if x == "categoria" else "Subcategoría",
+            key="inv_gmroi_icc_por",
+            help="Grupo del scorecard para repartir el costo de mantener inventario.",
+        )
+        st.slider(
+            "Máx. registros (solo sin filtro)",
+            min_value=5,
+            max_value=100,
+            key="inv_gmroi_top_n",
+            help="Con nivel Código o filtros de categoría/subcategoría se muestran todos los registros.",
+        )
+        st.selectbox(
+            "Análisis Pareto",
+            options=scorecard.OPCIONES_PARETO_GMROI,
+            key="inv_gmroi_pareto_set",
+            help="Segmenta ítems en tramos (verde · amarillo · rojo) como en Perfilado.",
+        )
+        if "Desactivado" not in st.session_state.get("inv_gmroi_pareto_set", ""):
+            st.checkbox(
+                "Curva % acumulado",
+                key="inv_gmroi_pareto_acumulado",
+            )
+        st.checkbox(
+            "Mostrar tabla detallada",
+            key="inv_gmroi_mostrar_tabla",
+            help="También puede abrirla con el botón 📋 en la vista principal.",
+        )
+        try:
+            tabla_sku = scorecard.tabla_gmroi_evai_por_sku(
+                df, params, st.session_state["inv_gmroi_icc_por"]
+            )
+            resumen = scorecard.tabla_gmroi_evai_resumen(
+                tabla_sku,
+                scorecard.normalizar_nivel_gmroi(st.session_state.get("inv_gmroi_nivel", "codigo")),
+            )
+        except Exception as exc:
+            st.warning(f"No se pudo calcular: {exc}")
+            return
+        c1, c2 = st.columns(2)
+        c1.metric("Registros", f"{len(resumen):,}")
+        gmroi_prom = resumen["GMROI"].replace(0, np.nan).mean()
+        c2.metric("GMROI prom.", f"{gmroi_prom:.2f}" if pd.notna(gmroi_prom) else "—")
+        st.metric("EVAI total", f"$ {resumen['EVAI'].sum():,.0f}")
+        if not en_vista and st.button(
+            "Abrir análisis completo",
+            use_container_width=True,
+            key="inv_ir_gmroi_evai",
+        ):
+            st.session_state["inv_vista"] = "GMROI y EVAI"
+            st.rerun()
+
+
+_CLAVE_TOGGLE_TABLA_GMROI = "_inv_gmroi_tabla_toggle_pendiente"
+_OPCION_TODAS_CAT = "— Todas las categorías —"
+_OPCION_TODAS_SUB = "— Todas las subcategorías —"
+_OPCION_TODOS_COD = "— Todos los códigos —"
+
+
+def _reset_filtros_gmroi_subcategoria() -> None:
+    st.session_state["inv_gmroi_filtro_subcategoria"] = _OPCION_TODAS_SUB
+    st.session_state["inv_gmroi_filtro_codigo"] = _OPCION_TODOS_COD
+
+
+def _reset_filtros_gmroi_codigo() -> None:
+    st.session_state["inv_gmroi_filtro_codigo"] = _OPCION_TODOS_COD
+
+
+def _controles_filtro_gmroi(df: pd.DataFrame) -> tuple[str | None, str | None, str | None]:
+    """Nivel de análisis + drill-down por categoría, subcategoría y código."""
+    st.markdown("##### Presentar GMROI y EVAI por")
+    nivel = st.radio(
+        "Nivel de análisis",
+        options=list(scorecard._NIVELES_GMROI),
+        format_func=lambda x: scorecard._ETIQUETAS_NIVEL[x],
+        horizontal=True,
+        key="inv_gmroi_nivel",
+        help="Categoría: totales por categoría · Subcategoría: por subcategoría · Código: GMROI/EVAI por artículo.",
+    )
+
+    st.markdown("##### Segmentar ventas (drill-down)")
+    st.caption(
+        "Elija **categoría** (p. ej. Alimentos, Abarrotes), luego **subcategoría** y, si lo necesita, "
+        "un **código** concreto para ver GMROI y EVAI de ese artículo."
+    )
+
+    # Normalizar valores legacy del session_state
+    for clave, default in (
+        ("inv_gmroi_filtro_categoria", _OPCION_TODAS_CAT),
+        ("inv_gmroi_filtro_subcategoria", _OPCION_TODAS_SUB),
+        ("inv_gmroi_filtro_codigo", _OPCION_TODOS_COD),
+    ):
+        if st.session_state.get(clave) in ("— Todas —", None):
+            st.session_state[clave] = default
+
+    categorias = [_OPCION_TODAS_CAT, *sorted(df["categoria"].dropna().astype(str).unique())]
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        cat_sel = st.selectbox(
+            "Categoría",
+            categorias,
+            key="inv_gmroi_filtro_categoria",
+            on_change=_reset_filtros_gmroi_subcategoria,
+        )
+    cat_filtro = cat_sel if cat_sel != _OPCION_TODAS_CAT else None
+
+    if cat_filtro:
+        mask_sub = df["categoria"].astype(str) == cat_filtro
+    else:
+        mask_sub = pd.Series(True, index=df.index)
+    sub_opts = sorted(df.loc[mask_sub, "subcategoria"].dropna().astype(str).unique())
+
+    with c2:
+        sub_sel = st.selectbox(
+            "Subcategoría",
+            [_OPCION_TODAS_SUB, *sub_opts],
+            key="inv_gmroi_filtro_subcategoria",
+            on_change=_reset_filtros_gmroi_codigo,
+        )
+    sub_filtro = sub_sel if sub_sel != _OPCION_TODAS_SUB else None
+
+    mask_cod = mask_sub
+    if sub_filtro:
+        mask_cod = mask_cod & (df["subcategoria"].astype(str) == sub_filtro)
+    cod_opts = sorted(df.loc[mask_cod, "codigo"].dropna().astype(str).unique())
+
+    with c3:
+        if nivel == "codigo":
+            cod_sel = st.selectbox(
+                "Código (producto)",
+                [_OPCION_TODOS_COD, *cod_opts],
+                key="inv_gmroi_filtro_codigo",
+                help="Un artículo específico: GMROI y EVAI de ese SKU.",
+            )
+            cod_filtro = cod_sel if cod_sel != _OPCION_TODOS_COD else None
+        else:
+            st.caption("Use nivel **Código (SKU / producto)** para elegir un artículo.")
+            cod_filtro = None
+
+    return cat_filtro, sub_filtro, cod_filtro
+
+
+def vista_gmroi_evai(df: pd.DataFrame, params: dict) -> None:
+    """Gráficos GMROI/EVAI por código, categoría o subcategoría; tabla opcional."""
+    _inicializar_controles_gmroi()
+    cat_filtro, sub_filtro, cod_filtro = _controles_filtro_gmroi(df)
+    nivel = scorecard.normalizar_nivel_gmroi(st.session_state["inv_gmroi_nivel"])
+    icc_por = st.session_state["inv_gmroi_icc_por"]
+    top_n = int(st.session_state["inv_gmroi_top_n"])
+    mostrar_tabla = st.session_state["inv_gmroi_mostrar_tabla"]
+    set_pareto = st.session_state["inv_gmroi_pareto_set"]
+    pareto_acum = st.session_state.get("inv_gmroi_pareto_acumulado", False)
+    etiqueta_nivel = scorecard._ETIQUETAS_NIVEL[nivel]
+    etiqueta_icc = "categoría" if icc_por == "categoria" else "subcategoría"
+    pareto_txt = set_pareto if "Desactivado" not in set_pareto else "Paleta azul → blanco"
+
+    st.caption(
+        "Más opciones (ICC, Pareto, registros en gráfico, tabla) en sidebar → **GMROI y EVAI**."
+    )
+    filtro_txt = ""
+    if cat_filtro:
+        filtro_txt += f" · **Categoría:** {cat_filtro}"
+    if sub_filtro:
+        filtro_txt += f" · **Subcategoría:** {sub_filtro}"
+    if cod_filtro:
+        filtro_txt += f" · **Código:** {cod_filtro}"
+    st.caption(
+        "Fórmulas: valor inventario promedio = inventario promedio bultos × costo unitario bulto · "
+        "margen bruto total = ventas totales − ventas costo · "
+        "GMROI = margen bruto ÷ valor inventario promedio · "
+        "EVAI = margen bruto − ICC asignado"
+    )
+
+    try:
+        tabla_sku = scorecard.tabla_gmroi_evai_por_sku(df, params, icc_por)
+        tabla_sku = scorecard.filtrar_tabla_gmroi_sku(
+            tabla_sku,
+            categoria=cat_filtro,
+            subcategoria=sub_filtro,
+            codigo=cod_filtro,
+        )
+        if tabla_sku.empty:
+            st.warning("No hay productos para los filtros seleccionados.")
+            return
+        tabla = scorecard.tabla_gmroi_evai_resumen(tabla_sku, nivel)
+    except Exception as exc:
+        st.error(f"No se pudo calcular GMROI/EVAI: {exc}")
+        return
+
+    mostrar_todos_graf = nivel == "codigo" or bool(cat_filtro or sub_filtro)
+    limite_txt = (
+        f"todos ({len(tabla):,})"
+        if mostrar_todos_graf
+        else f"top {top_n}"
+    )
+    st.caption(
+        f"Nivel: {etiqueta_nivel}{filtro_txt} · ICC por: {etiqueta_icc} · "
+        f"Gráfico: {limite_txt} · Color: {pareto_txt}"
+    )
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Registros", f"{len(tabla):,}")
+    gmroi_prom = tabla["GMROI"].replace(0, np.nan).mean()
+    m2.metric("GMROI promedio", f"{gmroi_prom:.2f}" if pd.notna(gmroi_prom) else "—")
+    m3.metric("EVAI total", _fmt_moneda(float(tabla["EVAI"].sum())))
+    m4.metric("Margen bruto", _fmt_moneda(float(tabla["margen bruto total"].sum())))
+
+    st.caption("Gráficos verticales — mayor a menor (desplácese horizontalmente si hay muchos códigos)")
+    g1, g2 = st.columns(2, gap="large")
+    with g1:
+        scorecard.grafico_gmroi_barras(
+            tabla,
+            nivel=nivel,
+            top_n=top_n,
+            metrica="GMROI",
+            set_pareto=set_pareto,
+            mostrar_acumulado=pareto_acum,
+            mostrar_todos=mostrar_todos_graf,
+        )
+    with g2:
+        scorecard.grafico_gmroi_barras(
+            tabla,
+            nivel=nivel,
+            top_n=top_n,
+            metrica="EVAI",
+            set_pareto=set_pareto,
+            mostrar_acumulado=pareto_acum,
+            mostrar_todos=mostrar_todos_graf,
+        )
+
+    st.divider()
+    btn_col, txt_col = st.columns([1, 4], vertical_alignment="center")
+    with btn_col:
+        etiqueta_btn = "📋 Ocultar tabla" if mostrar_tabla else "📋 Ver tabla de cálculos"
+        if st.button(
+            etiqueta_btn,
+            key="inv_toggle_tabla_gmroi",
+            use_container_width=True,
+            help="Muestra u oculta la tabla con todos los cálculos (útil para imprimir o exportar).",
+        ):
+            st.session_state[_CLAVE_TOGGLE_TABLA_GMROI] = not mostrar_tabla
+            st.rerun()
+    with txt_col:
+        if mostrar_tabla:
+            st.caption("Tabla visible — desplácese vertical y horizontalmente; columnas fijas a la izquierda.")
+        else:
+            st.caption(
+                "La tabla está colapsada. Use **📋 Ver tabla de cálculos** para revisar o imprimir el detalle."
+            )
+
+    if mostrar_tabla:
+        anchos = ui_theme.controles_ancho_columnas_tabla()
+        scorecard.render_tabla_gmroi_evai(tabla, anchos_manual=anchos)
+        export = tabla.drop(columns=["_etiqueta"], errors="ignore")
+        st.caption("Exportar tabla:")
+        col_a, col_b = st.columns(2)
+        base = f"gmroi_evai_{nivel}"
+        col_a.download_button(
+            "Descargar CSV",
+            data=export.to_csv(index=False).encode("utf-8"),
+            file_name=f"{base}.csv",
+            use_container_width=True,
+            key="gmroi_evai_dl_csv",
+        )
+        col_b.download_button(
+            "Descargar Excel",
+            data=_exportar_excel(export, "gmroi_evai"),
+            file_name=f"{base}.xlsx",
+            use_container_width=True,
+            key="gmroi_evai_dl_xlsx",
         )
 
 
@@ -861,6 +1176,7 @@ OPCIONES_VISTA = [
     "Drivers (tentativo)",
     "Asignación de drivers",
     "Scorecard",
+    "GMROI y EVAI",
 ]
 VISTAS: dict[str, Callable[[pd.DataFrame, dict], None]] = {
     "Parámetros": vista_parametros_generales,
@@ -868,11 +1184,14 @@ VISTAS: dict[str, Callable[[pd.DataFrame, dict], None]] = {
     "Drivers (tentativo)": vista_drivers,
     "Asignación de drivers": vista_asignacion_drivers,
     "Scorecard": vista_scorecard,
+    "GMROI y EVAI": vista_gmroi_evai,
 }
 
 
 def main() -> None:
     _inicializar_datos_en_sesion()
+    _inicializar_controles_gmroi()
+    _aplicar_toggle_tabla_gmroi_pendiente()
 
     with st.sidebar:
         ui_theme.render_branding_sidebar()
@@ -886,6 +1205,7 @@ def main() -> None:
         err_sidebar = st.session_state.get("inv_error_carga")
         if df_sidebar is not None:
             _render_control_voz_sidebar(df_sidebar)
+            _sidebar_gmroi_evai(df_sidebar, parametros.inicializar_parametros(df_sidebar))
         elif err_sidebar:
             st.warning(err_sidebar)
 
