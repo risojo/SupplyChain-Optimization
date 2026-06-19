@@ -886,6 +886,13 @@ div[data-testid="stVerticalBlock"]:has(.inv-param-bloque-tabla) {{
     top: 0 !important;
     z-index: 35 !important;
     background-clip: padding-box !important;
+    height: auto !important;
+    min-height: 2.6em;
+    overflow: visible !important;
+    vertical-align: middle;
+    line-height: 1.25 !important;
+    padding-top: 6px !important;
+    padding-bottom: 6px !important;
 }}
 .inv-tabla-alternada-wrap .inv-tabla-ws thead th[style*="left:"] {{
     z-index: 55 !important;
@@ -893,6 +900,7 @@ div[data-testid="stVerticalBlock"]:has(.inv-param-bloque-tabla) {{
 .inv-tabla-scroll.inv-tabla-alternada-wrap {{
     overscroll-behavior: contain;
 }}
+.inv-tabla-scorecard-wrap {{
     box-shadow: inset 0 0 0 1px #334155;
     overflow-x: scroll !important;
     overflow-y: auto !important;
@@ -1273,11 +1281,19 @@ def _estilo_celda_alternada(
 ) -> str:
     pad = _padding_celda(font_px)
     alto = max(38, int(font_px * 1.45))
-    base = (
-        f"font-size:{font_px}px;line-height:{TABLA_LINE_HEIGHT};vertical-align:middle;"
-        f"padding:{pad};min-height:{alto}px;height:{alto}px;"
-        f"box-sizing:border-box;border-bottom:1px solid #334155;"
-    )
+    if es_header:
+        alto_hdr = max(44, int(font_px * 1.55))
+        base = (
+            f"font-size:{font_px}px;line-height:1.25;vertical-align:middle;"
+            f"padding:{pad};min-height:{alto_hdr}px;height:auto;"
+            f"box-sizing:border-box;border-bottom:1px solid #334155;"
+        )
+    else:
+        base = (
+            f"font-size:{font_px}px;line-height:{TABLA_LINE_HEIGHT};vertical-align:middle;"
+            f"padding:{pad};min-height:{alto}px;height:{alto}px;"
+            f"box-sizing:border-box;border-bottom:1px solid #334155;"
+        )
     nombre = columnas[col_i] if columnas and col_i < len(columnas) else ""
     align = (
         _align_columna_ws(nombre, col_i, columnas)

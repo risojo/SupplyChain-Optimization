@@ -19,6 +19,7 @@ import parametros
 
 from ui_theme import (
     TABLA_FONT_SIZE_DEFAULT,
+    TABLA_FONT_SIZE_MIN,
     altura_tabla_px,
     leyenda_scorecard_colores,
     leyenda_scorecard_columnas,
@@ -752,6 +753,20 @@ _FMT_METRICAS_SKU = {
     "EVAI": "$ {:,.0f}",
 }
 
+_ANCHOS_GMROI_DEFECTO: dict[str, int] = {
+    "codigo": 128,
+    "descripcion": 250,
+    "categoria": 130,
+    "subcategoria": 155,
+    "inventario promedio bultos": 82,
+    "valor inventario promedio": 92,
+    "ventas totales": 88,
+    "margen bruto total": 92,
+    "ICC asignado": 88,
+    "GMROI": 68,
+    "EVAI": 84,
+}
+
 _NIVELES_GMROI = ("codigo", "categoria", "subcategoria")
 _ETIQUETAS_NIVEL = {
     "codigo": "Código (SKU / producto)",
@@ -1174,14 +1189,15 @@ def render_tabla_gmroi_evai(
         if neg:
             evai_neg_filas = frozenset(neg)
     fmt = {k: v for k, v in _FMT_METRICAS_SKU.items() if k in vista.columns}
-    fs = _tabla_font_px()
+    fs = max(TABLA_FONT_SIZE_MIN, min(_tabla_font_px(), 15))
+    anchos = {**_ANCHOS_GMROI_DEFECTO, **(anchos_manual or {})}
     mostrar_tabla_html(
         vista.style.format(fmt),
         fs,
         n_filas=len(vista),
         altura_px=altura_tabla_px(len(vista), fs, min_h=480, max_h=860),
         layout="alternada",
-        anchos_manual=anchos_manual or {"codigo": 128, "descripcion": 280, "subcategoria": 175},
+        anchos_manual=anchos,
         evai_neg_filas=evai_neg_filas,
         colores_columna={"GMROI": "#facc15"},
     )
