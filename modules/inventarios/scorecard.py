@@ -604,6 +604,30 @@ def _div_seguro(a: pd.Series, b: pd.Series) -> pd.Series:
     return a / b.replace(0, np.nan)
 
 
+def _aplicar_pct_gmroi(out: pd.DataFrame) -> pd.DataFrame:
+    """% margen bruto e % ICC (sobre ventas), antes de EVAI en la tabla."""
+    out = out.copy()
+    out["% margen bruto"] = _div_seguro(out["margen bruto total"], out["ventas totales"])
+    out["% ICC"] = _div_seguro(out["ICC asignado"], out["ventas totales"])
+    return out
+
+
+def _redondear_gmroi(out: pd.DataFrame) -> pd.DataFrame:
+    redondeo = {
+        "inventario promedio bultos": 0,
+        "valor inventario promedio": 0,
+        "ventas totales": 0,
+        "margen bruto total": 0,
+        "ICC asignado": 0,
+        "GMROI": 4,
+        "% margen bruto": 4,
+        "% ICC": 4,
+        "EVAI": 0,
+    }
+    cols = {k: v for k, v in redondeo.items() if k in out.columns}
+    return out.round(cols).fillna(0)
+
+
 def _parametros_scorecard(params: dict) -> dict[str, object]:
     """Extrae listas de inversiones/costos y % capital para el scorecard."""
     capital_pct = float(parametros.extraer_tag(params, "gen_financieros")[1][0])
@@ -707,17 +731,8 @@ def tabla_gmroi_evai_por_sku(
     out["ICC asignado"] = participacion * grupo.map(icc_map).fillna(0)
     out["GMROI"] = _div_seguro(out["margen bruto total"], out["valor inventario promedio"])
     out["EVAI"] = out["margen bruto total"] - out["ICC asignado"]
-    return out.sort_values("EVAI", ascending=False).round(
-        {
-            "inventario promedio bultos": 0,
-            "valor inventario promedio": 0,
-            "ventas totales": 0,
-            "margen bruto total": 0,
-            "ICC asignado": 0,
-            "GMROI": 4,
-            "EVAI": 0,
-        }
-    ).fillna(0)
+    out = _aplicar_pct_gmroi(out)
+    return _redondear_gmroi(out).sort_values("EVAI", ascending=False)
 
 
 def tabla_gmroi_por_sku(df: pd.DataFrame) -> pd.DataFrame:
@@ -750,20 +765,46 @@ _FMT_METRICAS_SKU = {
     "margen bruto total": "$ {:,.0f}",
     "ICC asignado": "$ {:,.0f}",
     "GMROI": "{:.2f}",
+    "% margen bruto": "{:.2%}",
+    "% ICC": "{:.2%}",
     "EVAI": "$ {:,.0f}",
 }
+
+_ETIQUETAS_COL_GMROI: dict[str, str] = {
+    "inventario promedio bultos": "Inv. prom. bultos",
+    "valor inventario promedio": "Valor inv. prom.",
+    "margen bruto total": "Margen bruto",
+}
+
+_COLUMNAS_GMROI_ORDEN: tuple[str, ...] = (
+    "codigo",
+    "descripcion",
+    "categoria",
+    "subcategoria",
+    "inventario promedio bultos",
+    "valor inventario promedio",
+    "ventas totales",
+    "margen bruto total",
+    "ICC asignado",
+    "GMROI",
+    "% margen bruto",
+    "% ICC",
+    "EVAI",
+)
 
 _ANCHOS_GMROI_DEFECTO: dict[str, int] = {
     "codigo": 128,
     "descripcion": 250,
     "categoria": 130,
     "subcategoria": 155,
-    "inventario promedio bultos": 82,
-    "valor inventario promedio": 92,
-    "ventas totales": 88,
-    "margen bruto total": 92,
-    "ICC asignado": 88,
+    "Inv. prom. bultos": 108,
+    "Valor inv. prom.": 112,
+    "ventas totales": 92,
+    "Margen bruto": 98,
+    "ICC asignado": 92,
     "GMROI": 68,
+    "% margen bruto": 88,
+    "% ICC": 72,
     "EVAI": 84,
 }
 
@@ -933,17 +974,7 @@ def tabla_gmroi_evai_resumen(tabla_sku: pd.DataFrame, nivel: str) -> pd.DataFram
     if nivel == "codigo":
         out = tabla_sku.copy()
         out["_etiqueta"] = out["codigo"].astype(str)
-        return out.sort_values("GMROI", ascending=False).round(
-            {
-                "inventario promedio bultos": 0,
-                "valor inventario promedio": 0,
-                "ventas totales": 0,
-                "margen bruto total": 0,
-                "ICC asignado": 0,
-                "GMROI": 4,
-                "EVAI": 0,
-            }
-        ).fillna(0)
+        return _redondear_gmroi(out).sort_values("GMROI", ascending=False)
 
     cols_agg = {
         "inventario promedio bultos": "sum",
@@ -969,17 +1000,8 @@ def tabla_gmroi_evai_resumen(tabla_sku: pd.DataFrame, nivel: str) -> pd.DataFram
 
     out["GMROI"] = _div_seguro(out["margen bruto total"], out["valor inventario promedio"])
     out["EVAI"] = out["margen bruto total"] - out["ICC asignado"]
-    return out.sort_values("GMROI", ascending=False).round(
-        {
-            "inventario promedio bultos": 0,
-            "valor inventario promedio": 0,
-            "ventas totales": 0,
-            "margen bruto total": 0,
-            "ICC asignado": 0,
-            "GMROI": 4,
-            "EVAI": 0,
-        }
-    ).fillna(0)
+    out = _aplicar_pct_gmroi(out)
+    return _redondear_gmroi(out).sort_values("GMROI", ascending=False)
 
 
 def _ancho_figura_gmroi(n: int) -> int:
@@ -1164,14 +1186,38 @@ def grafico_gmroi_barras(
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def _vista_tabla_gmroi(tabla: pd.DataFrame) -> pd.DataFrame:
+    """Orden, etiquetas cortas y columnas visibles para la tabla GMROI/EVAI."""
+    cols = [c for c in _COLUMNAS_GMROI_ORDEN if c in tabla.columns]
+    extra = [c for c in tabla.columns if c not in cols and c != "_etiqueta"]
+    vista = tabla[cols + extra].copy()
+    return vista.rename(columns=_ETIQUETAS_COL_GMROI)
+
+
+def _fmt_vista_gmroi(columnas: list[str]) -> dict[str, str]:
+    rev = {v: k for k, v in _ETIQUETAS_COL_GMROI.items()}
+    return {
+        col: _FMT_METRICAS_SKU[orig]
+        for col in columnas
+        if (orig := rev.get(col, col)) in _FMT_METRICAS_SKU
+    }
+
+
+def _anchos_vista_gmroi(anchos_manual: dict[str, int] | None) -> dict[str, int]:
+    anchos = dict(_ANCHOS_GMROI_DEFECTO)
+    if anchos_manual:
+        for k, v in anchos_manual.items():
+            anchos[_ETIQUETAS_COL_GMROI.get(k, k)] = v
+    return anchos
+
+
 def render_tabla_gmroi_evai(
     tabla: pd.DataFrame,
     *,
     anchos_manual: dict[str, int] | None = None,
 ) -> None:
     """Muestra la tabla detallada (solo si el usuario la solicita)."""
-    cols = [c for c in tabla.columns if c != "_etiqueta"]
-    vista = tabla[cols].copy()
+    vista = _vista_tabla_gmroi(tabla)
     sort_cols = [c for c in ("GMROI", "EVAI") if c in vista.columns]
     if sort_cols:
         vista = vista.sort_values(
@@ -1188,9 +1234,9 @@ def render_tabla_gmroi_evai(
         }
         if neg:
             evai_neg_filas = frozenset(neg)
-    fmt = {k: v for k, v in _FMT_METRICAS_SKU.items() if k in vista.columns}
+    fmt = _fmt_vista_gmroi(list(vista.columns))
     fs = max(TABLA_FONT_SIZE_MIN, min(_tabla_font_px(), 15))
-    anchos = {**_ANCHOS_GMROI_DEFECTO, **(anchos_manual or {})}
+    anchos = _anchos_vista_gmroi(anchos_manual)
     mostrar_tabla_html(
         vista.style.format(fmt),
         fs,

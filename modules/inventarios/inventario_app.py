@@ -603,6 +603,7 @@ def _sidebar_gmroi_evai(df: pd.DataFrame, params: dict) -> None:
     with st.expander("GMROI y EVAI", expanded=en_vista):
         st.caption(
             "GMROI = margen bruto ÷ valor inv. promedio · "
+            "% margen bruto e % ICC sobre ventas · "
             "EVAI = margen bruto − ICC asignado"
         )
         st.selectbox(
@@ -775,8 +776,10 @@ def vista_gmroi_evai(df: pd.DataFrame, params: dict) -> None:
         filtro_txt += f" · **Código:** {cod_filtro}"
     st.caption(
         "Fórmulas: valor inventario promedio = inventario promedio bultos × costo unitario bulto · "
-        "margen bruto total = ventas totales − ventas costo · "
+        "margen bruto = ventas totales − ventas costo · "
         "GMROI = margen bruto ÷ valor inventario promedio · "
+        "% margen bruto = margen bruto ÷ ventas totales · "
+        "% ICC = ICC asignado ÷ ventas totales · "
         "EVAI = margen bruto − ICC asignado"
     )
 

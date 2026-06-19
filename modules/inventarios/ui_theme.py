@@ -359,7 +359,7 @@ def _categoria_columna_ws(nombre: str) -> str:
         return "identidad"
     if "demanda mes" in cl:
         return "demanda"
-    if any(k in cl for k in ("ventas totales", "margen bruto total", "valor inventario", "icc asignado", "evai")):
+    if any(k in cl for k in ("ventas totales", "margen bruto", "valor inv. prom", "icc asignado", "evai", "% margen", "% icc")):
         return "financiero"
     if "costo" in cl and "margen" not in cl:
         return "costo"
@@ -1282,9 +1282,9 @@ def _estilo_celda_alternada(
     pad = _padding_celda(font_px)
     alto = max(38, int(font_px * 1.45))
     if es_header:
-        alto_hdr = max(44, int(font_px * 1.55))
+        alto_hdr = max(48, int(font_px * 1.75))
         base = (
-            f"font-size:{font_px}px;line-height:1.25;vertical-align:middle;"
+            f"font-size:{font_px}px;line-height:1.2;vertical-align:middle;"
             f"padding:{pad};min-height:{alto_hdr}px;height:auto;"
             f"box-sizing:border-box;border-bottom:1px solid #334155;"
         )
@@ -1316,7 +1316,7 @@ def _estilo_celda_alternada(
             sticky = f"position:sticky;top:0;left:{left_fijo}px;z-index:{z};{sombra}"
         elif col_i < WS_COLUMNAS_FIJAS:
             sticky = "position:sticky;top:0;z-index:35;"
-        wrap = "white-space:normal;word-break:break-word;overflow:visible;"
+        wrap = "white-space:nowrap;overflow:visible;text-overflow:clip;"
     else:
         bg, fg = PALETA_FILAS_ALTERNADAS[fila_i % len(PALETA_FILAS_ALTERNADAS)]
         peso = "font-weight:500;"
