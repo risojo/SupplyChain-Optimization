@@ -21,10 +21,10 @@ from audio_recorder_streamlit import audio_recorder
 # ==============================================================================
 # CONFIGURACIÓN GLOBAL DE LA APLICACIÓN
 # ==============================================================================
-st.set_page_config(page_title="LRI Analytics Pro", page_icon="📊", layout="wide")
+st.set_page_config(page_title="LRI Analytics Pro (prueba)", page_icon="📊", layout="wide")
 
 # ------------------------------------------------------------------------------
-# Escala visual FIJA de la interfaz (independiente del zoom del navegador).
+# Escala visual FIJA de la interfaz (independiente del zoom d++el navegador).
 # Garantiza que la app se vea igual en local y en Render para cualquier usuario,
 # sin que nadie tenga que tocar Ctrl +/-. Se expresa en PORCENTAJE de tamaño:
 #   100 = nativo, 95 = 5% reducido, 90 = 10% reducido, etc.
@@ -38,12 +38,11 @@ st.markdown(
 
 REF_VIEWPORT_W = 1920
 REF_VIEWPORT_H = 1080
-# profile1.py vive en modules/perfilado/. La raíz del proyecto está 2 niveles
-# arriba; los datos y los assets son carpetas compartidas en esa raíz.
+# profile2.py — copia temporal para pruebas (p. ej. info_canet.xlsx con encabezado en fila 2).
 _RAIZ_PROYECTO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-ARCHIVO_EXCEL_PATH = os.path.join(_RAIZ_PROYECTO, "data", "sources", "perfilado.xlsx")
+ARCHIVO_EXCEL_PATH = os.path.join(_RAIZ_PROYECTO, "data", "sources", "info_canet.xlsx")
 ARCHIVO_LOGO_LRI = os.path.join(_RAIZ_PROYECTO, "assets", "LRI_logo.png")
-TITULO_APP = "LRI Analytics Pro"
+TITULO_APP = "LRI Analytics Pro — prueba profile2"
 RESERVA_VERTICAL_REF = 320
 MSG_ARCHIVO_EXCEL_ABIERTO = (
     "Archivo abierto: cierre el archivo Excel en su computadora y vuelva a cargar la aplicación."
@@ -115,6 +114,7 @@ for key, val in ESTADOS_INICIALES.items():
 def _normalizar_nombres_columnas_df(df: pd.DataFrame) -> pd.DataFrame:
     """Unifica nombres de categoría / subcategoría al cargar cualquier Excel LRI."""
     df_out = df.copy()
+    df_out.columns = [str(c).strip() for c in df_out.columns]
     nuevos_nombres: dict = {}
     for col in df_out.columns:
         col_norm = col.lower().strip()
@@ -285,8 +285,42 @@ def _leer_bytes_archivo_excel(path: str) -> bytes:
     raise PermissionError(MSG_ARCHIVO_EXCEL_ABIERTO) from None
 
 
+def _es_celda_encabezado(val: object) -> bool:
+    if pd.isna(val):
+        return False
+    s = str(val).strip()
+    return bool(s) and not s.lower().startswith("unnamed")
+
+
+def _detectar_fila_encabezado_excel(file_bytes: bytes, max_filas: int = 15) -> int:
+    """Encuentra la fila de títulos cuando Excel trae filas vacías arriba (p. ej. info_canet)."""
+    vista = pd.read_excel(
+        io.BytesIO(file_bytes), engine="openpyxl", header=None, nrows=max_filas
+    )
+    mejor_i, mejor_n = 0, 0
+    for i in range(len(vista)):
+        n = sum(_es_celda_encabezado(v) for v in vista.iloc[i])
+        if n > mejor_n:
+            mejor_n, mejor_i = n, i
+    return mejor_i if mejor_n >= 3 else 0
+
+
+def _columnas_sin_encabezado_real(df: pd.DataFrame) -> bool:
+    if df.empty:
+        return True
+    cols = [str(c).strip() for c in df.columns]
+    return bool(cols) and all(
+        not c or c.lower().startswith("unnamed") for c in cols
+    )
+
+
 def _dataframe_desde_bytes_excel(file_bytes: bytes) -> pd.DataFrame:
-    return pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl")
+    df = pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl")
+    if _columnas_sin_encabezado_real(df):
+        fila_hdr = _detectar_fila_encabezado_excel(file_bytes)
+        df = pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl", header=fila_hdr)
+    df.columns = [str(c).strip() for c in df.columns]
+    return df.dropna(how="all").reset_index(drop=True)
 
 
 def cargar_datos() -> Tuple[Optional[pd.DataFrame], Optional[str]]:
@@ -2291,6 +2325,7 @@ def _mostrar_grafico_barras(
         include_plotlyjs="cdn",
         config={"displayModeBar": True, "responsive": False, "scrollZoom": False},
     )
+    # Un solo bloque HTML: Streamlit no anida st.plotly_chart dentro de st.markdown.
     wrapped = f"""
     <div class="lri-grafico-scroll-h" style="
         overflow-x:auto;overflow-y:hidden;width:100%;max-width:100%;
