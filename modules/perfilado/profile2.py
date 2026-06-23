@@ -89,6 +89,7 @@ ESTADOS_INICIALES = {
     "lri_man_eje_y2": METRICA_ADICIONAL_NINGUNA,
     "lri_man_operacion": "Suma",
     "lri_man_top_n": 0,
+    "lri_grafico_scroll_completo": False,
     "lri_default_seeded": False,
     "comando_voz_detectado": None,
     "drill_down_categoria": None,
@@ -1319,10 +1320,11 @@ def _altura_scroll_tabla_metricas(
     n_filas_grafico: Optional[int] = None,
     eje_x: str = "",
     max_label_len: int = 0,
+    ver_completo_pantalla: bool = False,
 ) -> int:
     """Altura del scroll alineada al gráfico (hasta el eje X, p. ej. «código»)."""
     n_chart = n_filas_grafico if n_filas_grafico is not None else n_filas
-    if _usar_scroll_horizontal_grafico(n_chart, eje_x, max_label_len):
+    if _scroll_grafico_activo(n_chart, eje_x, ver_completo_pantalla=ver_completo_pantalla):
         altura_graf = _altura_grafico_scroll_horizontal(n_chart, viewport_h)
     else:
         altura_graf = altura_grafico_adaptativa(n_chart, viewport_h)
@@ -1338,6 +1340,7 @@ def _preparar_tabla_metricas_detalle(
     viewport_h: int = 1080,
     tabla_font_size: int = 14,
     eje_y2: Optional[str] = None,
+    ver_completo_pantalla: bool = False,
 ) -> Tuple[pd.DataFrame, list, str, int]:
     """
     Arma la tabla lateral: dimensión + métrica(s); código + producto si aplica.
@@ -1385,6 +1388,7 @@ def _preparar_tabla_metricas_detalle(
         viewport_h,
         eje_x=eje_x,
         max_label_len=max_label_len,
+        ver_completo_pantalla=ver_completo_pantalla,
     )
     return out, columnas, clase_css, altura_scroll
 
@@ -2208,13 +2212,18 @@ def _tipo_dimension_catalogo(eje_x: str) -> str:
     return "otro"
 
 
+def _eje_x_es_codigo_o_descripcion(eje_x: str) -> bool:
+    """Solo código o descripción/producto admiten gráfico extendido manual."""
+    return _tipo_dimension_catalogo(eje_x) in ("codigo", "descripcion")
+
+
 def _umbral_scroll_dimension(tipo: str) -> int:
-    """Cuántas barras activan scroll según tipo de dimensión."""
+    """Cuántas barras activan scroll según tipo de dimensión (visualización extendida)."""
     return {
-        "categoria": 10,
-        "subcategoria": 9,
-        "codigo": 6,
-        "descripcion": 5,
+        "categoria": 15,
+        "subcategoria": 20,
+        "codigo": 35,
+        "descripcion": 35,
     }.get(tipo, 8)
 
 
@@ -2243,9 +2252,13 @@ def _px_por_barra_dimension(
 
 
 def _ancho_figura_barras(
-    n: int, *, dual: bool = False, eje_x: str = "", max_label_len: int = 0
+    n: int,
+    *,
+    dual: bool = False,
+    eje_x: str = "",
+    max_label_len: int = 0,
 ) -> int:
-    """Ancho total del gráfico: barras más anchas + scroll horizontal."""
+    """Ancho total del gráfico extendido con scroll horizontal."""
     px = _px_por_barra_dimension(n, dual=dual, eje_x=eje_x, max_label_len=max_label_len)
     return max(960, int(n * px + 160))
 
@@ -2294,29 +2307,60 @@ def _margen_inferior_grafico(n: int, eje_x: str = "", max_label_len: int = 0) ->
     return 72 + extra // 3
 
 
-def _usar_scroll_horizontal_grafico(n: int, eje_x: str = "", max_label_len: int = 0) -> bool:
-    """Scroll horizontal para muchas categorías, subcategorías, códigos o descripciones."""
+def _ver_grafico_completo_en_pantalla(eje_x: str) -> bool:
+    """True si el usuario pidió ver todo el gráfico en pantalla (sin scroll)."""
+    if not _eje_x_es_codigo_o_descripcion(eje_x):
+        return False
+    return bool(st.session_state.get("lri_grafico_scroll_completo", False))
+
+
+def _scroll_grafico_activo(
+    n: int, eje_x: str = "", *, ver_completo_pantalla: bool = False
+) -> bool:
+    """¿Usar gráfico extendido con scroll horizontal? False = todo visible en pantalla."""
+    if n < 2:
+        return False
     tipo = _tipo_dimension_catalogo(eje_x)
+    if tipo in ("codigo", "descripcion"):
+        if ver_completo_pantalla:
+            return False
+        return n > _umbral_scroll_dimension(tipo)
     if tipo == "otro":
         return n > 8
-    if n > _umbral_scroll_dimension(tipo):
-        return True
-    if tipo in ("codigo", "descripcion") and max_label_len > 16 and n >= 4:
-        return True
-    if tipo == "descripcion" and max_label_len > 24 and n >= 3:
-        return True
-    return False
+    return n > _umbral_scroll_dimension(tipo)
+
+
+def _usar_scroll_horizontal_grafico(
+    n: int, eje_x: str = "", max_label_len: int = 0, *, ver_completo_pantalla: bool = False
+) -> bool:
+    """Compatibilidad: delega en _scroll_grafico_activo."""
+    return _scroll_grafico_activo(n, eje_x, ver_completo_pantalla=ver_completo_pantalla)
 
 
 def _mostrar_grafico_barras(
-    fig: go.Figure, n_barras: int, *, dual: bool = False, eje_x: str = "", max_label_len: int = 0
+    fig: go.Figure,
+    n_barras: int,
+    *,
+    dual: bool = False,
+    eje_x: str = "",
+    max_label_len: int = 0,
+    ver_completo_pantalla: bool = False,
 ) -> None:
-    """Render con scroll horizontal cuando hay muchas categorías / códigos / descripciones."""
-    if not _usar_scroll_horizontal_grafico(n_barras, eje_x, max_label_len):
+    """Render: scroll extendido o gráfico completo ajustado al ancho visible."""
+    scroll_activo = _scroll_grafico_activo(
+        n_barras, eje_x, ver_completo_pantalla=ver_completo_pantalla
+    )
+    if not scroll_activo:
+        fig.update_layout(autosize=True, width=None)
         st.plotly_chart(fig, use_container_width=True)
         return
 
-    ancho = _ancho_figura_barras(n_barras, dual=dual, eje_x=eje_x, max_label_len=max_label_len)
+    ancho = _ancho_figura_barras(
+        n_barras,
+        dual=dual,
+        eje_x=eje_x,
+        max_label_len=max_label_len,
+    )
     altura = int(fig.layout.height or _altura_grafico_scroll_horizontal(n_barras, REF_VIEWPORT_H))
     fig.update_layout(width=ancho, height=altura, autosize=False)
 
@@ -2453,6 +2497,7 @@ def fig_ranking_barras(
     y2_es_tasa_mantenimiento: bool = False,
     y2_escala_0_100: bool = False,
     y2_en_eje_secundario: bool = False,
+    ver_completo_pantalla: bool = False,
 ) -> go.Figure:
     n = len(df_resumen)
     chart_col_px = max(260, int((REF_VIEWPORT_W - 96) * 0.66))
@@ -2542,7 +2587,7 @@ def fig_ranking_barras(
 
     xs_cat = df_resumen[col_cat].astype(str)
     max_label_len = int(xs_cat.str.len().max()) if len(xs_cat) else 0
-    scroll_h = _usar_scroll_horizontal_grafico(n, col_cat, max_label_len)
+    scroll_h = _scroll_grafico_activo(n, col_cat, ver_completo_pantalla=ver_completo_pantalla)
     bargap, bargroupgap = _bargap_por_n(n, dual=tiene_metrica_2)
     angulo_x = _angulo_etiquetas_x_grafico(n, col_cat, max_label_len)
     margen_b = _margen_inferior_grafico(n, col_cat, max_label_len)
@@ -2643,13 +2688,18 @@ def fig_ranking_barras(
             layout_kw["yaxis2"]["showgrid"] = False
             layout_kw["margin"]["r"] = max(layout_kw["margin"]["r"], 88)
     ancho_scroll = _ancho_figura_barras(
-        n, dual=tiene_metrica_2, eje_x=col_cat, max_label_len=max_label_len
+        n,
+        dual=tiene_metrica_2,
+        eje_x=col_cat,
+        max_label_len=max_label_len,
     )
     if scroll_h:
         layout_kw["width"] = ancho_scroll
         layout_kw["autosize"] = False
     elif ancho_fig_px is not None:
         layout_kw["width"] = ancho_fig_px
+    elif ver_completo_pantalla:
+        layout_kw["autosize"] = True
     elif not pareto_activo:
         layout_kw["width"] = chart_col_px
 
@@ -2710,6 +2760,7 @@ def render_perfilado_manual_panel(
     operacion_real = st.session_state["lri_man_operacion"]
     top_n_real = st.session_state["lri_man_top_n"]
     set_pareto_real = st.session_state["lri_pareto_set"]
+    ver_completo_graf = _ver_grafico_completo_en_pantalla(eje_x_real or "")
 
     if st.session_state["drill_down_categoria"]:
         if st.button("⬅️ Volver a vista general (Categorías)"):
@@ -2838,6 +2889,7 @@ def render_perfilado_manual_panel(
         viewport_h_ui,
         tabla_font_size,
         eje_y2=eje_y2_grafico,
+        ver_completo_pantalla=ver_completo_graf,
     )
     df_export = _preparar_df_exportacion_perfil(
         df_resumen_tabla,
@@ -2996,6 +3048,7 @@ def render_perfilado_manual_panel(
         y2_es_tasa_mantenimiento=y2_tasa_mant,
         y2_escala_0_100=y2_escala_0_100,
         y2_en_eje_secundario=y2_en_eje_secundario,
+        ver_completo_pantalla=ver_completo_graf,
     )
 
     n_barras_graf = len(df_resumen)
@@ -3009,7 +3062,12 @@ def render_perfilado_manual_panel(
     if pareto_activo_prev:
         with col_chart:
             _mostrar_grafico_barras(
-                fig, n_barras_graf, dual=dual_graf, eje_x=eje_x_real, max_label_len=max_label_graf
+                fig,
+                n_barras_graf,
+                dual=dual_graf,
+                eje_x=eje_x_real,
+                max_label_len=max_label_graf,
+                ver_completo_pantalla=ver_completo_graf,
             )
         with col_sum:
             st.markdown(
@@ -3029,7 +3087,12 @@ def render_perfilado_manual_panel(
     else:
         with col_chart:
             _mostrar_grafico_barras(
-                fig, n_barras_graf, dual=dual_graf, eje_x=eje_x_real, max_label_len=max_label_graf
+                fig,
+                n_barras_graf,
+                dual=dual_graf,
+                eje_x=eje_x_real,
+                max_label_len=max_label_graf,
+                ver_completo_pantalla=ver_completo_graf,
             )
 
 
@@ -3144,6 +3207,16 @@ if df is not None:
             step=5,
             key="lri_man_top_n",
         )
+        if _eje_x_es_codigo_o_descripcion(st.session_state.get("lri_man_eje_x") or ""):
+            st.checkbox(
+                "Ver gráfico completo en pantalla (sin scroll)",
+                key="lri_grafico_scroll_completo",
+                help=(
+                    "Marcado: todas las barras se ajustan al ancho visible, sin barra de desplazamiento. "
+                    "Desmarcado: con más de 35 ítems se usa scroll horizontal para barras más legibles."
+                ),
+                on_change=st.rerun,
+            )
         forzar_sincronizacion_espejo()
 
         st.divider()
