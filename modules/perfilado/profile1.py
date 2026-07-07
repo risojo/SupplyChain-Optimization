@@ -106,7 +106,7 @@ MAPEO_PARETO_LEGACY = {
 
 METRICA_ADICIONAL_NINGUNA = "— Ninguna —"
 # Bump al desplegar: limpia sesiones web con datos/ejes de builds anteriores.
-LRI_PROFILE_REVISION = "2025-07-07-canet"
+LRI_PROFILE_REVISION = "2025-07-07-datos"
 
 # Inicialización del Estado de la Sesión
 ESTADOS_INICIALES = {
@@ -136,6 +136,7 @@ ESTADOS_INICIALES = {
     "lri_excel_bytes": None,
     "lri_excel_hojas": [],
     "lri_excel_hoja_activa": None,
+    "lri_mostrar_excel_completo": False,
 }
 
 for key, val in ESTADOS_INICIALES.items():
@@ -258,6 +259,7 @@ def _resetear_estado_tras_nuevo_archivo() -> None:
     st.session_state["drill_down_categoria"] = None
     st.session_state.pop("lri_aplicar_voz_pendiente", None)
     st.session_state.pop("_lri_pending_man_eje_x", None)
+    st.session_state["lri_mostrar_excel_completo"] = False
 
 
 def _sincronizar_revision_perfil() -> None:
@@ -313,10 +315,34 @@ def _ajustar_ejes_a_dataframe(df: pd.DataFrame) -> None:
         st.session_state["lri_man_eje_y"] = _resolver_eje_y_default(df)
 
 
+def _es_hoja_excluida_perfil(nombre: str) -> bool:
+    """Hojas de configuración (p. ej. Parámetros de Inventario Pro) no aplican a Profile Pro."""
+    key = _norm_texto(nombre)
+    return any(
+        t in key
+        for t in (
+            "parametro",
+            "parameter",
+            "config",
+            "configuracion",
+            "readme",
+            "instruc",
+            "leenda",
+            "nota",
+            "plantilla",
+            "template",
+        )
+    )
+
+
+def _filtrar_hojas_perfil(hojas: Iterable[str]) -> list[str]:
+    return [h for h in hojas if not _es_hoja_excluida_perfil(h)]
+
+
 def _ajuste_puntuacion_nombre_hoja(nombre: str) -> float:
     key = _norm_texto(nombre)
-    if any(t in key for t in ("parametro", "parameter", "config", "readme", "instruc", "leenda", "nota")):
-        return -50.0
+    if _es_hoja_excluida_perfil(nombre):
+        return -100.0
     if any(t in key for t in ("actual", "dato", "data", "producto", "inventario", "venta", "catalogo")):
         return 20.0
     return 0.0
@@ -339,10 +365,13 @@ def _puntuacion_hoja_datos(df: pd.DataFrame) -> float:
     return score
 
 
-def _elegir_hoja_datos_automatica(xl: pd.ExcelFile) -> str:
-    mejor_hoja = xl.sheet_names[0]
+def _elegir_hoja_datos_automatica(xl: pd.ExcelFile, hojas_datos: Optional[list[str]] = None) -> str:
+    candidatas = hojas_datos if hojas_datos is not None else _filtrar_hojas_perfil(xl.sheet_names)
+    if not candidatas:
+        return xl.sheet_names[0]
+    mejor_hoja = candidatas[0]
     mejor_score = -1.0
-    for nombre in xl.sheet_names:
+    for nombre in candidatas:
         try:
             df_raw = pd.read_excel(xl, sheet_name=nombre)
             score = _puntuacion_hoja_datos(df_raw) + _ajuste_puntuacion_nombre_hoja(nombre)
@@ -360,14 +389,18 @@ def _cargar_dataframe_excel(
 ) -> Tuple[Optional[pd.DataFrame], Optional[str], list[str], Optional[str]]:
     try:
         xl = pd.ExcelFile(io.BytesIO(file_bytes), engine="openpyxl")
-        hojas = xl.sheet_names
+        hojas = _filtrar_hojas_perfil(xl.sheet_names)
         if not hojas:
-            return None, "El archivo Excel no contiene hojas.", [], None
-        hoja_activa = (
-            sheet_name
-            if sheet_name in hojas
-            else _elegir_hoja_datos_automatica(xl)
-        )
+            return (
+                None,
+                "El archivo solo contiene hojas de configuración (p. ej. Parámetros). "
+                "Profile Pro necesita una hoja con datos de productos.",
+                [],
+                None,
+            )
+        hoja_activa = sheet_name if sheet_name in hojas else None
+        if hoja_activa is None:
+            hoja_activa = _elegir_hoja_datos_automatica(xl, hojas)
         df_read = pd.read_excel(xl, sheet_name=hoja_activa)
         return _normalizar_nombres_columnas_df(df_read), None, hojas, hoja_activa
     except Exception as e:
@@ -3401,6 +3434,48 @@ def _mostrar_error_perfil_no_computable(aviso: Optional[str] = None) -> None:
         st.error(MSG_PERFIL_NO_COMPUTABLE)
 
 
+def _render_vista_excel_completo(df: pd.DataFrame) -> None:
+    """Tabla completa del Excel cargado (mismo concepto que Base de datos en Inventario Pro)."""
+    hoja = st.session_state.get("lri_excel_hoja_activa") or "datos"
+    st.markdown("##### 📋 Archivo Excel cargado")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Filas", f"{len(df):,}")
+    c2.metric("Columnas", f"{len(df.columns):,}")
+    if "categoria" in df.columns:
+        c3.metric("Categorías", f"{df['categoria'].nunique():,}")
+    else:
+        c3.metric("Hoja", hoja)
+    if "codigo" in df.columns:
+        c4.metric("SKUs / códigos", f"{df['codigo'].nunique():,}")
+    elif _resolver_columna_existente(df, "descripcion", "descripción"):
+        col_desc = _resolver_columna_existente(df, "descripcion", "descripción")
+        c4.metric("Productos", f"{df[col_desc].nunique():,}" if col_desc else "—")
+    else:
+        c4.metric("Hoja activa", hoja)
+    st.caption(
+        f"Vista completa de la hoja **{hoja}** ({len(df):,} filas × {len(df.columns)} columnas). "
+        "Desplácese horizontal y verticalmente para revisar todos los registros."
+    )
+    st.dataframe(df, use_container_width=True, height=420, hide_index=True)
+    col_csv, col_xlsx = st.columns(2)
+    col_csv.download_button(
+        "Descargar CSV",
+        data=df.to_csv(index=False).encode("utf-8"),
+        file_name=f"profile_pro_{_norm_texto(hoja) or 'datos'}.csv",
+        use_container_width=True,
+    )
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name=hoja[:31] or "datos", index=False)
+    col_xlsx.download_button(
+        "Descargar Excel",
+        data=buffer.getvalue(),
+        file_name=f"profile_pro_{_norm_texto(hoja) or 'datos'}.xlsx",
+        use_container_width=True,
+    )
+    st.divider()
+
+
 def render_perfilado_manual_panel(
     df: pd.DataFrame,
     viewport_h_ui: int,
@@ -3812,7 +3887,7 @@ if df is not None:
                 "Hoja del Excel",
                 options=hojas_excel,
                 index=idx_hoja,
-                help="Profile Pro elige automáticamente la hoja con más datos; puede cambiarla aquí.",
+                help="Solo hojas de datos (se omiten Parámetros y configuración).",
             )
             if hoja_elegida != hoja_activa:
                 bytes_hoja = _obtener_bytes_excel_activos()
@@ -3832,7 +3907,13 @@ if df is not None:
                         )
                         st.rerun()
         elif hoja_activa:
-            st.caption(f"Hoja: {hoja_activa}")
+            st.caption(f"Hoja de datos: {hoja_activa}")
+
+        st.toggle(
+            "Ver archivo Excel completo",
+            key="lri_mostrar_excel_completo",
+            help="Muestra la tabla completa cargada, como «Base de datos» en Inventario Pro.",
+        )
 
         _render_control_voz_sidebar(df)
 
@@ -4091,6 +4172,8 @@ if df is not None:
     if df is not None:
         _sembrar_ejes_default_si_corresponde(df)
         _ajustar_ejes_a_dataframe(df)
+        if st.session_state.get("lri_mostrar_excel_completo"):
+            _render_vista_excel_completo(df)
 
     render_perfilado_manual_panel(
         df=df,
