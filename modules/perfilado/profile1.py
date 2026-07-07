@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import html
 import io
 import os
 import re
@@ -3572,6 +3573,116 @@ def _mostrar_error_perfil_no_computable(aviso: Optional[str] = None) -> None:
         st.error(MSG_PERFIL_NO_COMPUTABLE)
 
 
+# --- Vista Excel completa: estilo Wall Street (cabecera negra, filas alternadas) ---
+_EXCEL_WS_HEADER_BG = "#000000"
+_EXCEL_WS_HEADER_FG = "#ffffff"
+_EXCEL_WS_FILAS: tuple[tuple[str, str], ...] = (
+    ("#0c4a6e", "#ffffff"),
+    ("#334155", "#ffffff"),
+)
+_EXCEL_WS_FONDO = "#05080f"
+_EXCEL_WS_BORDE = "#1e3a5f"
+_EXCEL_FILAS_VISIBLES_SCROLL = 22
+
+
+def _formatear_celda_excel_ws(val: object) -> str:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return ""
+    if isinstance(val, (int, np.integer)):
+        return f"{int(val):,}"
+    if isinstance(val, (float, np.floating)):
+        v = float(val)
+        if abs(v) >= 1000:
+            return f"{v:,.0f}"
+        if 0 < abs(v) < 1:
+            return f"{v:.2%}"
+        return f"{v:,.2f}" if abs(v) < 100 else f"{v:,.0f}"
+    return str(val).strip()
+
+
+def _altura_contenedor_tabla_excel(n_filas: int, font_px: int) -> int:
+    alto_hdr = max(48, int(font_px * 1.75))
+    alto_fila = max(36, int(font_px * 1.4))
+    visible = min(n_filas, _EXCEL_FILAS_VISIBLES_SCROLL)
+    return int(min(720, max(420, alto_hdr + 12 + visible * alto_fila)))
+
+
+def _css_tabla_excel_wall_street(altura_px: int) -> str:
+    return f"""
+<style>
+.lri-excel-ws-scroll {{
+    overflow-x: auto;
+    overflow-y: auto;
+    max-height: {altura_px}px;
+    background: {_EXCEL_WS_FONDO};
+    border: 1px solid {_EXCEL_WS_BORDE};
+    border-radius: 8px;
+    box-shadow: inset 0 0 0 1px #0f172a, 0 4px 20px rgba(0,0,0,0.4);
+    scrollbar-width: auto;
+    scrollbar-color: #3b82f6 #0a0f1a;
+}}
+.lri-excel-ws-scroll::-webkit-scrollbar {{
+    height: 14px;
+    width: 12px;
+}}
+.lri-excel-ws-scroll::-webkit-scrollbar-track {{
+    background: #0a0f1a;
+}}
+.lri-excel-ws-scroll::-webkit-scrollbar-thumb {{
+    background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%);
+    border-radius: 6px;
+}}
+.lri-excel-ws-table {{
+    border-collapse: collapse;
+    width: max-content;
+    min-width: 100%;
+}}
+.lri-excel-ws-table thead th {{
+    position: sticky;
+    top: 0;
+    z-index: 12;
+    background: {_EXCEL_WS_HEADER_BG} !important;
+    color: {_EXCEL_WS_HEADER_FG} !important;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    box-shadow: 0 2px 0 #333333;
+}}
+.lri-excel-ws-table td {{
+    font-weight: 500;
+}}
+</style>
+"""
+
+
+def _html_tabla_excel_wall_street(df: pd.DataFrame, font_px: int) -> str:
+    cols = list(df.columns)
+    pad = f"{max(5, font_px // 3)}px {max(8, font_px // 2 + 2)}px"
+    alto_fila = max(36, int(font_px * 1.4))
+
+    thead = "<thead><tr>" + "".join(
+        f'<th style="padding:{pad};text-align:left;white-space:normal;'
+        f'line-height:1.25;vertical-align:middle;">{html.escape(str(c))}</th>'
+        for c in cols
+    ) + "</tr></thead>"
+
+    filas: list[str] = []
+    for i, (_, row) in enumerate(df.iterrows()):
+        bg, fg = _EXCEL_WS_FILAS[i % 2]
+        celdas = "".join(
+            f'<td style="background:{bg};color:{fg};font-size:{font_px}px;'
+            f'padding:{pad};min-height:{alto_fila}px;line-height:1.35;'
+            f'border-bottom:1px solid #1e293b;vertical-align:middle;">'
+            f"{html.escape(_formatear_celda_excel_ws(row[c]))}</td>"
+            for c in cols
+        )
+        filas.append(f"<tr>{celdas}</tr>")
+
+    return (
+        f'<table class="lri-excel-ws-table" style="font-size:{font_px}px;">'
+        f"{thead}<tbody>{''.join(filas)}</tbody></table>"
+    )
+
+
 def _render_vista_excel_completo(df: pd.DataFrame) -> None:
     """Tabla completa del Excel cargado (mismo concepto que Base de datos en Inventario Pro)."""
     hoja = st.session_state.get("lri_excel_hoja_activa") or "datos"
@@ -3592,9 +3703,17 @@ def _render_vista_excel_completo(df: pd.DataFrame) -> None:
         c4.metric("Hoja activa", hoja)
     st.caption(
         f"Vista completa de la hoja **{hoja}** ({len(df):,} filas × {len(df.columns)} columnas). "
-        "Desplácese horizontal y verticalmente para revisar todos los registros."
+        "Cabecera negra · filas alternadas azul marino y gris (estilo terminal financiero). "
+        "Desplácese dentro del recuadro para revisar todos los registros."
     )
-    st.dataframe(df, use_container_width=True, height=420, hide_index=True)
+    font_px = max(11, int(st.session_state.get("lri_tabla_fontsize", 13)))
+    altura_px = _altura_contenedor_tabla_excel(len(df), font_px)
+    st.markdown(_css_tabla_excel_wall_street(altura_px), unsafe_allow_html=True)
+    tabla_html = _html_tabla_excel_wall_street(df, font_px)
+    st.markdown(
+        f'<div class="lri-excel-ws-scroll">{tabla_html}</div>',
+        unsafe_allow_html=True,
+    )
     col_csv, col_xlsx = st.columns(2)
     col_csv.download_button(
         "Descargar CSV",
