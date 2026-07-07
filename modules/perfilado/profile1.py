@@ -105,6 +105,8 @@ MAPEO_PARETO_LEGACY = {
 }
 
 METRICA_ADICIONAL_NINGUNA = "— Ninguna —"
+# Bump al desplegar: limpia sesiones web con datos/ejes de builds anteriores.
+LRI_PROFILE_REVISION = "2025-07-07-canet"
 
 # Inicialización del Estado de la Sesión
 ESTADOS_INICIALES = {
@@ -186,19 +188,55 @@ def _columnas_numericas_usables(df: pd.DataFrame) -> list:
     ]
 
 
+def _columna_parece_dimension_eje_y(nombre: str) -> bool:
+    """Evita usar proveedor/país/etc. como métrica aunque Excel los guarde como número."""
+    key = _norm_texto(nombre)
+    return any(
+        t in key
+        for t in (
+            "proveedor",
+            "pais",
+            "categoria",
+            "subcategoria",
+            "codigo",
+            "descripcion",
+            "producto",
+            "sku",
+            "articulo",
+            "nombre",
+        )
+    )
+
+
+def _columnas_metricas_y_preferidas(df: pd.DataFrame) -> list[str]:
+    return [
+        c
+        for c in _columnas_numericas_usables(df)
+        if not _columna_parece_dimension_eje_y(c)
+    ]
+
+
 def _resolver_eje_y_default(df: pd.DataFrame) -> Optional[str]:
     for candidato in (
         "ventas totales",
+        "ventas totales $",
         "ventas total",
+        "unidades vendidas anual",
         "bultos vendidos",
+        "demanda unid mes 12",
+        "demanda unid mes 1",
         "margen bruto total",
+        "margen bruto",
         "margen utilidad",
         "ventas costo",
+        "costo de ventas $",
+        "rotacion unidades",
+        "inventario promedio en unidades",
     ):
         hit = _resolver_columna_existente(df, candidato)
         if hit is not None:
             return hit
-    cols_num = _columnas_numericas_usables(df)
+    cols_num = _columnas_metricas_y_preferidas(df)
     return cols_num[0] if cols_num else None
 
 
@@ -220,6 +258,20 @@ def _resetear_estado_tras_nuevo_archivo() -> None:
     st.session_state["drill_down_categoria"] = None
     st.session_state.pop("lri_aplicar_voz_pendiente", None)
     st.session_state.pop("_lri_pending_man_eje_x", None)
+
+
+def _sincronizar_revision_perfil() -> None:
+    """Tras un deploy, evita que la sesión del navegador conserve hojas/ejes obsoletos."""
+    if st.session_state.get("lri_profile_revision") == LRI_PROFILE_REVISION:
+        return
+    st.session_state["lri_profile_revision"] = LRI_PROFILE_REVISION
+    st.session_state.pop("lri_df_datos", None)
+    st.session_state.pop("lri_error_carga", None)
+    st.session_state.pop("lri_upload_id", None)
+    st.session_state.pop("lri_excel_bytes", None)
+    st.session_state.pop("lri_excel_hojas", None)
+    st.session_state.pop("lri_excel_hoja_activa", None)
+    _resetear_estado_tras_nuevo_archivo()
 
 
 def _sembrar_ejes_default_si_corresponde(df: pd.DataFrame) -> None:
@@ -3680,6 +3732,8 @@ def render_perfilado_manual_panel(
 # ==============================================================================
 # CONTROL DE FLUJO Y ORQUESTACIÓN PRINCIPAL
 # ==============================================================================
+_sincronizar_revision_perfil()
+
 if "lri_df_datos" not in st.session_state:
     _df0, _err0, _hojas0, _hoja0 = cargar_datos()
     _aplicar_resultado_carga_a_sesion(_df0, _err0, _hojas0, _hoja0)
@@ -4031,6 +4085,12 @@ if df is not None:
         unsafe_allow_html=True,
     )
     _render_cabecera_app(subtitulo_panel)
+
+    # Tras la carga en sidebar, re-sincronizar df y ejes antes del gráfico.
+    df = st.session_state.get("lri_df_datos")
+    if df is not None:
+        _sembrar_ejes_default_si_corresponde(df)
+        _ajustar_ejes_a_dataframe(df)
 
     render_perfilado_manual_panel(
         df=df,
