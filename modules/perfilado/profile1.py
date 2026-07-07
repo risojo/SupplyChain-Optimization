@@ -1585,7 +1585,34 @@ def _info_presentacion_formato_eje_y(
     return es_pct, _porcentaje_en_escala_0_100(fuente[eje_y]), False
 
 
-def _formatear_valor_porcentaje(val: float, escala_0_100: bool) -> str:
+def _es_margen_utilidad_porcentaje(eje_y: str, df: Optional[pd.DataFrame] = None) -> bool:
+    """Margen de utilidad % (enteros); no utilidad bruta $ ni tasa de costo inventario."""
+    if _es_utilidad_bruta_monetaria(eje_y):
+        return False
+    if df is not None and _metrica_margen_sobre_ventas(df, eje_y):
+        return True
+    if _metrica_costo_mantener_pct(df if df is not None else pd.DataFrame(), eje_y):
+        return False
+    n = _norm_texto(eje_y)
+    if "margen" in n and "utilidad" in n:
+        return True
+    return any(
+        p in n
+        for p in (
+            "margenutilidad",
+            "margendautilidad",
+            "margenutilidadventas",
+            "porcentajeutilidad",
+        )
+    )
+
+
+def _formatear_valor_porcentaje(
+    val: float, escala_0_100: bool, *, eje_y: str = ""
+) -> str:
+    if eje_y and _es_margen_utilidad_porcentaje(eje_y):
+        pct = int(round(val if escala_0_100 else val * 100))
+        return f"{pct}%"
     if escala_0_100:
         return f"{val:.2f}%"
     return f"{val:.2%}"
@@ -1596,7 +1623,16 @@ def _formatear_valor_miles(val: float) -> str:
     return f"{int(round(float(val) / 1000.0)):,}"
 
 
-def _fmt_pandas_columna_porcentaje(escala_0_100: bool) -> str:
+def _fmt_pandas_columna_porcentaje(escala_0_100: bool, eje_y: str = ""):
+    if eje_y and _es_margen_utilidad_porcentaje(eje_y):
+
+        def _fmt_entero(v: object) -> str:
+            if pd.isna(v):
+                return ""
+            x = float(v)
+            return f"{int(round(x if escala_0_100 else x * 100))}%"
+
+        return _fmt_entero
     return "{:.2f}%" if escala_0_100 else "{:.2%}"
 
 
@@ -1637,7 +1673,7 @@ def calcular_metricas_encabezado(
         label = (
             f"{'Total' if operacion == 'Suma' else 'Promedio'} {eje_y} (% sobre ventas)"
         )
-        val_formateado = _formatear_valor_porcentaje(val_total, False)
+        val_formateado = _formatear_valor_porcentaje(val_total, False, eje_y=eje_y)
         return label, val_formateado
 
     if _metrica_costo_mantener_pct(df_filtrado, eje_y):
@@ -1645,7 +1681,7 @@ def calcular_metricas_encabezado(
         val_total = float(s.mean()) if len(s) else 0.0
         label = f"Tasa media {eje_y}"
         val_formateado = _formatear_valor_porcentaje(
-            val_total, _porcentaje_en_escala_0_100(s)
+            val_total, _porcentaje_en_escala_0_100(s), eje_y=eje_y
         )
         return label, val_formateado
 
@@ -1658,7 +1694,7 @@ def calcular_metricas_encabezado(
         else:
             val_total = float(s.mean()) if len(s) else 0.0
             label = f"Promedio {eje_y}"
-        return label, _formatear_valor_porcentaje(val_total, escala)
+        return label, _formatear_valor_porcentaje(val_total, escala, eje_y=eje_y)
 
     if operacion == "Suma":
         val_total = df_filtrado[eje_y].sum() if eje_y in df_filtrado.columns else 0
@@ -1674,7 +1710,7 @@ def calcular_metricas_encabezado(
             val_formateado = _formatear_valor_miles(val_total)
         elif _metrica_eje_y_en_porcentaje(df_filtrado, eje_y):
             escala = _porcentaje_en_escala_0_100(df_filtrado[eje_y])
-            val_formateado = _formatear_valor_porcentaje(val_total, escala)
+            val_formateado = _formatear_valor_porcentaje(val_total, escala, eje_y=eje_y)
         else:
             val_formateado = f"{val_total:,.2f}"
 
@@ -1696,9 +1732,10 @@ def _formatear_valor_kpi_eje_y(
     y_pct: bool,
     escala_0_100: bool = False,
     y_miles: bool = False,
+    eje_y: str = "",
 ) -> str:
     if y_pct:
-        return _formatear_valor_porcentaje(val, escala_0_100)
+        return _formatear_valor_porcentaje(val, escala_0_100, eje_y=eje_y)
     if y_miles:
         return _formatear_valor_miles(val)
     if abs(val) < 100:
@@ -1972,7 +2009,12 @@ def _aplicar_estilo_celdas_html(
     estilos_por_celda: Optional[list[list[str]]] = None,
 ) -> str:
     """Font-size inline en th/td (Streamlit ignora CSS externo al quitar el <style> de pandas)."""
-    estilo_th = f"font-size:{fs}px;color:#ffffff;text-align:left;"
+    estilo_th = (
+        f"font-size:{fs}px;color:#ffffff;text-align:left;"
+        "position:sticky;top:0;z-index:25;"
+        "background-color:#000000;background-clip:padding-box;"
+        "box-shadow:0 2px 0 #333333;"
+    )
     estilo_td = f"font-size:{fs}px;color:#f8fafc;text-align:center;"
 
     html = re.sub(
@@ -2075,8 +2117,24 @@ def _css_tabla_metricas(dims: dict[str, Any], fluido: bool = False) -> str:
         f"border-collapse: collapse !important;",
         "background-color: #131722 !important;",
         "}",
+        ".lri-tabla-wrap .lri-html-table-scroll-container {",
+        "overflow-x: auto !important;",
+        "overflow-y: auto !important;",
+        "overscroll-behavior: contain;",
+        "-webkit-overflow-scrolling: touch;",
+        "}",
+        ".lri-tabla-wrap table.lri-perfil-table thead th {",
+        "position: sticky !important;",
+        "top: 0 !important;",
+        "z-index: 25 !important;",
+        "background-color: #000000 !important;",
+        "color: #ffffff !important;",
+        "background-clip: padding-box !important;",
+        "box-shadow: 0 2px 0 #333333;",
+        "}",
         ".lri-tabla-wrap table.lri-perfil-table th {",
-        "background-color: #1e293b !important;",
+        "background-color: #000000 !important;",
+        "color: #ffffff !important;",
         "font-weight: 600 !important;",
         "text-align: left !important;",
         f"padding: {dims['pad_v']}px {dims['pad_h']}px !important;",
@@ -2301,7 +2359,9 @@ def _mostrar_resumen_pareto_ejecutivo(
         unidad = _etiqueta_unidad_eje_x(eje_x)
         p1, p2, p3, total = _participacion_tramos_pareto(df_resumen, eje_y, n1, n2, n3)
         if y_en_porcentaje:
-            fmt_val = lambda x: _formatear_valor_porcentaje(x, y_escala_0_100)
+            fmt_val = lambda x: _formatear_valor_porcentaje(
+                x, y_escala_0_100, eje_y=eje_y
+            )
         elif y_miles:
             fmt_val = _formatear_valor_miles
         else:
@@ -2750,7 +2810,9 @@ def _preparar_df_exportacion_perfil(
     if y_pct and eje_y in export.columns:
         vals = pd.to_numeric(export[eje_y], errors="coerce")
         export[eje_y] = vals.map(
-            lambda x: _formatear_valor_porcentaje(float(x), y_escala) if pd.notna(x) else ""
+            lambda x: _formatear_valor_porcentaje(float(x), y_escala, eje_y=eje_y)
+            if pd.notna(x)
+            else ""
         )
     elif y_miles and eje_y in export.columns:
         vals = pd.to_numeric(export[eje_y], errors="coerce")
@@ -2765,7 +2827,9 @@ def _preparar_df_exportacion_perfil(
         if col_pct:
             vals_col = pd.to_numeric(export[col], errors="coerce")
             export[col] = vals_col.map(
-                lambda x, esc=col_escala: _formatear_valor_porcentaje(float(x), esc)
+                lambda x, esc=col_escala, c=col: _formatear_valor_porcentaje(
+                    float(x), esc, eje_y=c
+                )
                 if pd.notna(x)
                 else ""
             )
@@ -2850,20 +2914,25 @@ def _textfont_etiqueta_barras(fs: int, color: str) -> dict[str, Any]:
 
 
 def _texttemplates_valores_barras(
-    series: list[tuple[np.ndarray, bool, bool, bool]],
+    series: list[tuple[np.ndarray, bool, bool, bool, str]],
 ) -> list[str]:
     """Plantillas de texto; formato numérico compartido entre métricas no-% del mismo gráfico."""
     arrays_num = [
-        ys for ys, es_pct, y_miles, _ in series if not es_pct and not y_miles and len(ys) > 0
+        ys
+        for ys, es_pct, y_miles, _, _ in series
+        if not es_pct and not y_miles and len(ys) > 0
     ]
     mx_global = 0.0
     if arrays_num:
         mx_global = max(float(np.nanmax(np.abs(a))) for a in arrays_num)
     fmt_num = "%{text:,.2f}" if mx_global < 100 else "%{text:,.0f}"
     out: list[str] = []
-    for _, es_pct, y_miles, escala_0_100 in series:
+    for _, es_pct, y_miles, escala_0_100, col in series:
         if es_pct:
-            out.append("%{text}" if escala_0_100 else "%{text:.2%}")
+            if col and _es_margen_utilidad_porcentaje(col):
+                out.append("%{text}")
+            else:
+                out.append("%{text}" if escala_0_100 else "%{text:.2%}")
         elif y_miles:
             out.append("%{text}")
         else:
@@ -2877,10 +2946,15 @@ def _texto_y_etiquetas_barras(
     es_pct: bool,
     escala_0_100: bool,
     y_miles: bool,
+    eje_y: str = "",
 ) -> tuple[list[str], str]:
     if y_miles:
         return [_formatear_valor_miles(float(v)) for v in ys], "%{text}"
     if es_pct:
+        if eje_y and _es_margen_utilidad_porcentaje(eje_y):
+            if escala_0_100:
+                return [f"{int(round(float(v)))}%" for v in ys], "%{text}"
+            return [f"{int(round(float(v) * 100))}%" for v in ys], "%{text}"
         if escala_0_100:
             return [f"{float(v):.2f}%" for v in ys], "%{text}"
         return [str(float(v)) for v in ys], "%{text:.2%}"
@@ -2900,9 +2974,14 @@ def _texttemplate_valores_barras(
     es_pct: bool,
     escala_0_100: bool = False,
     y_miles: bool = False,
+    eje_y: str = "",
 ) -> str:
     _, template = _texto_y_etiquetas_barras(
-        ys, es_pct=es_pct, escala_0_100=escala_0_100, y_miles=y_miles
+        ys,
+        es_pct=es_pct,
+        escala_0_100=escala_0_100,
+        y_miles=y_miles,
+        eje_y=eje_y,
     )
     return template
 
@@ -3226,10 +3305,13 @@ def _layout_eje_y_metrica(
     if es_pct:
         suf = "tasa %" if es_tasa_mant else "%"
         titulo = f"{nombre_columna} ({suf})"
+        pct_enteros = _es_margen_utilidad_porcentaje(nombre_columna)
         kw: dict[str, Any] = dict(
             title=dict(text=titulo, font=dict(size=base_font_size + 2, color=color)),
             tickfont=dict(size=base_font_size, color=color),
-            tickformat=".2%" if not escala_0_100 else ".2f",
+            tickformat=".0%" if pct_enteros and not escala_0_100 else (
+                ".0f" if pct_enteros else (".2%" if not escala_0_100 else ".2f")
+            ),
         )
         if escala_0_100:
             kw["ticksuffix"] = "%"
@@ -3291,6 +3373,7 @@ def fig_ranking_barras(
         es_pct=y_en_porcentaje,
         escala_0_100=y_escala_0_100,
         y_miles=y_miles,
+        eje_y=col_val,
     )
     colores_barras = df_resumen["color_pareto"].tolist()
 
@@ -3336,7 +3419,7 @@ def fig_ranking_barras(
 
     templates: list[str] = []
     if multimetrica:
-        series_texto = [(ys, y_en_porcentaje, y_miles, y_escala_0_100)]
+        series_texto = [(ys, y_en_porcentaje, y_miles, y_escala_0_100, col_val)]
         for m in extras:
             series_texto.append(
                 (
@@ -3344,6 +3427,7 @@ def fig_ranking_barras(
                     m["y_pct"],
                     m.get("y_miles", False),
                     m.get("y_escala_0_100", False),
+                    m["columna"],
                 )
             )
         templates = _texttemplates_valores_barras(series_texto)
@@ -3418,6 +3502,7 @@ def fig_ranking_barras(
             es_pct=m["y_pct"],
             escala_0_100=m.get("y_escala_0_100", False),
             y_miles=y_m_miles,
+            eje_y=m["columna"],
         )
         if multimetrica:
             tmpl_m = templates[i - 1]
@@ -3614,12 +3699,21 @@ def _css_tabla_excel_wall_street(altura_px: int) -> str:
     overflow-x: auto;
     overflow-y: auto;
     max-height: {altura_px}px;
+    position: relative;
     background: {_EXCEL_WS_FONDO};
     border: 1px solid {_EXCEL_WS_BORDE};
     border-radius: 8px;
     box-shadow: inset 0 0 0 1px #0f172a, 0 4px 20px rgba(0,0,0,0.4);
     scrollbar-width: auto;
     scrollbar-color: #3b82f6 #0a0f1a;
+    overscroll-behavior: contain;
+}}
+section[data-testid="stMain"] div[data-testid="stElementContainer"]:has(.lri-excel-ws-scroll),
+section[data-testid="stMain"] div[data-testid="stMarkdownContainer"]:has(.lri-excel-ws-scroll),
+section[data-testid="stMain"] div[data-testid="stElementContainer"]:has(.lri-html-table-scroll-container),
+section[data-testid="stMain"] div[data-testid="stMarkdownContainer"]:has(.lri-html-table-scroll-container) {{
+    overflow: visible !important;
+    max-height: none !important;
 }}
 .lri-excel-ws-scroll::-webkit-scrollbar {{
     height: 14px;
@@ -3638,14 +3732,15 @@ def _css_tabla_excel_wall_street(altura_px: int) -> str:
     min-width: 100%;
 }}
 .lri-excel-ws-table thead th {{
-    position: sticky;
-    top: 0;
-    z-index: 12;
+    position: sticky !important;
+    top: 0 !important;
+    z-index: 30 !important;
     background: {_EXCEL_WS_HEADER_BG} !important;
     color: {_EXCEL_WS_HEADER_FG} !important;
     font-weight: 700;
     letter-spacing: 0.02em;
     box-shadow: 0 2px 0 #333333;
+    background-clip: padding-box !important;
 }}
 .lri-excel-ws-table td {{
     font-weight: 500;
@@ -3661,7 +3756,8 @@ def _html_tabla_excel_wall_street(df: pd.DataFrame, font_px: int) -> str:
 
     thead = "<thead><tr>" + "".join(
         f'<th style="padding:{pad};text-align:left;white-space:normal;'
-        f'line-height:1.25;vertical-align:middle;">{html.escape(str(c))}</th>'
+        f'line-height:1.25;vertical-align:middle;position:sticky;top:0;z-index:31;'
+        f'background:{_EXCEL_WS_HEADER_BG};color:{_EXCEL_WS_HEADER_FG};">{html.escape(str(c))}</th>'
         for c in cols
     ) + "</tr></thead>"
 
@@ -3841,13 +3937,13 @@ def render_perfilado_manual_panel(
     with c3:
         st.markdown(
             f"<div class='kpi-card'><div class='kpi-title'>Máximo {eje_y_real}</div>"
-            f"<div class='kpi-value'>{_formatear_valor_kpi_eje_y(y_max, y_pct, y_escala_0_100, y_miles)}</div></div>",
+            f"<div class='kpi-value'>{_formatear_valor_kpi_eje_y(y_max, y_pct, y_escala_0_100, y_miles, eje_y=eje_y_real)}</div></div>",
             unsafe_allow_html=True,
         )
     with c4:
         st.markdown(
             f"<div class='kpi-card'><div class='kpi-title'>Mínimo {eje_y_real}</div>"
-            f"<div class='kpi-value'>{_formatear_valor_kpi_eje_y(y_min, y_pct, y_escala_0_100, y_miles)}</div></div>",
+            f"<div class='kpi-value'>{_formatear_valor_kpi_eje_y(y_min, y_pct, y_escala_0_100, y_miles, eje_y=eje_y_real)}</div></div>",
             unsafe_allow_html=True,
         )
 
@@ -3954,7 +4050,7 @@ def render_perfilado_manual_panel(
             col: str, es_pct: bool, escala_100: bool, en_miles: bool
         ) -> str:
             if es_pct:
-                return _fmt_pandas_columna_porcentaje(escala_100)
+                return _fmt_pandas_columna_porcentaje(escala_100, eje_y=col)
             if en_miles:
                 return _fmt_pandas_columna_miles
             op_col = operaciones_por_col.get(col, operacion_y)
@@ -4372,6 +4468,20 @@ if df is not None:
         .lri-tabla-wrap .lri-html-table-scroll-container {{
             overflow-x: auto !important;
             overflow-y: auto !important;
+            overscroll-behavior: contain;
+        }}
+        section[data-testid="stMain"] div[data-testid="stElementContainer"]:has(.lri-html-table-scroll-container),
+        section[data-testid="stMain"] div[data-testid="stMarkdownContainer"]:has(.lri-html-table-scroll-container) {{
+            overflow: visible !important;
+            max-height: none !important;
+        }}
+        .lri-tabla-wrap table.lri-perfil-table thead th {{
+            position: sticky !important;
+            top: 0 !important;
+            z-index: 25 !important;
+            background-color: #000000 !important;
+            color: #ffffff !important;
+            box-shadow: 0 2px 0 #333333;
         }}
         .lri-grafico-scroll-h {{
             scrollbar-width: auto;
