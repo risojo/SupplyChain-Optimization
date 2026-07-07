@@ -1,9 +1,13 @@
-# LRI Supply Chain Optimization — Render Blueprint (repo / carpeta raíz del proyecto)
-# Cada servicio = un módulo operativo con su propia URL:
-#   Perfilado   → lri-analytics-pro   → modules/perfilado/profile1.py
-#   Inventarios → lri-inventarios     → modules/inventarios/inventario_app.py
+# LRI — Blueprint Render (repo raíz: varios módulos BI / supply chain)
+# Perfilado Pro (Profile Pro) = modules/perfilado/profile1.py
+#   Servicio Render: lri-analytics-pro  →  https://lri-analytics-pro.onrender.com
+# Inventarios = modules/inventarios/inventario_app.py
+#   Servicio Render: lri-inventarios
 #
-# Crear servicios: https://dashboard.render.com/blueprint/new?repo=https://github.com/risojo/SupplyChain-Optimization
+# Nota: «Supply Chain Optimization» es el nombre del repositorio GitHub (monorepo).
+# El servicio mantiene el slug lri-analytics-pro para conservar la URL pública.
+#
+# Crear/sincronizar: https://dashboard.render.com/blueprint/new?repo=https://github.com/risojo/SupplyChain-Optimization
 services:
   - type: web
     name: lri-analytics-pro
