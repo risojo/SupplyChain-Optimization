@@ -1433,7 +1433,13 @@ def _columna_ventas_totales(df: pd.DataFrame) -> Optional[str]:
 
 
 def _columna_margen_bruto(df: pd.DataFrame) -> Optional[str]:
-    return _resolver_columna_existente(df, "margen bruto total")
+    """Utilidad / margen bruto absoluto en dinero (no %)."""
+    return _resolver_columna_existente(
+        df,
+        "margen bruto total",
+        "utilidad bruta",
+        "margen bruto",
+    )
 
 
 def _columna_margen_utilidad_ratio(df: pd.DataFrame) -> Optional[str]:
@@ -1444,7 +1450,6 @@ def _columna_margen_utilidad_ratio(df: pd.DataFrame) -> Optional[str]:
         "margen utilidad ventas",
         "margen de utilidad",
         "porcentaje utilidad bruta",
-        "utilidad bruta",
         "pct utilidad bruta",
     )
 
@@ -1463,9 +1468,26 @@ def _columna_costo_mantener_inventario(df: pd.DataFrame) -> Optional[str]:
 
 
 def _metrica_margen_sobre_ventas(df: pd.DataFrame, eje_y: str) -> bool:
-    mb = _columna_margen_bruto(df)
+    """Solo columnas de margen % (no utilidad bruta en dinero)."""
     mu = _columna_margen_utilidad_ratio(df)
-    return (mb is not None and eje_y == mb) or (mu is not None and eje_y == mu)
+    return mu is not None and eje_y == mu
+
+
+def _es_utilidad_bruta_monetaria(eje_y: str) -> bool:
+    """Utilidad bruta / margen bruto absoluto → miles, sin símbolo de moneda."""
+    raw = str(eje_y).strip().lower()
+    n = _norm_texto(eje_y)
+    if any(p in n for p in ("utilidadbruta", "margenbrutototal", "utilidadbrutatotal")):
+        return True
+    if n == "margenbruto":
+        return True
+    if "margenbruto" in n and "utilidad" not in n and "%" not in raw and "pct" not in n:
+        return True
+    return False
+
+
+def _metrica_eje_y_en_miles(eje_y: str) -> bool:
+    return _es_utilidad_bruta_monetaria(eje_y)
 
 
 def _metrica_costo_mantener_pct(df: pd.DataFrame, eje_y: str) -> bool:
@@ -1488,7 +1510,9 @@ def _metrica_costo_mantener_pct(df: pd.DataFrame, eje_y: str) -> bool:
 
 
 def _nombre_eje_y_es_porcentual(eje_y: str) -> bool:
-    """Margen/utilidad/tasa/porcentaje en el nombre de columna → presentación %."""
+    """Margen de utilidad / margen % — no utilidad bruta en dinero."""
+    if _es_utilidad_bruta_monetaria(eje_y):
+        return False
     raw = str(eje_y).strip().lower()
     if "%" in raw or "pct" in raw or "porcent" in raw or "percent" in raw:
         return True
@@ -1496,28 +1520,18 @@ def _nombre_eje_y_es_porcentual(eje_y: str) -> bool:
     patrones = (
         "margenutilidad",
         "margendautilidad",
-        "margenbruto",
-        "utilidadbruta",
-        "utilidadneta",
-        "pctutilidad",
+        "margenutilidadventas",
         "porcentajeutilidad",
+        "pctutilidad",
         "margenbrutopct",
         "margensobreventas",
         "margenventas",
-        "costomantenerinventario",
-        "mantenerinventario",
-        "costoinventario",
-        "tasacosto",
-        "tasamantenimiento",
-        "tasamantener",
-        "tasadecosto",
-        "tasacostoinventario",
     )
     if any(p in n for p in patrones):
         return True
-    if "margen" in n and ("pct" in n or "porcent" in n or "ratio" in n or "tasa" in n or "util" in n):
+    if "margen" in n and "utilidad" in n:
         return True
-    if "utilidad" in n:
+    if "margen" in n and ("pct" in n or "porcent" in n or "ratio" in n or "tasa" in n):
         return True
     if "tasa" in n and any(k in n for k in ("costo", "manten", "invent", "margen", "util")):
         return True
@@ -1525,14 +1539,15 @@ def _nombre_eje_y_es_porcentual(eje_y: str) -> bool:
 
 
 def _metrica_eje_y_en_porcentaje(df: pd.DataFrame, eje_y: str) -> bool:
+    if _es_utilidad_bruta_monetaria(eje_y):
+        return False
     if _metrica_margen_sobre_ventas(df, eje_y) or _metrica_costo_mantener_pct(df, eje_y):
         return True
     if _nombre_eje_y_es_porcentual(eje_y):
         return True
-    mb = _columna_margen_bruto(df)
     mu = _columna_margen_utilidad_ratio(df)
     cm = _columna_costo_mantener_inventario(df)
-    return eje_y in {c for c in (mb, mu, cm) if c}
+    return eje_y in {c for c in (mu, cm) if c}
 
 
 def _porcentaje_en_escala_0_100(serie: pd.Series) -> bool:
@@ -1549,13 +1564,24 @@ def _info_presentacion_porcentaje_eje_y(
     df_valores: Optional[pd.DataFrame] = None,
 ) -> Tuple[bool, bool]:
     """(es_porcentaje, escala_0_100) para KPI, tabla, gráfico y export."""
+    pct, escala, _ = _info_presentacion_formato_eje_y(df, eje_y, df_valores)
+    return pct, escala
+
+
+def _info_presentacion_formato_eje_y(
+    df: pd.DataFrame,
+    eje_y: str,
+    df_valores: Optional[pd.DataFrame] = None,
+) -> Tuple[bool, bool, bool]:
+    """(es_porcentaje, escala_0_100, en_miles) para KPI, tabla, gráfico y export."""
+    y_miles = _metrica_eje_y_en_miles(eje_y)
     es_pct = _metrica_eje_y_en_porcentaje(df, eje_y)
     if not es_pct:
-        return False, False
+        return False, False, y_miles
     fuente = df_valores if df_valores is not None and eje_y in df_valores.columns else df
     if eje_y not in fuente.columns:
-        return es_pct, False
-    return es_pct, _porcentaje_en_escala_0_100(fuente[eje_y])
+        return es_pct, False, False
+    return es_pct, _porcentaje_en_escala_0_100(fuente[eje_y]), False
 
 
 def _formatear_valor_porcentaje(val: float, escala_0_100: bool) -> str:
@@ -1564,20 +1590,24 @@ def _formatear_valor_porcentaje(val: float, escala_0_100: bool) -> str:
     return f"{val:.2%}"
 
 
+def _formatear_valor_miles(val: float) -> str:
+    """Miles con coma separadora; sin decimales ni símbolo de moneda."""
+    return f"{int(round(float(val) / 1000.0)):,}"
+
+
 def _fmt_pandas_columna_porcentaje(escala_0_100: bool) -> str:
     return "{:.2f}%" if escala_0_100 else "{:.2%}"
 
 
+def _fmt_pandas_columna_miles(_val: object) -> str:
+    if pd.isna(_val):
+        return ""
+    return _formatear_valor_miles(float(_val))
+
+
 def _ratio_margen_por_fila(df: pd.DataFrame, eje_y: str) -> pd.Series:
-    """Ratio 0–1 margen sobre ventas a nivel fila (margen bruto absoluto o columna ya en ratio)."""
-    vt = _columna_ventas_totales(df)
-    mb = _columna_margen_bruto(df)
+    """Ratio 0–1 margen % a nivel fila."""
     mu = _columna_margen_utilidad_ratio(df)
-    if vt is None or vt not in df.columns:
-        return pd.Series(np.nan, index=df.index)
-    v = df[vt].replace(0, np.nan)
-    if mb is not None and eje_y == mb:
-        return df[eje_y] / v
     if mu is not None and eje_y == mu:
         return df[eje_y]
     return pd.Series(np.nan, index=df.index)
@@ -1592,14 +1622,9 @@ def calcular_metricas_encabezado(
             val_total = 0.0
         elif operacion == "Suma":
             vt = _columna_ventas_totales(df_filtrado)
-            mb = _columna_margen_bruto(df_filtrado)
             mu = _columna_margen_utilidad_ratio(df_filtrado)
             if vt is None:
                 val_total = 0.0
-            elif mb is not None and eje_y == mb:
-                num = df_filtrado[eje_y].sum()
-                den = df_filtrado[vt].sum()
-                val_total = float(num / den) if den else 0.0
             elif mu is not None and eje_y == mu:
                 num = (df_filtrado[eje_y] * df_filtrado[vt]).sum()
                 den = df_filtrado[vt].sum()
@@ -1637,11 +1662,20 @@ def calcular_metricas_encabezado(
     if operacion == "Suma":
         val_total = df_filtrado[eje_y].sum() if eje_y in df_filtrado.columns else 0
         label = f"Total {eje_y}"
-        val_formateado = f"{val_total:,.0f}"
+        if _metrica_eje_y_en_miles(eje_y):
+            val_formateado = _formatear_valor_miles(val_total)
+        else:
+            val_formateado = f"{val_total:,.0f}"
     else:
         val_total = df_filtrado[eje_y].mean() if eje_y in df_filtrado.columns else 0
         label = f"Promedio {eje_y}"
-        val_formateado = f"{val_total:,.2f}"
+        if _metrica_eje_y_en_miles(eje_y):
+            val_formateado = _formatear_valor_miles(val_total)
+        elif _metrica_eje_y_en_porcentaje(df_filtrado, eje_y):
+            escala = _porcentaje_en_escala_0_100(df_filtrado[eje_y])
+            val_formateado = _formatear_valor_porcentaje(val_total, escala)
+        else:
+            val_formateado = f"{val_total:,.2f}"
 
     return label, val_formateado
 
@@ -1656,9 +1690,16 @@ def _extremos_eje_y_perfilado(df_resumen: pd.DataFrame, eje_y: str) -> Tuple[flo
     return float(s.max()), float(s.min())
 
 
-def _formatear_valor_kpi_eje_y(val: float, y_pct: bool, escala_0_100: bool = False) -> str:
+def _formatear_valor_kpi_eje_y(
+    val: float,
+    y_pct: bool,
+    escala_0_100: bool = False,
+    y_miles: bool = False,
+) -> str:
     if y_pct:
         return _formatear_valor_porcentaje(val, escala_0_100)
+    if y_miles:
+        return _formatear_valor_miles(val)
     if abs(val) < 100:
         return f"{val:,.2f}"
     return f"{val:,.0f}"
@@ -2246,6 +2287,7 @@ def _mostrar_resumen_pareto_ejecutivo(
     base_font_size: int,
     y_en_porcentaje: bool,
     y_escala_0_100: bool = False,
+    y_miles: bool = False,
 ) -> None:
     """Resumen lateral Pareto: tipografía grande y bloques destacados (solo div/p; sin tablas HTML)."""
     try:
@@ -2257,11 +2299,12 @@ def _mostrar_resumen_pareto_ejecutivo(
         n1, n2, n3 = _tamanos_segmentos_pareto(n, f1, f2, f3)
         unidad = _etiqueta_unidad_eje_x(eje_x)
         p1, p2, p3, total = _participacion_tramos_pareto(df_resumen, eje_y, n1, n2, n3)
-        fmt_val = (
-            (lambda x: _formatear_valor_porcentaje(x, y_escala_0_100))
-            if y_en_porcentaje
-            else (lambda x: f"{x:,.2f}" if abs(x) < 100 else f"{x:,.0f}")
-        )
+        if y_en_porcentaje:
+            fmt_val = lambda x: _formatear_valor_porcentaje(x, y_escala_0_100)
+        elif y_miles:
+            fmt_val = _formatear_valor_miles
+        else:
+            fmt_val = lambda x: f"{x:,.2f}" if abs(x) < 100 else f"{x:,.0f}"
 
         fs_titulo = max(17, base_font_size + 5)
         fs_ref = max(16, base_font_size + 4)
@@ -2578,14 +2621,11 @@ def procesar_agrupacion_perfil(df: pd.DataFrame, eje_x: str, eje_y: str, operaci
     pareto_peso: Optional[str] = None
 
     vt = _columna_ventas_totales(df_filtrado)
-    mb = _columna_margen_bruto(df_filtrado)
     mu = _columna_margen_utilidad_ratio(df_filtrado)
 
     if _metrica_margen_sobre_ventas(df_filtrado, eje_y) and vt is not None and vt in df_filtrado.columns:
         t = df_filtrado[[eje_x, eje_y, vt]].copy()
-        if mb is not None and eje_y == mb:
-            t["__num"] = t[eje_y]
-        elif mu is not None and eje_y == mu:
+        if mu is not None and eje_y == mu:
             t["__num"] = t[eje_y] * t[vt]
         else:
             t["__num"] = np.nan
@@ -2705,21 +2745,33 @@ def _preparar_df_exportacion_perfil(
         ).round(2)
     export.insert(0, "operacion_metrica_principal", operacion)
     y_pct, y_escala = _info_presentacion_porcentaje_eje_y(df_origen, eje_y, export)
+    y_miles = _metrica_eje_y_en_miles(eje_y)
     if y_pct and eje_y in export.columns:
         vals = pd.to_numeric(export[eje_y], errors="coerce")
         export[eje_y] = vals.map(
             lambda x: _formatear_valor_porcentaje(float(x), y_escala) if pd.notna(x) else ""
         )
+    elif y_miles and eje_y in export.columns:
+        vals = pd.to_numeric(export[eje_y], errors="coerce")
+        export[eje_y] = vals.map(
+            lambda x: _formatear_valor_miles(float(x)) if pd.notna(x) else ""
+        )
     for col in metricas_extra or []:
         if col not in export.columns:
             continue
         col_pct, col_escala = _info_presentacion_porcentaje_eje_y(df_origen, col, export)
+        col_miles = _metrica_eje_y_en_miles(col)
         if col_pct:
             vals_col = pd.to_numeric(export[col], errors="coerce")
             export[col] = vals_col.map(
                 lambda x, esc=col_escala: _formatear_valor_porcentaje(float(x), esc)
                 if pd.notna(x)
                 else ""
+            )
+        elif col_miles:
+            vals_col = pd.to_numeric(export[col], errors="coerce")
+            export[col] = vals_col.map(
+                lambda x: _formatear_valor_miles(float(x)) if pd.notna(x) else ""
             )
     return export
 
@@ -2797,22 +2849,61 @@ def _textfont_etiqueta_barras(fs: int, color: str) -> dict[str, Any]:
 
 
 def _texttemplates_valores_barras(
-    series: list[tuple[np.ndarray, bool]],
+    series: list[tuple[np.ndarray, bool, bool, bool]],
 ) -> list[str]:
     """Plantillas de texto; formato numérico compartido entre métricas no-% del mismo gráfico."""
-    arrays_num = [ys for ys, es_pct in series if not es_pct and len(ys) > 0]
+    arrays_num = [
+        ys for ys, es_pct, y_miles, _ in series if not es_pct and not y_miles and len(ys) > 0
+    ]
     mx_global = 0.0
     if arrays_num:
         mx_global = max(float(np.nanmax(np.abs(a))) for a in arrays_num)
     fmt_num = "%{text:,.2f}" if mx_global < 100 else "%{text:,.0f}"
-    return ["%{text:.2%}" if es_pct else fmt_num for _, es_pct in series]
+    out: list[str] = []
+    for _, es_pct, y_miles, escala_0_100 in series:
+        if es_pct:
+            out.append("%{text}" if escala_0_100 else "%{text:.2%}")
+        elif y_miles:
+            out.append("%{text}")
+        else:
+            out.append(fmt_num)
+    return out
 
 
-def _texttemplate_valores_barras(ys: np.ndarray, es_pct: bool) -> str:
+def _texto_y_etiquetas_barras(
+    ys: np.ndarray,
+    *,
+    es_pct: bool,
+    escala_0_100: bool,
+    y_miles: bool,
+) -> tuple[list[str], str]:
+    if y_miles:
+        return [_formatear_valor_miles(float(v)) for v in ys], "%{text}"
     if es_pct:
-        return "%{text:.2%}"
+        if escala_0_100:
+            return [f"{float(v):.2f}%" for v in ys], "%{text}"
+        return [str(float(v)) for v in ys], "%{text:.2%}"
     mx = float(np.nanmax(np.abs(ys))) if len(ys) else 0.0
-    return "%{text:,.2f}" if mx < 100 else "%{text:,.0f}"
+    template = "%{text:,.2f}" if mx < 100 else "%{text:,.0f}"
+    return [str(float(v)) for v in ys], template
+
+
+def _valores_y_grafico(ys: np.ndarray, y_miles: bool) -> np.ndarray:
+    if y_miles:
+        return ys.astype(float) / 1000.0
+    return ys
+
+
+def _texttemplate_valores_barras(
+    ys: np.ndarray,
+    es_pct: bool,
+    escala_0_100: bool = False,
+    y_miles: bool = False,
+) -> str:
+    _, template = _texto_y_etiquetas_barras(
+        ys, es_pct=es_pct, escala_0_100=escala_0_100, y_miles=y_miles
+    )
+    return template
 
 
 def _angulo_etiquetas_valor_barras(n_barras: int) -> int:
@@ -3059,6 +3150,7 @@ def _intentar_resolver_metrica_adicional(
         return None, f"«{col}» no admite «{operacion}»."
     ys = _alinear_serie_metrica_secundaria(df_resumen_base, df_resumen_m, eje_x, col)
     y_pct, y_escala = _info_presentacion_porcentaje_eje_y(df, col, df_resumen_m)
+    y_miles = _metrica_eje_y_en_miles(col)
     y_tasa = _metrica_costo_mantener_pct(df, col)
     en_eje_sec = _comparativo_usa_doble_eje_y(y_pct_principal, y_pct, ys_principal, ys)
     return {
@@ -3067,6 +3159,7 @@ def _intentar_resolver_metrica_adicional(
         "valores": ys,
         "y_pct": y_pct,
         "y_escala_0_100": y_escala,
+        "y_miles": y_miles,
         "y_tasa_mant": y_tasa,
         "en_eje_secundario": en_eje_sec,
     }, None
@@ -3127,6 +3220,7 @@ def _layout_eje_y_metrica(
     operacion: str,
     color: str,
     base_font_size: int,
+    y_miles: bool = False,
 ) -> dict[str, Any]:
     if es_pct:
         suf = "tasa %" if es_tasa_mant else "%"
@@ -3134,11 +3228,17 @@ def _layout_eje_y_metrica(
         kw: dict[str, Any] = dict(
             title=dict(text=titulo, font=dict(size=base_font_size + 2, color=color)),
             tickfont=dict(size=base_font_size, color=color),
-            tickformat=".1%",
+            tickformat=".2%" if not escala_0_100 else ".2f",
         )
         if escala_0_100:
             kw["ticksuffix"] = "%"
         return kw
+    if y_miles:
+        return dict(
+            title=dict(text=f"{nombre_columna} (miles)", font=dict(size=base_font_size + 2, color=color)),
+            tickfont=dict(size=base_font_size, color=color),
+            tickformat=",.0f",
+        )
     titulo = nombre_columna if operacion == "Suma" else f"{nombre_columna} ({operacion})"
     return dict(
         title=dict(text=titulo, font=dict(size=base_font_size + 2, color=color)),
@@ -3166,6 +3266,7 @@ def fig_ranking_barras(
     y_en_porcentaje: bool = False,
     y_es_tasa_mantenimiento: bool = False,
     y_escala_0_100: bool = False,
+    y_miles: bool = False,
     mostrar_acumulado: bool = False,
     ancho_fig_px: Optional[int] = None,
     metricas_extras: Optional[list[dict[str, Any]]] = None,
@@ -3183,6 +3284,13 @@ def fig_ranking_barras(
         return fig
 
     ys = df_resumen[col_val].astype(float).to_numpy()
+    ys_plot = _valores_y_grafico(ys, y_miles)
+    text_labels, texttemplate = _texto_y_etiquetas_barras(
+        ys,
+        es_pct=y_en_porcentaje,
+        escala_0_100=y_escala_0_100,
+        y_miles=y_miles,
+    )
     colores_barras = df_resumen["color_pareto"].tolist()
 
     if multimetrica:
@@ -3225,28 +3333,47 @@ def fig_ranking_barras(
     if st.session_state["drill_down_categoria"]:
         titulo_grafico += f" (Filtrado por: {st.session_state['drill_down_categoria']})"
 
-    texttemplate = _texttemplate_valores_barras(ys, y_en_porcentaje)
+    templates: list[str] = []
     if multimetrica:
-        series_texto = [(ys, y_en_porcentaje)]
+        series_texto = [(ys, y_en_porcentaje, y_miles, y_escala_0_100)]
         for m in extras:
-            series_texto.append((m["valores"], m["y_pct"]))
+            series_texto.append(
+                (
+                    m["valores"],
+                    m["y_pct"],
+                    m.get("y_miles", False),
+                    m.get("y_escala_0_100", False),
+                )
+            )
         templates = _texttemplates_valores_barras(series_texto)
         texttemplate = templates[0]
-    if y_en_porcentaje:
-        yaxis_title = "%"
-        yaxis_tickformat = ".1%"
-    else:
-        yaxis_title = operacion
-        yaxis_tickformat = None
 
-    yaxis_kw = dict(
-        tickfont=dict(size=base_font_size, color="#e2e8f0"),
-        title=dict(text=yaxis_title, font=dict(size=base_font_size + 2, color="#ffffff")),
-    )
-    if yaxis_tickformat is not None:
-        yaxis_kw["tickformat"] = yaxis_tickformat
-    if y_en_porcentaje and y_escala_0_100:
-        yaxis_kw["ticksuffix"] = "%"
+    if y_en_porcentaje:
+        yaxis_kw = _layout_eje_y_metrica(
+            col_val,
+            True,
+            y_escala_0_100,
+            y_es_tasa_mantenimiento,
+            operacion,
+            "#e2e8f0",
+            base_font_size,
+        )
+    elif y_miles:
+        yaxis_kw = _layout_eje_y_metrica(
+            col_val,
+            False,
+            False,
+            False,
+            operacion,
+            "#e2e8f0",
+            base_font_size,
+            y_miles=True,
+        )
+    else:
+        yaxis_kw = dict(
+            tickfont=dict(size=base_font_size, color="#e2e8f0"),
+            title=dict(text=operacion, font=dict(size=base_font_size + 2, color="#ffffff")),
+        )
 
     fs_etiqueta_barra = _fs_etiquetas_valor_barras(
         base_font_size,
@@ -3264,8 +3391,8 @@ def fig_ranking_barras(
 
     barra1_kw: dict[str, Any] = dict(
         x=xs_cat,
-        y=ys,
-        text=ys,
+        y=ys_plot,
+        text=text_labels,
         texttemplate=texttemplate,
         textposition="outside",
         textangle=angulo_etiqueta_barra,
@@ -3283,9 +3410,18 @@ def fig_ranking_barras(
     metrica_eje_sec: Optional[dict[str, Any]] = None
     for i, m in enumerate(extras, start=2):
         ys_m = m["valores"]
+        y_m_miles = bool(m.get("y_miles", False))
+        ys_m_plot = _valores_y_grafico(ys_m, y_m_miles)
+        text_m, tmpl_m = _texto_y_etiquetas_barras(
+            ys_m,
+            es_pct=m["y_pct"],
+            escala_0_100=m.get("y_escala_0_100", False),
+            y_miles=y_m_miles,
+        )
+        if multimetrica:
+            tmpl_m = templates[i - 1]
         color = _COLORES_BARRAS_MULTIMETRICA[min(i - 1, len(_COLORES_BARRAS_MULTIMETRICA) - 1)]
         txt_color = _TEXTOS_BARRAS_MULTIMETRICA[min(i - 1, len(_TEXTOS_BARRAS_MULTIMETRICA) - 1)]
-        tmpl_m = templates[i - 1] if multimetrica else _texttemplate_valores_barras(ys_m, m["y_pct"])
         en_sec = bool(m.get("en_eje_secundario"))
         if en_sec:
             usa_eje_secundario = True
@@ -3294,8 +3430,8 @@ def fig_ranking_barras(
         fig.add_trace(
             go.Bar(
                 x=xs_cat,
-                y=ys_m,
-                text=ys_m,
+                y=ys_m_plot,
+                text=text_m,
                 texttemplate=tmpl_m,
                 textposition="outside",
                 textangle=angulo_etiqueta_barra,
@@ -3319,6 +3455,7 @@ def fig_ranking_barras(
             operacion,
             COLOR_BARRA_COMPARATIVO_1,
             base_font_size,
+            y_miles=y_miles,
         )
 
     layout_kw: dict[str, Any] = dict(
@@ -3365,6 +3502,7 @@ def fig_ranking_barras(
                 metrica_eje_sec["operacion"],
                 COLOR_BARRA_COMPARATIVO_2,
                 base_font_size,
+                y_miles=bool(metrica_eje_sec.get("y_miles", False)),
             )
             layout_kw["yaxis2"]["overlaying"] = "y"
             layout_kw["yaxis2"]["side"] = "right"
@@ -3400,7 +3538,7 @@ def fig_ranking_barras(
                     line=dict(color="#38bdf8", width=2.5),
                     marker=dict(size=7, color="#38bdf8", line=dict(width=1, color="#0f172a")),
                     yaxis="y2",
-                    hovertemplate="%{x}<br>Acumulado: %{y:.1%}<extra></extra>",
+                    hovertemplate="%{x}<br>Acumulado: %{y:.2%}<extra></extra>",
                 )
             )
             layout_kw["showlegend"] = True
@@ -3418,7 +3556,7 @@ def fig_ranking_barras(
                 tickfont=dict(size=base_font_size, color="#38bdf8"),
                 overlaying="y",
                 side="right",
-                tickformat=".0%",
+                tickformat=".2%",
                 showgrid=False,
             )
 
@@ -3520,7 +3658,7 @@ def render_perfilado_manual_panel(
         )
         return
 
-    y_pct, y_escala_0_100 = _info_presentacion_porcentaje_eje_y(df, eje_y_real, df_resumen)
+    y_pct, y_escala_0_100, y_miles = _info_presentacion_formato_eje_y(df, eje_y_real, df_resumen)
     y_tasa_mant = _metrica_costo_mantener_pct(df, eje_y_real)
     ys_principal = df_resumen[eje_y_real].astype(float).to_numpy()
 
@@ -3584,13 +3722,13 @@ def render_perfilado_manual_panel(
     with c3:
         st.markdown(
             f"<div class='kpi-card'><div class='kpi-title'>Máximo {eje_y_real}</div>"
-            f"<div class='kpi-value'>{_formatear_valor_kpi_eje_y(y_max, y_pct, y_escala_0_100)}</div></div>",
+            f"<div class='kpi-value'>{_formatear_valor_kpi_eje_y(y_max, y_pct, y_escala_0_100, y_miles)}</div></div>",
             unsafe_allow_html=True,
         )
     with c4:
         st.markdown(
             f"<div class='kpi-card'><div class='kpi-title'>Mínimo {eje_y_real}</div>"
-            f"<div class='kpi-value'>{_formatear_valor_kpi_eje_y(y_min, y_pct, y_escala_0_100)}</div></div>",
+            f"<div class='kpi-value'>{_formatear_valor_kpi_eje_y(y_min, y_pct, y_escala_0_100, y_miles)}</div></div>",
             unsafe_allow_html=True,
         )
 
@@ -3684,14 +3822,22 @@ def render_perfilado_manual_panel(
             )
 
         operaciones_por_col = {eje_y_real: operacion_y}
-        flags_por_col = {eje_y_real: (y_pct, y_escala_0_100)}
+        flags_por_col = {eje_y_real: (y_pct, y_escala_0_100, y_miles)}
         for m in metricas_extras:
             operaciones_por_col[m["columna"]] = m["operacion"]
-            flags_por_col[m["columna"]] = (m["y_pct"], m["y_escala_0_100"])
+            flags_por_col[m["columna"]] = (
+                m["y_pct"],
+                m["y_escala_0_100"],
+                m.get("y_miles", False),
+            )
 
-        def _fmt_columna_metrica(col: str, es_pct: bool, escala_100: bool) -> str:
+        def _fmt_columna_metrica(
+            col: str, es_pct: bool, escala_100: bool, en_miles: bool
+        ) -> str:
             if es_pct:
                 return _fmt_pandas_columna_porcentaje(escala_100)
+            if en_miles:
+                return _fmt_pandas_columna_miles
             op_col = operaciones_por_col.get(col, operacion_y)
             if op_col == "Promedio" or col not in df_resumen_tabla.columns:
                 return "{:,.2f}"
@@ -3752,6 +3898,7 @@ def render_perfilado_manual_panel(
         y_en_porcentaje=y_pct,
         y_es_tasa_mantenimiento=y_tasa_mant,
         y_escala_0_100=y_escala_0_100,
+        y_miles=y_miles,
         mostrar_acumulado=mostrar_acumulado,
         ancho_fig_px=ancho_fig_pareto if pareto_activo_prev and ancho_fig_pareto > 0 else None,
         metricas_extras=metricas_extras,
@@ -3790,6 +3937,7 @@ def render_perfilado_manual_panel(
                 base_font_size,
                 y_pct,
                 y_escala_0_100,
+                y_miles,
             )
             st.markdown("</div>", unsafe_allow_html=True)
     else:
