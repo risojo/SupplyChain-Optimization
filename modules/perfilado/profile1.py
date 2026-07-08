@@ -1559,6 +1559,27 @@ def _porcentaje_en_escala_0_100(serie: pd.Series) -> bool:
     return float(v.abs().max()) > 1.5
 
 
+def _serie_ratio_0_1(serie: pd.Series) -> pd.Series:
+    """Normaliza porcentajes 0–100 o fracciones 0–1 a ratio 0–1."""
+    v = pd.to_numeric(serie, errors="coerce")
+    finitos = v.dropna()
+    if finitos.empty:
+        return v
+    if float(finitos.abs().max()) > 1.5:
+        return v / 100.0
+    return v
+
+
+def _valor_a_porcentaje_entero(val: float) -> int:
+    """Convierte ratio 0–1 o valor 0–100 a entero de visualización."""
+    v = float(val)
+    if not np.isfinite(v):
+        return 0
+    if abs(v) <= 1.5:
+        return int(round(v * 100))
+    return int(round(v))
+
+
 def _info_presentacion_porcentaje_eje_y(
     df: pd.DataFrame,
     eje_y: str,
@@ -1581,6 +1602,8 @@ def _info_presentacion_formato_eje_y(
         return False, False, y_miles
     fuente = df_valores if df_valores is not None and eje_y in df_valores.columns else df
     if eje_y not in fuente.columns:
+        return es_pct, False, False
+    if _metrica_margen_sobre_ventas(df, eje_y):
         return es_pct, False, False
     return es_pct, _porcentaje_en_escala_0_100(fuente[eje_y]), False
 
@@ -1611,8 +1634,7 @@ def _formatear_valor_porcentaje(
     val: float, escala_0_100: bool, *, eje_y: str = ""
 ) -> str:
     if eje_y and _es_margen_utilidad_porcentaje(eje_y):
-        pct = int(round(val if escala_0_100 else val * 100))
-        return f"{pct}%"
+        return f"{_valor_a_porcentaje_entero(val)}%"
     if escala_0_100:
         return f"{val:.2f}%"
     return f"{val:.2%}"
@@ -1629,8 +1651,7 @@ def _fmt_pandas_columna_porcentaje(escala_0_100: bool, eje_y: str = ""):
         def _fmt_entero(v: object) -> str:
             if pd.isna(v):
                 return ""
-            x = float(v)
-            return f"{int(round(x if escala_0_100 else x * 100))}%"
+            return f"{_valor_a_porcentaje_entero(float(v))}%"
 
         return _fmt_entero
     return "{:.2f}%" if escala_0_100 else "{:.2%}"
@@ -1654,7 +1675,7 @@ def calcular_metricas_encabezado(
     df_filtrado: pd.DataFrame, eje_y: str, operacion: str
 ) -> Tuple[str, str]:
     if _metrica_margen_sobre_ventas(df_filtrado, eje_y):
-        ratios = _ratio_margen_por_fila(df_filtrado, eje_y).dropna()
+        ratios = _serie_ratio_0_1(_ratio_margen_por_fila(df_filtrado, eje_y)).dropna()
         if ratios.empty:
             val_total = 0.0
         elif operacion == "Suma":
@@ -1663,7 +1684,8 @@ def calcular_metricas_encabezado(
             if vt is None:
                 val_total = 0.0
             elif mu is not None and eje_y == mu:
-                num = (df_filtrado[eje_y] * df_filtrado[vt]).sum()
+                ratio_norm = _serie_ratio_0_1(df_filtrado[eje_y])
+                num = (ratio_norm * df_filtrado[vt]).sum()
                 den = df_filtrado[vt].sum()
                 val_total = float(num / den) if den else 0.0
             else:
@@ -2687,6 +2709,7 @@ def procesar_agrupacion_perfil(df: pd.DataFrame, eje_x: str, eje_y: str, operaci
     if _metrica_margen_sobre_ventas(df_filtrado, eje_y) and vt is not None and vt in df_filtrado.columns:
         t = df_filtrado[[eje_x, eje_y, vt]].copy()
         if mu is not None and eje_y == mu:
+            t[eje_y] = _serie_ratio_0_1(t[eje_y])
             t["__num"] = t[eje_y] * t[vt]
         else:
             t["__num"] = np.nan
@@ -2952,9 +2975,7 @@ def _texto_y_etiquetas_barras(
         return [_formatear_valor_miles(float(v)) for v in ys], "%{text}"
     if es_pct:
         if eje_y and _es_margen_utilidad_porcentaje(eje_y):
-            if escala_0_100:
-                return [f"{int(round(float(v)))}%" for v in ys], "%{text}"
-            return [f"{int(round(float(v) * 100))}%" for v in ys], "%{text}"
+            return [f"{_valor_a_porcentaje_entero(float(v))}%" for v in ys], "%{text}"
         if escala_0_100:
             return [f"{float(v):.2f}%" for v in ys], "%{text}"
         return [str(float(v)) for v in ys], "%{text:.2%}"
@@ -3309,11 +3330,11 @@ def _layout_eje_y_metrica(
         kw: dict[str, Any] = dict(
             title=dict(text=titulo, font=dict(size=base_font_size + 2, color=color)),
             tickfont=dict(size=base_font_size, color=color),
-            tickformat=".0%" if pct_enteros and not escala_0_100 else (
-                ".0f" if pct_enteros else (".2%" if not escala_0_100 else ".2f")
+            tickformat=".0%" if pct_enteros else (
+                ".2%" if not escala_0_100 else ".2f"
             ),
         )
-        if escala_0_100:
+        if escala_0_100 and not pct_enteros:
             kw["ticksuffix"] = "%"
         return kw
     if y_miles:
@@ -3667,12 +3688,28 @@ _EXCEL_WS_FILAS: tuple[tuple[str, str], ...] = (
 )
 _EXCEL_WS_FONDO = "#05080f"
 _EXCEL_WS_BORDE = "#1e3a5f"
+_EXCEL_WS_TOTAL_BG = "#1a2030"
+_EXCEL_WS_TOTAL_FG = "#fbbf24"
 _EXCEL_FILAS_VISIBLES_SCROLL = 22
+_EXCEL_MAX_COLUMNAS_FIJAS = 4
+_EXCEL_PATRONES_COL_FIJA = (
+    "codigo",
+    "categoria",
+    "subcategoria",
+    "descripcion",
+    "producto",
+    "articulo",
+    "sku",
+    "nombre",
+    "item",
+)
 
 
-def _formatear_celda_excel_ws(val: object) -> str:
+def _formatear_celda_excel_ws(val: object, *, es_total: bool = False) -> str:
     if val is None or (isinstance(val, float) and pd.isna(val)):
         return ""
+    if isinstance(val, str):
+        return val.strip()
     if isinstance(val, (int, np.integer)):
         return f"{int(val):,}"
     if isinstance(val, (float, np.floating)):
@@ -3685,11 +3722,114 @@ def _formatear_celda_excel_ws(val: object) -> str:
     return str(val).strip()
 
 
-def _altura_contenedor_tabla_excel(n_filas: int, font_px: int) -> int:
+def _columna_excel_admite_suma(col: str, serie: pd.Series) -> bool:
+    """Suma en pie de tabla; excluye % y ratios (no son aditivos)."""
+    if not pd.api.types.is_numeric_dtype(serie):
+        return False
+    if _es_margen_utilidad_porcentaje(col):
+        return False
+    if _nombre_eje_y_es_porcentual(col):
+        return False
+    if _metrica_costo_mantener_pct(pd.DataFrame(), col):
+        return False
+    return True
+
+
+def _totales_columnas_excel_ws(df: pd.DataFrame) -> dict[str, object]:
+    totales: dict[str, object] = {}
+    for i, col in enumerate(df.columns):
+        if i == 0:
+            totales[col] = "TOTAL"
+            continue
+        serie = df[col]
+        if _columna_excel_admite_suma(col, serie):
+            totales[col] = pd.to_numeric(serie, errors="coerce").sum()
+        else:
+            totales[col] = ""
+    return totales
+
+
+def _indices_columnas_fijas_excel(columnas: list[str]) -> set[int]:
+    fijos: set[int] = set()
+    for i, col in enumerate(columnas):
+        if len(fijos) >= _EXCEL_MAX_COLUMNAS_FIJAS:
+            break
+        n = _norm_texto(col)
+        if any(p in n for p in _EXCEL_PATRONES_COL_FIJA):
+            fijos.add(i)
+    if not fijos and columnas:
+        fijos.add(0)
+    return fijos
+
+
+def _anchos_columnas_excel_ws(columnas: list[str], font_px: int) -> list[int]:
+    anchos: list[int] = []
+    for col in columnas:
+        titulo = len(str(col))
+        base = int(titulo * font_px * 0.55) + 24
+        n = _norm_texto(col)
+        if "codigo" in n or n == "sku":
+            anchos.append(max(100, min(base, 140)))
+        elif "descripcion" in n or "articulo" in n or "producto" in n:
+            anchos.append(max(160, min(base, 280)))
+        elif "categoria" in n or "subcategoria" in n:
+            anchos.append(max(100, min(base, 170)))
+        else:
+            anchos.append(max(76, min(base, 150)))
+    return anchos
+
+
+def _left_columna_fija_excel(anchos: list[int], col_idx: int) -> int:
+    return sum(anchos[:col_idx])
+
+
+def _estilo_sticky_celda_excel(
+    *,
+    col_idx: int,
+    left_px: int,
+    es_fija: bool,
+    es_header: bool = False,
+    es_footer: bool = False,
+    es_ultima_fija: bool = False,
+) -> str:
+    if not es_fija and not es_header and not es_footer:
+        return ""
+    partes: list[str] = ["position:sticky"]
+    z = 12
+    if es_header:
+        partes.append("top:0")
+        z = 34
+    if es_footer:
+        partes.append("bottom:0")
+        z = max(z, 32)
+    if es_fija:
+        partes.append(f"left:{left_px}px")
+        z += 12 + col_idx
+    if es_header and es_fija:
+        z = 58 + col_idx
+    elif es_footer and es_fija:
+        z = 52 + col_idx
+    sombra = ""
+    if es_fija and es_ultima_fija:
+        sombra = "box-shadow:6px 0 12px rgba(0,0,0,0.45);"
+    elif es_header:
+        sombra = "box-shadow:0 2px 0 #333333;"
+    elif es_footer:
+        sombra = "box-shadow:0 -2px 0 #333333;"
+    return f"{';'.join(partes)};z-index:{z};{sombra}"
+
+
+def _altura_contenedor_tabla_excel(
+    n_filas: int, font_px: int, *, pantalla_completa: bool = False, viewport_h: int = REF_VIEWPORT_H
+) -> int:
     alto_hdr = max(48, int(font_px * 1.75))
     alto_fila = max(36, int(font_px * 1.4))
+    alto_pie = max(40, int(font_px * 1.5))
+    if pantalla_completa:
+        usable = max(480, viewport_h - 300)
+        return int(min(usable, max(520, alto_hdr + alto_pie + 16 + min(n_filas, 40) * alto_fila)))
     visible = min(n_filas, _EXCEL_FILAS_VISIBLES_SCROLL)
-    return int(min(720, max(420, alto_hdr + 12 + visible * alto_fila)))
+    return int(min(720, max(420, alto_hdr + alto_pie + 12 + visible * alto_fila)))
 
 
 def _css_tabla_excel_wall_street(altura_px: int) -> str:
@@ -3714,6 +3854,10 @@ section[data-testid="stMain"] div[data-testid="stElementContainer"]:has(.lri-htm
 section[data-testid="stMain"] div[data-testid="stMarkdownContainer"]:has(.lri-html-table-scroll-container) {{
     overflow: visible !important;
     max-height: none !important;
+}}
+.lri-excel-ws-scroll.lri-excel-ws-fullscreen {{
+    max-height: none;
+    width: 100%;
 }}
 .lri-excel-ws-scroll::-webkit-scrollbar {{
     height: 14px;
@@ -3745,6 +3889,18 @@ section[data-testid="stMain"] div[data-testid="stMarkdownContainer"]:has(.lri-ht
 .lri-excel-ws-table td {{
     font-weight: 500;
 }}
+.lri-excel-ws-table tfoot th,
+.lri-excel-ws-table tfoot td {{
+    position: sticky !important;
+    bottom: 0 !important;
+    z-index: 28 !important;
+    background: {_EXCEL_WS_TOTAL_BG} !important;
+    color: {_EXCEL_WS_TOTAL_FG} !important;
+    font-weight: 800 !important;
+    letter-spacing: 0.03em;
+    box-shadow: 0 -2px 0 #333333;
+    background-clip: padding-box !important;
+}}
 </style>
 """
 
@@ -3753,33 +3909,85 @@ def _html_tabla_excel_wall_street(df: pd.DataFrame, font_px: int) -> str:
     cols = list(df.columns)
     pad = f"{max(5, font_px // 3)}px {max(8, font_px // 2 + 2)}px"
     alto_fila = max(36, int(font_px * 1.4))
+    anchos = _anchos_columnas_excel_ws(cols, font_px)
+    cols_fijas = _indices_columnas_fijas_excel(cols)
+    ultima_fija = max(cols_fijas) if cols_fijas else -1
+    totales = _totales_columnas_excel_ws(df)
+
+    def _celda(
+        col_idx: int,
+        contenido: str,
+        *,
+        bg: str,
+        fg: str,
+        es_header: bool = False,
+        es_footer: bool = False,
+        align: str = "left",
+    ) -> str:
+        es_fija = col_idx in cols_fijas
+        left = _left_columna_fija_excel(anchos, col_idx)
+        sticky = _estilo_sticky_celda_excel(
+            col_idx=col_idx,
+            left_px=left,
+            es_fija=es_fija,
+            es_header=es_header,
+            es_footer=es_footer,
+            es_ultima_fija=es_fija and col_idx == ultima_fija,
+        )
+        tag = "th" if es_header or es_footer else "td"
+        bg_use = _EXCEL_WS_HEADER_BG if es_header else (_EXCEL_WS_TOTAL_BG if es_footer else bg)
+        fg_use = _EXCEL_WS_HEADER_FG if es_header else (_EXCEL_WS_TOTAL_FG if es_footer else fg)
+        peso = "font-weight:700;" if es_header else ("font-weight:800;" if es_footer else "")
+        return (
+            f"<{tag} style=\"min-width:{anchos[col_idx]}px;max-width:{anchos[col_idx]}px;"
+            f"width:{anchos[col_idx]}px;padding:{pad};text-align:{align};white-space:normal;"
+            f"line-height:1.35;vertical-align:middle;font-size:{font_px}px;"
+            f"background:{bg_use};color:{fg_use};{peso}"
+            f"background-clip:padding-box;"
+            f"border-bottom:1px solid #1e293b;border-right:1px solid #1a2740;"
+            f"min-height:{alto_fila}px;{sticky}\">"
+            f"{html.escape(contenido)}</{tag}>"
+        )
 
     thead = "<thead><tr>" + "".join(
-        f'<th style="padding:{pad};text-align:left;white-space:normal;'
-        f'line-height:1.25;vertical-align:middle;position:sticky;top:0;z-index:31;'
-        f'background:{_EXCEL_WS_HEADER_BG};color:{_EXCEL_WS_HEADER_FG};">{html.escape(str(c))}</th>'
-        for c in cols
+        _celda(i, str(c), bg="", fg="", es_header=True, align="left")
+        for i, c in enumerate(cols)
     ) + "</tr></thead>"
 
     filas: list[str] = []
     for i, (_, row) in enumerate(df.iterrows()):
         bg, fg = _EXCEL_WS_FILAS[i % 2]
         celdas = "".join(
-            f'<td style="background:{bg};color:{fg};font-size:{font_px}px;'
-            f'padding:{pad};min-height:{alto_fila}px;line-height:1.35;'
-            f'border-bottom:1px solid #1e293b;vertical-align:middle;">'
-            f"{html.escape(_formatear_celda_excel_ws(row[c]))}</td>"
-            for c in cols
+            _celda(
+                j,
+                _formatear_celda_excel_ws(row[c]),
+                bg=bg,
+                fg=fg,
+                align="center" if j > 0 and pd.api.types.is_numeric_dtype(df[c]) else "left",
+            )
+            for j, c in enumerate(cols)
         )
         filas.append(f"<tr>{celdas}</tr>")
 
+    tfoot = "<tfoot><tr>" + "".join(
+        _celda(
+            j,
+            _formatear_celda_excel_ws(totales[c], es_total=True),
+            bg=_EXCEL_WS_TOTAL_BG,
+            fg=_EXCEL_WS_TOTAL_FG,
+            es_footer=True,
+            align="left" if j == 0 else "center",
+        )
+        for j, c in enumerate(cols)
+    ) + "</tr></tfoot>"
+
     return (
         f'<table class="lri-excel-ws-table" style="font-size:{font_px}px;">'
-        f"{thead}<tbody>{''.join(filas)}</tbody></table>"
+        f"{thead}<tbody>{''.join(filas)}</tbody>{tfoot}</table>"
     )
 
 
-def _render_vista_excel_completo(df: pd.DataFrame) -> None:
+def _render_vista_excel_completo(df: pd.DataFrame, viewport_h: int = REF_VIEWPORT_H) -> None:
     """Tabla completa del Excel cargado (mismo concepto que Base de datos en Inventario Pro)."""
     hoja = st.session_state.get("lri_excel_hoja_activa") or "datos"
     st.markdown("##### 📋 Archivo Excel cargado")
@@ -3797,17 +4005,31 @@ def _render_vista_excel_completo(df: pd.DataFrame) -> None:
         c4.metric("Productos", f"{df[col_desc].nunique():,}" if col_desc else "—")
     else:
         c4.metric("Hoja activa", hoja)
+
+    pantalla_completa = st.toggle(
+        "Tabla a pantalla completa",
+        key="lri_excel_pantalla_completa",
+        help="Amplía el área de scroll vertical para revisar más filas en una sola vista.",
+    )
+    cols_fijas = _indices_columnas_fijas_excel(list(df.columns))
+    nombres_fijos = ", ".join(f"**{list(df.columns)[i]}**" for i in sorted(cols_fijas))
     st.caption(
         f"Vista completa de la hoja **{hoja}** ({len(df):,} filas × {len(df.columns)} columnas). "
-        "Cabecera negra · filas alternadas azul marino y gris (estilo terminal financiero). "
-        "Desplácese dentro del recuadro para revisar todos los registros."
+        "Desplácese **horizontalmente** para ver todas las columnas y **verticalmente** para recorrer filas. "
+        f"Columnas fijas al desplazar: {nombres_fijos}. "
+        "Cabecera negra arriba · fila **TOTAL** abajo (suma de columnas numéricas). "
+        "Estilo terminal financiero (filas alternadas azul marino y gris)."
     )
     font_px = max(11, int(st.session_state.get("lri_tabla_fontsize", 13)))
-    altura_px = _altura_contenedor_tabla_excel(len(df), font_px)
+    altura_px = _altura_contenedor_tabla_excel(
+        len(df), font_px, pantalla_completa=pantalla_completa, viewport_h=viewport_h
+    )
     st.markdown(_css_tabla_excel_wall_street(altura_px), unsafe_allow_html=True)
     tabla_html = _html_tabla_excel_wall_street(df, font_px)
+    clase_scroll = "lri-excel-ws-scroll lri-excel-ws-fullscreen" if pantalla_completa else "lri-excel-ws-scroll"
+    estilo_h = f"height:{altura_px}px;min-height:{altura_px}px;max-height:{altura_px}px;"
     st.markdown(
-        f'<div class="lri-excel-ws-scroll">{tabla_html}</div>',
+        f'<div class="{clase_scroll}" style="{estilo_h}">{tabla_html}</div>',
         unsafe_allow_html=True,
     )
     col_csv, col_xlsx = st.columns(2)
@@ -4550,7 +4772,7 @@ if df is not None:
         _sembrar_ejes_default_si_corresponde(df)
         _ajustar_ejes_a_dataframe(df)
         if st.session_state.get("lri_mostrar_excel_completo"):
-            _render_vista_excel_completo(df)
+            _render_vista_excel_completo(df, viewport_h_ui)
 
     render_perfilado_manual_panel(
         df=df,
