@@ -26,20 +26,100 @@ from audio_recorder_streamlit import audio_recorder
 st.set_page_config(page_title="Profile Pro", page_icon="📊", layout="wide")
 
 # ------------------------------------------------------------------------------
-# Escala visual FIJA de la interfaz (independiente del zoom del navegador).
-# Garantiza que la app se vea igual en local y en Render para cualquier usuario,
-# sin que nadie tenga que tocar Ctrl +/-. Se expresa en PORCENTAJE de tamaño:
-#   100 = nativo, 95 = 5% reducido, 90 = 10% reducido, etc.
-# Ajusta solo este número para agrandar (subir) o achicar (bajar) toda la interfaz.
+# Escala visual de la interfaz. Base calibrada en 1920×1080; en pantallas más
+# chicas/grandes se ajusta sola según el ancho detectado del navegador.
+# ESCALA_INTERFAZ_PCT es el % en la resolución de referencia (100 = nativo).
 # ------------------------------------------------------------------------------
 ESCALA_INTERFAZ_PCT = 97
-st.markdown(
-    f"<style>.stApp {{ zoom: {ESCALA_INTERFAZ_PCT / 100}; }}</style>",
-    unsafe_allow_html=True,
-)
-
 REF_VIEWPORT_W = 1920
 REF_VIEWPORT_H = 1080
+_OPCIONES_VIEWPORT_H = (720, 768, 900, 1080, 1200, 1440)
+
+
+def _query_param_int(nombre: str) -> Optional[int]:
+    val = st.query_params.get(nombre)
+    if val is None:
+        return None
+    if isinstance(val, (list, tuple)):
+        val = val[0] if val else None
+    try:
+        return int(str(val).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _snap_altura_viewport(altura_px: int) -> int:
+    """Elige la opción de altura usable más cercana a la altura real de la ventana."""
+    return min(_OPCIONES_VIEWPORT_H, key=lambda x: abs(x - int(altura_px)))
+
+
+def _escala_interfaz_adaptativa(ancho_px: int) -> float:
+    """Zoom relativo al ancho de referencia 1920 (acotado para legibilidad)."""
+    base = ESCALA_INTERFAZ_PCT / 100.0
+    factor = max(0.55, min(1.35, float(ancho_px) / float(REF_VIEWPORT_W)))
+    return max(0.68, min(1.08, base * factor))
+
+
+def _detectar_viewport_navegador() -> Tuple[int, int]:
+    """
+    Lee el tamaño real de la ventana del navegador.
+    En la primera carga escribe lri_vw/lri_vh en la URL y recarga una vez.
+    """
+    vw = _query_param_int("lri_vw")
+    vh = _query_param_int("lri_vh")
+    if vw is not None and vh is not None and vw >= 320 and vh >= 400:
+        st.session_state["lri_viewport_w"] = vw
+        st.session_state["lri_viewport_h"] = vh
+        return vw, vh
+
+    # Fallback de sesión (p. ej. si los query params se limpian).
+    vw_ses = st.session_state.get("lri_viewport_w")
+    vh_ses = st.session_state.get("lri_viewport_h")
+    if isinstance(vw_ses, int) and isinstance(vh_ses, int) and vw_ses >= 320 and vh_ses >= 400:
+        return vw_ses, vh_ses
+
+    components.html(
+        dedent(
+            """
+            <script>
+            (function () {
+              try {
+                const win = window.parent;
+                const w = Math.round(
+                  win.innerWidth || win.document.documentElement.clientWidth || 1920
+                );
+                const h = Math.round(
+                  win.innerHeight || win.document.documentElement.clientHeight || 1080
+                );
+                const url = new URL(win.location.href);
+                if (!url.searchParams.get("lri_vw") || !url.searchParams.get("lri_vh")) {
+                  url.searchParams.set("lri_vw", String(w));
+                  url.searchParams.set("lri_vh", String(h));
+                  win.location.replace(url.toString());
+                }
+              } catch (e) {}
+            })();
+            </script>
+            """
+        ),
+        height=0,
+        width=0,
+    )
+    return REF_VIEWPORT_W, REF_VIEWPORT_H
+
+
+def _aplicar_escala_interfaz(ancho_px: int) -> float:
+    escala = _escala_interfaz_adaptativa(ancho_px)
+    st.markdown(
+        f"<style>.stApp {{ zoom: {escala:.4f}; }}</style>",
+        unsafe_allow_html=True,
+    )
+    st.session_state["lri_escala_interfaz"] = escala
+    return escala
+
+
+_VIEWPORT_W_DETECTADO, _VIEWPORT_H_DETECTADO = _detectar_viewport_navegador()
+_ESCALA_APLICADA = _aplicar_escala_interfaz(_VIEWPORT_W_DETECTADO)
 # profile1.py vive en modules/perfilado/. La raíz del proyecto está 2 niveles
 # arriba; los datos y los assets son carpetas compartidas en esa raíz.
 _RAIZ_PROYECTO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -108,7 +188,7 @@ MAPEO_PARETO_LEGACY = {
 
 METRICA_ADICIONAL_NINGUNA = "— Ninguna —"
 # Bump al desplegar: limpia sesiones web con datos/ejes de builds anteriores.
-LRI_PROFILE_REVISION = "2025-07-07-datos"
+LRI_PROFILE_REVISION = "2026-07-27-audit-abc"
 
 # Inicialización del Estado de la Sesión
 ESTADOS_INICIALES = {
@@ -181,6 +261,160 @@ def _normalizar_nombres_columnas_df(df: pd.DataFrame) -> pd.DataFrame:
     return df_out
 
 
+def _filtrar_filas_resumen_excel(df: pd.DataFrame) -> pd.DataFrame:
+    """Elimina filas TOTAL o pies de hoja sin producto/categoría (evita doble conteo)."""
+    df_limpio, _ = _filtrar_filas_resumen_excel_con_meta(df)
+    return df_limpio
+
+
+def _filtrar_filas_resumen_excel_con_meta(df: pd.DataFrame) -> Tuple[pd.DataFrame, dict[str, int]]:
+    """Filtra filas de resumen y devuelve contadores para auditoría."""
+    meta = {"filas_antes": len(df), "filas_omitidas": 0}
+    if df.empty:
+        return df, meta
+    claves = [c for c in ("categoria", "subcategoria", "codigo", "descripcion", "producto", "sku") if c in df.columns]
+    if not claves:
+        return df.reset_index(drop=True), meta
+
+    def _fila_es_registro_datos(row: pd.Series) -> bool:
+        for col in claves:
+            val = row.get(col)
+            if val is None or (isinstance(val, float) and pd.isna(val)):
+                continue
+            txt = str(val).strip()
+            if txt and txt.lower() != "nan" and txt.upper() != "TOTAL":
+                return True
+        return False
+
+    mascara = df.apply(_fila_es_registro_datos, axis=1)
+    meta["filas_omitidas"] = int((~mascara).sum())
+    return df.loc[mascara].reset_index(drop=True), meta
+
+
+def _construir_auditoria_datos(
+    df: pd.DataFrame,
+    *,
+    filas_antes: int = 0,
+    filas_omitidas: int = 0,
+) -> dict[str, Any]:
+    """Auditoría rápida post-carga: alertas, totales clave y desglose por categoría."""
+    audit: dict[str, Any] = {
+        "filas_validas": len(df),
+        "filas_excel_originales": filas_antes or len(df),
+        "filas_resumen_omitidas": filas_omitidas,
+        "alertas": [],
+        "ok": [],
+        "desglose_categoria": {},
+        "metricas_aditivas": [],
+    }
+    try:
+        return _construir_auditoria_datos_interno(
+            df, audit, filas_antes=filas_antes, filas_omitidas=filas_omitidas
+        )
+    except Exception as exc:  # noqa: BLE001 — no bloquear la carga por la auditoría
+        audit["alertas"].append(
+            f"Auditoría parcial: no se pudo validar todos los totales ({type(exc).__name__}). "
+            "Los datos sí se cargaron; puede perfilar con normalidad."
+        )
+        if not audit["ok"]:
+            audit["ok"].append(
+                f"Archivo cargado: **{len(df):,}** filas disponibles para perfilar."
+            )
+        return audit
+
+
+def _construir_auditoria_datos_interno(
+    df: pd.DataFrame,
+    audit: dict[str, Any],
+    *,
+    filas_antes: int,
+    filas_omitidas: int,
+) -> dict[str, Any]:
+    if df.empty:
+        audit["alertas"].append("El archivo no tiene filas de datos tras la limpieza.")
+        return audit
+
+    if filas_omitidas > 0:
+        audit["alertas"].append(
+            f"Se omitieron **{filas_omitidas}** fila(s) de resumen/TOTAL al pie del Excel "
+            f"(de {filas_antes:,} filas leídas → {len(df):,} filas de producto). "
+            "Sin esto los totales se duplicaban."
+        )
+
+    if "categoria" in df.columns:
+        sin_cat = int(df["categoria"].isna().sum())
+        if sin_cat:
+            audit["alertas"].append(
+                f"**{sin_cat}** fila(s) sin categoría; no entrarán en perfiles por categoría."
+            )
+        audit["categorias"] = sorted(df["categoria"].dropna().astype(str).unique().tolist())
+
+    dup = int(df.duplicated().sum())
+    if dup:
+        audit["alertas"].append(
+            f"**{dup}** fila(s) duplicada(s) idénticas; pueden inflar sumas si no son intencionales."
+        )
+
+    for col in df.columns:
+        if not _columna_es_metrica_aditiva_suma(str(col), df):
+            continue
+        # Nunca sumar texto (p. ej. clasificación ABC AABBCC...); solo numérico.
+        serie_num = pd.to_numeric(df[col], errors="coerce")
+        n_num = int(serie_num.notna().sum())
+        if n_num == 0 or n_num < max(1, int(0.5 * len(df))):
+            continue
+        audit["metricas_aditivas"].append(str(col))
+        total_raw = float(serie_num.fillna(0.0).sum())
+        if "subcategoria" in df.columns:
+            total_sub = float(serie_num.fillna(0.0).groupby(df["subcategoria"]).sum().sum())
+            if total_raw > 0 and abs(total_sub - total_raw) / total_raw > 0.001:
+                audit["alertas"].append(
+                    f"«{col}»: suma por subcategoría ({total_sub:,.0f}) ≠ suma directa ({total_raw:,.0f})."
+                )
+        if "categoria" in df.columns and "tarima" in _norm_texto(col) and "invent" in _norm_texto(col):
+            for cat, subtotal in serie_num.fillna(0.0).groupby(df["categoria"]).sum().items():
+                audit["desglose_categoria"][str(cat)] = float(subtotal)
+            audit["ok"].append(
+                f"Total tarimas en inventario: **{total_raw:,.0f}** "
+                f"(Insumo + Medicina u otras categorías)."
+            )
+
+    if not audit["alertas"]:
+        audit["ok"].insert(
+            0,
+            f"Archivo limpio: **{len(df):,}** filas de producto listas para perfilar.",
+        )
+    return audit
+
+
+def _render_panel_auditoria_datos_sidebar() -> None:
+    """Muestra control de calidad del Excel cargado (sidebar)."""
+    audit = st.session_state.get("lri_auditoria_datos")
+    if not audit:
+        return
+    with st.expander("Control de calidad de datos", expanded=bool(audit.get("alertas"))):
+        st.caption(
+            f"Filas Excel: {audit.get('filas_excel_originales', 0):,} leídas → "
+            f"**{audit.get('filas_validas', 0):,}** válidas"
+            + (
+                f" ({audit.get('filas_resumen_omitidas', 0):,} de resumen omitidas)"
+                if audit.get("filas_resumen_omitidas")
+                else ""
+            )
+        )
+        for msg in audit.get("ok") or []:
+            st.success(msg)
+        for msg in audit.get("alertas") or []:
+            st.warning(msg)
+        desglose = audit.get("desglose_categoria") or {}
+        if desglose:
+            st.markdown("**Tarimas en inventario por categoría**")
+            for cat, val in sorted(desglose.items(), key=lambda x: -x[1]):
+                st.caption(f"· {cat}: **{val:,.0f}** tarimas")
+        if audit.get("categorias"):
+            st.caption(f"Categorías detectadas: {', '.join(audit['categorias'])}")
+
+
 def _es_columna_descartable(nombre: str) -> bool:
     """Columnas vacías o sin encabezado que Excel exporta como 'Unnamed: N'."""
     s = str(nombre).strip()
@@ -220,6 +454,61 @@ def _columna_es_conteo_logistico(nombre: str) -> bool:
             "pedidosanual",
             "facturasanual",
             "empaque",
+            "tarima",
+            "pallet",
+            "cubicaje",
+            "volumen",
+            "numerode",
+        )
+    )
+
+
+def _suma_numerica_columna(df: pd.DataFrame, col: str) -> float:
+    if col not in df.columns:
+        return 0.0
+    return float(pd.to_numeric(df[col], errors="coerce").fillna(0.0).sum())
+
+
+def _columna_es_metrica_aditiva_suma(nombre: str, df: Optional[pd.DataFrame] = None) -> bool:
+    """Tarimas, bultos, inventario $, cubicaje, ventas, etc.: se totalizan sumando."""
+    if _columna_es_metrica_ratio_inventario(nombre):
+        return False
+    if df is not None and (
+        _metrica_margen_sobre_ventas(df, nombre) or _metrica_costo_mantener_pct(df, nombre)
+    ):
+        return False
+    if _nombre_eje_y_es_porcentual(nombre):
+        return False
+    raw = str(nombre).strip().lower()
+    if "%" in raw or "pct" in raw or "porcent" in raw or "percent" in raw:
+        return False
+    if _columna_es_conteo_logistico(nombre):
+        return True
+    n = _norm_texto(nombre)
+    return any(
+        p in n
+        for p in (
+            "tarima",
+            "pallet",
+            "bulto",
+            "caja",
+            "cubicaje",
+            "volumen",
+            "venta",
+            "utilidad",
+            "costo",
+            "inventario",
+            "valor",
+            "peso",
+            "tonelada",
+            "factura",
+            "pedido",
+            "unidad",
+            "demanda",
+            "ingreso",
+            "cajas",
+            "dolares",
+            "m3",
         )
     )
 
@@ -531,7 +820,8 @@ def _contenido_id_excel(file_bytes: bytes) -> str:
 def _parsear_bytes_excel_a_dataframe(
     file_bytes: bytes,
     sheet_name: Optional[str] = None,
-) -> Tuple[Optional[pd.DataFrame], Optional[str], list[str], Optional[str]]:
+) -> Tuple[Optional[pd.DataFrame], Optional[str], list[str], Optional[str], dict[str, int]]:
+    meta_vacio: dict[str, int] = {"filas_antes": 0, "filas_omitidas": 0}
     try:
         xl = pd.ExcelFile(io.BytesIO(file_bytes), engine="openpyxl")
         hojas = _filtrar_hojas_perfil(xl.sheet_names)
@@ -542,16 +832,19 @@ def _parsear_bytes_excel_a_dataframe(
                 "Profile Pro necesita una hoja con datos de productos.",
                 [],
                 None,
+                meta_vacio,
             )
         hoja_activa = sheet_name if sheet_name in hojas else None
         if hoja_activa is None:
             hoja_activa = _elegir_hoja_datos_automatica(xl, hojas)
         df_read = pd.read_excel(xl, sheet_name=hoja_activa)
-        return _normalizar_nombres_columnas_df(df_read), None, hojas, hoja_activa
+        df_norm = _normalizar_nombres_columnas_df(df_read)
+        df_clean, meta_limpieza = _filtrar_filas_resumen_excel_con_meta(df_norm)
+        return df_clean, None, hojas, hoja_activa, meta_limpieza
     except Exception as e:
         if _es_error_archivo_abierto(e):
-            return None, MSG_ARCHIVO_EXCEL_ABIERTO, [], None
-        return None, str(e), [], None
+            return None, MSG_ARCHIVO_EXCEL_ABIERTO, [], None, meta_vacio
+        return None, str(e), [], None, meta_vacio
 
 
 @st.cache_data(show_spinner=False)
@@ -559,7 +852,7 @@ def _cargar_dataframe_excel_cached(
     contenido_id: str,
     hoja_solicitada: str,
     file_bytes: bytes,
-) -> Tuple[Optional[pd.DataFrame], Optional[str], list[str], Optional[str]]:
+) -> Tuple[Optional[pd.DataFrame], Optional[str], list[str], Optional[str], dict[str, int]]:
     """
     Cache de lectura Excel. Se invalida sola cuando cambia el archivo (contenido_id)
     o la hoja solicitada (hoja_solicitada vacía = auto-selección).
@@ -572,10 +865,106 @@ def _cargar_dataframe_excel_cached(
 def _cargar_dataframe_excel(
     file_bytes: bytes,
     sheet_name: Optional[str] = None,
-) -> Tuple[Optional[pd.DataFrame], Optional[str], list[str], Optional[str]]:
+) -> Tuple[Optional[pd.DataFrame], Optional[str], list[str], Optional[str], dict[str, int]]:
     contenido_id = _contenido_id_excel(file_bytes)
     hoja_key = sheet_name or ""
     return _cargar_dataframe_excel_cached(contenido_id, hoja_key, file_bytes)
+
+
+@st.cache_data(show_spinner="Calculando perfilado…")
+def _procesar_agrupacion_perfil_cached(
+    contenido_id: str,
+    drill_down: str,
+    eje_x: str,
+    eje_y: str,
+    operacion: str,
+    top_n: int,
+    set_pareto: str,
+    file_bytes: bytes,
+    hoja: str,
+) -> pd.DataFrame | str:
+    del contenido_id
+    df, err, _, _, _ = _parsear_bytes_excel_a_dataframe(file_bytes, sheet_name=hoja or None)
+    if err or df is None:
+        return "ERROR_NO_COMPUTABLE"
+    drill_cat = drill_down or None
+    return procesar_agrupacion_perfil(
+        df,
+        eje_x,
+        eje_y,
+        operacion,
+        top_n,
+        set_pareto,
+        drill_down_categoria=drill_cat,
+    )
+
+
+def _procesar_agrupacion_con_cache(
+    df: pd.DataFrame,
+    eje_x: str,
+    eje_y: str,
+    operacion: str,
+    top_n: int,
+    set_pareto: str,
+    drill_down_categoria: Optional[str] = None,
+) -> pd.DataFrame | str:
+    file_bytes = _obtener_bytes_excel_activos()
+    if not file_bytes:
+        return procesar_agrupacion_perfil(
+            df,
+            eje_x,
+            eje_y,
+            operacion,
+            top_n,
+            set_pareto,
+            drill_down_categoria=drill_down_categoria,
+        )
+    contenido_id = st.session_state.get("lri_excel_contenido_id") or _contenido_id_excel(file_bytes)
+    hoja = st.session_state.get("lri_excel_hoja_activa") or ""
+    drill = drill_down_categoria
+    if drill is None:
+        drill = st.session_state.get("drill_down_categoria")
+    return _procesar_agrupacion_perfil_cached(
+        contenido_id,
+        str(drill or ""),
+        eje_x,
+        eje_y,
+        operacion,
+        top_n,
+        set_pareto,
+        file_bytes,
+        hoja,
+    )
+
+
+@st.cache_data(show_spinner=False)
+def _html_explorador_excel_cached(
+    contenido_id: str,
+    drill_json: str,
+    hoja: str,
+    font_px: int,
+    altura_px: int,
+    pantalla_completa: bool,
+    file_bytes: bytes,
+    html_rev: str = "hscroll-revert-v2",
+) -> str:
+    del contenido_id, html_rev
+    df, err, _, _, _ = _parsear_bytes_excel_a_dataframe(file_bytes, sheet_name=hoja or None)
+    if err or df is None:
+        return "<p>Sin datos</p>"
+    filtros = json.loads(drill_json) if drill_json else {}
+    filtros = _sanitizar_filtros_drill_across_excel(df, filtros)
+    df_vista = _aplicar_filtros_drill_across_excel(df, filtros)
+    return _documento_html_excel_interactivo(
+        df_vista, font_px, altura_px, pantalla_completa=pantalla_completa
+    )
+
+
+@st.cache_data(show_spinner=False)
+def _bytes_excel_perfilado_cached(meta_json: str, df_csv: str) -> bytes:
+    df_datos = pd.read_csv(io.StringIO(df_csv))
+    meta = json.loads(meta_json)
+    return _bytes_excel_perfilado(df_datos, meta)
 
 
 def _aplicar_resultado_carga_a_sesion(
@@ -587,6 +976,7 @@ def _aplicar_resultado_carga_a_sesion(
     file_bytes: Optional[bytes] = None,
     reset_ejes: bool = False,
     limpiar_bytes_subida: bool = False,
+    meta_limpieza: Optional[dict[str, int]] = None,
 ) -> None:
     st.session_state["lri_df_datos"] = df
     st.session_state["lri_error_carga"] = err
@@ -600,6 +990,15 @@ def _aplicar_resultado_carga_a_sesion(
         st.session_state["lri_excel_contenido_id"] = _contenido_id_excel(file_bytes)
     if reset_ejes:
         _resetear_estado_tras_nuevo_archivo()
+    if df is not None:
+        meta = meta_limpieza or {}
+        st.session_state["lri_auditoria_datos"] = _construir_auditoria_datos(
+            df,
+            filas_antes=int(meta.get("filas_antes", len(df))),
+            filas_omitidas=int(meta.get("filas_omitidas", 0)),
+        )
+    else:
+        st.session_state.pop("lri_auditoria_datos", None)
 
 
 def _obtener_bytes_excel_activos() -> Optional[bytes]:
@@ -723,27 +1122,28 @@ def _leer_bytes_archivo_excel(path: str) -> bytes:
 
 def cargar_datos(
     sheet_name: Optional[str] = None,
-) -> Tuple[Optional[pd.DataFrame], Optional[str], list[str], Optional[str]]:
+) -> Tuple[Optional[pd.DataFrame], Optional[str], list[str], Optional[str], dict[str, int]]:
+    meta_vacio: dict[str, int] = {"filas_antes": 0, "filas_omitidas": 0}
     if not os.path.isfile(ARCHIVO_EXCEL_PATH):
         msg = f"No se encontró el archivo '{os.path.basename(ARCHIVO_EXCEL_PATH)}' en el directorio."
-        return None, msg, [], None
+        return None, msg, [], None, meta_vacio
     try:
         file_bytes = _leer_bytes_archivo_excel(ARCHIVO_EXCEL_PATH)
         return _cargar_dataframe_excel(file_bytes, sheet_name=sheet_name)
     except (PermissionError, OSError) as e:
         if _es_error_archivo_abierto(e):
-            return None, MSG_ARCHIVO_EXCEL_ABIERTO, [], None
-        return None, str(e), [], None
+            return None, MSG_ARCHIVO_EXCEL_ABIERTO, [], None, meta_vacio
+        return None, str(e), [], None, meta_vacio
     except Exception as e:
         if _es_error_archivo_abierto(e):
-            return None, MSG_ARCHIVO_EXCEL_ABIERTO, [], None
-        return None, str(e), [], None
+            return None, MSG_ARCHIVO_EXCEL_ABIERTO, [], None, meta_vacio
+        return None, str(e), [], None, meta_vacio
 
 
 def cargar_datos_desde_upload(
     file_bytes: bytes,
     sheet_name: Optional[str] = None,
-) -> Tuple[Optional[pd.DataFrame], Optional[str], list[str], Optional[str]]:
+) -> Tuple[Optional[pd.DataFrame], Optional[str], list[str], Optional[str], dict[str, int]]:
     return _cargar_dataframe_excel(file_bytes, sheet_name=sheet_name)
 
 
@@ -1990,9 +2390,32 @@ def _ratio_margen_por_fila(df: pd.DataFrame, eje_y: str) -> pd.Series:
     return pd.Series(np.nan, index=df.index)
 
 
-def calcular_metricas_encabezado(
-    df_filtrado: pd.DataFrame, eje_y: str, operacion: str
-) -> Tuple[str, str]:
+def _resolver_total_metrica_perfil(
+    df_filtrado: pd.DataFrame,
+    eje_y: str,
+    operacion: str,
+    df_resumen: Optional[pd.DataFrame] = None,
+) -> Tuple[str, float, str]:
+    """Etiqueta, valor numérico y texto formateado del total/promedio de una métrica."""
+    if _columna_es_metrica_aditiva_suma(eje_y, df_filtrado):
+        if (
+            operacion == "Suma"
+            and df_resumen is not None
+            and eje_y in df_resumen.columns
+            and len(df_resumen) > 0
+        ):
+            val_total = _suma_numerica_columna(df_resumen, eje_y)
+        else:
+            val_total = _suma_numerica_columna(df_filtrado, eje_y)
+        label = f"Total {eje_y}"
+        if _metrica_eje_y_en_miles(eje_y):
+            val_formateado = _formatear_valor_miles(val_total)
+        elif abs(val_total - round(val_total)) < 1e-6:
+            val_formateado = f"{val_total:,.0f}"
+        else:
+            val_formateado = f"{val_total:,.2f}"
+        return label, val_total, val_formateado
+
     if _metrica_margen_sobre_ventas(df_filtrado, eje_y):
         ratios = _serie_ratio_0_1(_ratio_margen_por_fila(df_filtrado, eje_y)).dropna()
         if ratios.empty:
@@ -2015,16 +2438,16 @@ def calcular_metricas_encabezado(
             f"{'Total' if operacion == 'Suma' else 'Promedio'} {eje_y} (% sobre ventas)"
         )
         val_formateado = _formatear_valor_porcentaje(val_total, False, eje_y=eje_y)
-        return label, val_formateado
+        return label, val_total, val_formateado
 
     if _metrica_costo_mantener_pct(df_filtrado, eje_y):
-        s = df_filtrado[eje_y].dropna()
+        s = pd.to_numeric(df_filtrado[eje_y], errors="coerce").dropna()
         val_total = float(s.mean()) if len(s) else 0.0
         label = f"Tasa media {eje_y}"
         val_formateado = _formatear_valor_porcentaje(
             val_total, _porcentaje_en_escala_0_100(s), eje_y=eje_y
         )
-        return label, val_formateado
+        return label, val_total, val_formateado
 
     if _nombre_eje_y_es_porcentual(eje_y) and eje_y in df_filtrado.columns:
         s = pd.to_numeric(df_filtrado[eje_y], errors="coerce").dropna()
@@ -2035,27 +2458,33 @@ def calcular_metricas_encabezado(
         else:
             val_total = float(s.mean()) if len(s) else 0.0
             label = f"Promedio {eje_y}"
-        return label, _formatear_valor_porcentaje(val_total, escala, eje_y=eje_y)
+        return label, val_total, _formatear_valor_porcentaje(val_total, escala, eje_y=eje_y)
 
     if _columna_es_metrica_ratio_inventario(eje_y):
-        val_total = _valor_ratio_inventario_ponderado(df_filtrado, eje_y)
+        val_total = float(_valor_ratio_inventario_ponderado(df_filtrado, eje_y))
         n = _norm_texto(eje_y)
         if "meses" in n:
             label = f"Meses inventario ponderados ({eje_y})"
         else:
             label = f"Rotación ponderada ({eje_y})"
         val_formateado = f"{val_total:,.2f}"
-        return label, val_formateado
+        return label, val_total, val_formateado
 
     if operacion == "Suma":
-        val_total = df_filtrado[eje_y].sum() if eje_y in df_filtrado.columns else 0
+        if eje_y in df_filtrado.columns:
+            val_total = float(pd.to_numeric(df_filtrado[eje_y], errors="coerce").sum())
+        else:
+            val_total = 0.0
         label = f"Total {eje_y}"
         if _metrica_eje_y_en_miles(eje_y):
             val_formateado = _formatear_valor_miles(val_total)
         else:
             val_formateado = f"{val_total:,.0f}"
     else:
-        val_total = df_filtrado[eje_y].mean() if eje_y in df_filtrado.columns else 0
+        if eje_y in df_filtrado.columns:
+            val_total = float(pd.to_numeric(df_filtrado[eje_y], errors="coerce").mean())
+        else:
+            val_total = 0.0
         label = f"Promedio {eje_y}"
         if _metrica_eje_y_en_miles(eje_y):
             val_formateado = _formatear_valor_miles(val_total)
@@ -2065,6 +2494,13 @@ def calcular_metricas_encabezado(
         else:
             val_formateado = f"{val_total:,.2f}"
 
+    return label, val_total, val_formateado
+
+
+def calcular_metricas_encabezado(
+    df_filtrado: pd.DataFrame, eje_y: str, operacion: str
+) -> Tuple[str, str]:
+    label, _, val_formateado = _resolver_total_metrica_perfil(df_filtrado, eje_y, operacion)
     return label, val_formateado
 
 
@@ -2298,6 +2734,100 @@ def _preparar_tabla_metricas_detalle(
         ver_completo_pantalla=ver_completo_pantalla,
     )
     return out, columnas, clase_css, altura_scroll
+
+
+_ESTILO_FILA_TOTAL_TABLA = (
+    "background-color:#1a2030 !important;color:#fbbf24 !important;"
+    "font-weight:800 !important;letter-spacing:0.03em;"
+    "position:sticky !important;bottom:0 !important;z-index:20 !important;"
+    "box-shadow:0 -2px 0 #333333;background-clip:padding-box !important;"
+)
+
+
+def _valor_agregado_columna_tabla_perfil(
+    col: str,
+    df_tabla: pd.DataFrame,
+    df_origen: pd.DataFrame,
+    operacion: str,
+    df_resumen: Optional[pd.DataFrame] = None,
+) -> object:
+    """Total de pie de tabla para una columna (suma o promedio según operación)."""
+    if col not in df_tabla.columns:
+        return ""
+    if operacion == "Suma" and _columna_es_metrica_aditiva_suma(col, df_origen):
+        if df_resumen is not None and col in df_resumen.columns and len(df_resumen) > 0:
+            return _suma_numerica_columna(df_resumen, col)
+        return _suma_numerica_columna(df_tabla, col)
+    if operacion == "Suma":
+        if _columna_es_metrica_ratio_inventario(col):
+            return float(_valor_ratio_inventario_ponderado(df_origen, col))
+        if (
+            _metrica_margen_sobre_ventas(df_origen, col)
+            or _metrica_costo_mantener_pct(df_origen, col)
+            or (_nombre_eje_y_es_porcentual(col) and not _metrica_eje_y_en_miles(col))
+        ):
+            _, val, _ = _resolver_total_metrica_perfil(df_origen, col, "Promedio")
+            return val
+        serie = pd.to_numeric(df_tabla[col], errors="coerce")
+        return float(serie.sum()) if len(serie) else 0.0
+    _, val, _ = _resolver_total_metrica_perfil(df_origen, col, "Promedio")
+    if _columna_es_metrica_ratio_inventario(col) or _metrica_margen_sobre_ventas(df_origen, col):
+        return val
+    serie = pd.to_numeric(df_tabla[col], errors="coerce")
+    return float(serie.mean()) if len(serie) else 0.0
+
+
+def _fila_total_tabla_perfilado(
+    df_tabla: pd.DataFrame,
+    df_origen: pd.DataFrame,
+    columnas: list[str],
+    eje_x: str,
+    operaciones_por_col: dict[str, str],
+    totales_fuente: Optional[dict[str, float]] = None,
+    df_resumen: Optional[pd.DataFrame] = None,
+) -> dict[str, object]:
+    fila: dict[str, object] = {}
+    for col in columnas:
+        if col == eje_x:
+            fila[col] = "TOTAL"
+        elif col == "producto":
+            fila[col] = ""
+        elif totales_fuente and col in totales_fuente:
+            fila[col] = totales_fuente[col]
+        else:
+            op = operaciones_por_col.get(col, "Suma")
+            fila[col] = _valor_agregado_columna_tabla_perfil(
+                col, df_tabla, df_origen, op, df_resumen=df_resumen
+            )
+    return fila
+
+
+def _tabla_perfilado_con_fila_total(
+    df_tabla: pd.DataFrame,
+    df_origen: pd.DataFrame,
+    columnas: list[str],
+    eje_x: str,
+    operaciones_por_col: dict[str, str],
+    df_resumen: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
+    totales_fuente: dict[str, float] = {}
+    for col, op in operaciones_por_col.items():
+        if col not in columnas:
+            continue
+        _, val, _ = _resolver_total_metrica_perfil(
+            df_origen, col, op, df_resumen=df_resumen
+        )
+        totales_fuente[col] = val
+    fila = _fila_total_tabla_perfilado(
+        df_tabla,
+        df_origen,
+        columnas,
+        eje_x,
+        operaciones_por_col,
+        totales_fuente=totales_fuente,
+        df_resumen=df_resumen,
+    )
+    return pd.concat([df_tabla, pd.DataFrame([fila])], ignore_index=True)
 
 
 # Anchos fijos de columnas (px); el slider solo cambia el tamaño de letra en celdas.
@@ -2563,6 +3093,16 @@ def _css_tabla_metricas(dims: dict[str, Any], fluido: bool = False) -> str:
         "text-align: center !important;",
         f"padding: {dims['pad_v']}px {dims['pad_h']}px !important;",
         "line-height: 1.12 !important;",
+        "}",
+        ".lri-tabla-wrap table.lri-perfil-table tbody tr:last-child td {",
+        "background-color: #1a2030 !important;",
+        "color: #fbbf24 !important;",
+        "font-weight: 800 !important;",
+        "position: sticky !important;",
+        "bottom: 0 !important;",
+        "z-index: 20 !important;",
+        "box-shadow: 0 -2px 0 #333333;",
+        "background-clip: padding-box !important;",
         "}",
     ]
     for i, w in enumerate(dims["anchos_cols"]):
@@ -3110,14 +3650,25 @@ def _evaluar_perfilado_computable(
     return True, None
 
 
-def procesar_agrupacion_perfil(df: pd.DataFrame, eje_x: str, eje_y: str, operacion: str, top_n: int, set_pareto: str) -> pd.DataFrame:
+def procesar_agrupacion_perfil(
+    df: pd.DataFrame,
+    eje_x: str,
+    eje_y: str,
+    operacion: str,
+    top_n: int,
+    set_pareto: str,
+    drill_down_categoria: Optional[str] = None,
+) -> pd.DataFrame:
     computable, _ = _evaluar_perfilado_computable(df, eje_x, eje_y, operacion)
     if not computable:
         return "ERROR_NO_COMPUTABLE"
     df_filtrado = df.copy()
 
-    if st.session_state["drill_down_categoria"] and "categoria" in df_filtrado.columns:
-        df_filtrado = df_filtrado[df_filtrado["categoria"] == st.session_state["drill_down_categoria"]]
+    drill = drill_down_categoria
+    if drill is None:
+        drill = st.session_state.get("drill_down_categoria")
+    if drill and "categoria" in df_filtrado.columns:
+        df_filtrado = df_filtrado[df_filtrado["categoria"] == drill]
 
     dict_ops = {"Suma": "sum", "Promedio": "mean"}
     pareto_peso: Optional[str] = None
@@ -3288,7 +3839,40 @@ def _preparar_df_exportacion_perfil(
             export[col] = vals_col.map(
                 lambda x: _formatear_valor_miles(float(x)) if pd.notna(x) else ""
             )
-    return export
+
+    operaciones_por_col = {eje_y: operacion}
+    for m in metricas_extras_data or []:
+        operaciones_por_col[str(m.get("columna", ""))] = str(m.get("operacion", "Suma"))
+
+    fila_total: dict[str, object] = {}
+    for col in export.columns:
+        if col == eje_x:
+            fila_total[col] = "TOTAL"
+        elif col in ("producto", "operacion_metrica_principal", "banda_pareto", "pct_participacion"):
+            fila_total[col] = ""
+        elif col in operaciones_por_col:
+            _, val, fmt = _resolver_total_metrica_perfil(
+                df_origen, col, operaciones_por_col[col], df_resumen=df_resumen
+            )
+            if col == eje_y and y_pct:
+                fila_total[col] = _formatear_valor_porcentaje(val, y_escala, eje_y=eje_y)
+            elif col == eje_y and y_miles:
+                fila_total[col] = _formatear_valor_miles(val)
+            elif col in (metricas_extra or []):
+                col_pct, col_escala = _info_presentacion_porcentaje_eje_y(df_origen, col, export)
+                col_miles = _metrica_eje_y_en_miles(col)
+                if col_pct:
+                    fila_total[col] = _formatear_valor_porcentaje(val, col_escala, eje_y=col)
+                elif col_miles:
+                    fila_total[col] = _formatear_valor_miles(val)
+                else:
+                    fila_total[col] = fmt
+            else:
+                fila_total[col] = fmt if y_pct or y_miles else val
+        else:
+            fila_total[col] = ""
+
+    return pd.concat([export, pd.DataFrame([fila_total])], ignore_index=True)
 
 
 def _meta_exportacion_perfil(
@@ -3550,8 +4134,7 @@ def _margen_inferior_grafico(n: int, eje_x: str = "", max_label_len: int = 0) ->
 
 def _ver_grafico_completo_en_pantalla(eje_x: str) -> bool:
     """True si el usuario pidió ver todo el gráfico en pantalla (sin scroll)."""
-    if not _eje_x_es_codigo_o_descripcion(eje_x):
-        return False
+    del eje_x
     return bool(st.session_state.get("lri_grafico_scroll_completo", False))
 
 
@@ -3561,11 +4144,9 @@ def _scroll_grafico_activo(
     """¿Usar gráfico extendido con scroll horizontal? False = todo visible en pantalla."""
     if n < 2:
         return False
+    if ver_completo_pantalla:
+        return False
     tipo = _tipo_dimension_catalogo(eje_x)
-    if tipo in ("codigo", "descripcion"):
-        if ver_completo_pantalla:
-            return False
-        return n > _umbral_scroll_dimension(tipo)
     if tipo == "otro":
         return n > 8
     return n > _umbral_scroll_dimension(tipo)
@@ -3628,7 +4209,7 @@ def _mostrar_grafico_barras(
       }}
     </style>
     """
-    components.html(wrapped, height=altura + 52, scrolling=False)
+    st.iframe(wrapped, height=altura + 52, width="stretch")
     unidad = _etiqueta_unidad_eje_x(eje_x) if eje_x else "ítems"
     st.caption(
         f"Gráfico extendido ({n_barras} {unidad}, {ancho:,} px) — "
@@ -3730,7 +4311,7 @@ def _intentar_resolver_metrica_adicional(
         return None, aviso or f"«{col}» no es válida como métrica adicional."
     # Agregar todas las categorías del eje X; el Top N solo aplica al perfil principal.
     # Pareto solo en la métrica principal; las adicionales conservan su propio ranking.
-    df_resumen_m = procesar_agrupacion_perfil(
+    df_resumen_m = _procesar_agrupacion_con_cache(
         df, eje_x, col, operacion, 0, "Desactivado (Paleta Azul)"
     )
     if isinstance(df_resumen_m, str):
@@ -4712,10 +5293,20 @@ def _render_excel_explorador_unificado(df: pd.DataFrame, viewport_h: int = REF_V
     altura_px = _altura_contenedor_tabla_excel(
         len(df_vista), font_px, pantalla_completa=pantalla_completa, viewport_h=viewport_h
     )
-    doc_html = _documento_html_excel_interactivo(
-        df_vista, font_px, altura_px, pantalla_completa=False
+    file_bytes = _obtener_bytes_excel_activos() or b""
+    contenido_id = st.session_state.get("lri_excel_contenido_id") or _contenido_id_excel(file_bytes)
+    drill_json = json.dumps(st.session_state.get("lri_excel_drill_filtros") or {}, sort_keys=True)
+    doc_html = _html_explorador_excel_cached(
+        contenido_id,
+        drill_json,
+        hoja,
+        font_px,
+        altura_px,
+        pantalla_completa,
+        file_bytes,
+        "hscroll-revert-v2",
     )
-    components.html(doc_html, height=altura_px + 18, scrolling=False)
+    st.iframe(doc_html, height=altura_px + 18, width="stretch")
 
     col_csv, col_xlsx = st.columns(2)
     col_csv.download_button(
@@ -4819,10 +5410,11 @@ def _documento_html_excel_interactivo(
         )
 
     body_rows: list[str] = []
-    for ri, (_, row) in enumerate(df.iterrows()):
+    matriz = df.to_numpy()
+    for ri in range(len(df)):
         tds = []
         for j, c in enumerate(cols):
-            txt = _formatear_celda_excel_ws(row[c], columna=str(c), df=df)
+            txt = _formatear_celda_excel_ws(matriz[ri, j], columna=str(c), df=df)
             attrs = _attrs_celda_excel_interactiva(
                 j, anchos[j], cols_fijas=cols_fijas_set, ultima_fija=ultima_fija, anchos=anchos
             )
@@ -5128,6 +5720,7 @@ def _documento_html_excel_interactivo(
     )
 
 
+
 def render_perfilado_manual_panel(
     df: pd.DataFrame,
     viewport_h_ui: int,
@@ -5165,7 +5758,9 @@ def render_perfilado_manual_panel(
     if st.session_state["drill_down_categoria"] and "categoria" in df_filtrado_base.columns:
         df_filtrado_base = df_filtrado_base[df_filtrado_base["categoria"] == st.session_state["drill_down_categoria"]]
 
-    df_resumen = procesar_agrupacion_perfil(df, eje_x_real, eje_y_real, operacion_y, top_n_real, set_pareto_real)
+    df_resumen = _procesar_agrupacion_con_cache(
+        df, eje_x_real, eje_y_real, operacion_y, top_n_real, set_pareto_real
+    )
 
     if isinstance(df_resumen, str) and df_resumen == "ERROR_NO_COMPUTABLE":
         _mostrar_error_perfil_no_computable(
@@ -5215,37 +5810,62 @@ def render_perfilado_manual_panel(
                 f"eje derecho = {nombres_sec}"
             )
 
-    label_metrica, val_total_formateado = calcular_metricas_encabezado(
-        df_filtrado_base, eje_y_real, operacion_y
+    label_metrica, _, val_total_formateado = _resolver_total_metrica_perfil(
+        df_filtrado_base, eje_y_real, operacion_y, df_resumen=df_resumen
     )
     cats_count = df_filtrado_base[eje_x_real].nunique() if eje_x_real in df_filtrado_base.columns else 0
     y_max, y_min = _extremos_eje_y_perfilado(df_resumen, eje_y_real)
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
-        st.markdown(
-            f"<div class='kpi-card'><div class='kpi-title'>{label_metrica}</div>"
-            f"<div class='kpi-value'>{val_total_formateado}</div></div>",
-            unsafe_allow_html=True,
-        )
-    with c2:
         st.markdown(
             f"<div class='kpi-card'><div class='kpi-title'>Elementos Únicos ({eje_x_real})</div>"
             f"<div class='kpi-value'>{cats_count}</div></div>",
             unsafe_allow_html=True,
         )
-    with c3:
+    with c2:
         st.markdown(
             f"<div class='kpi-card'><div class='kpi-title'>Máximo {eje_y_real}</div>"
             f"<div class='kpi-value'>{_formatear_valor_kpi_eje_y(y_max, y_pct, y_escala_0_100, y_miles, eje_y=eje_y_real)}</div></div>",
             unsafe_allow_html=True,
         )
-    with c4:
+    with c3:
         st.markdown(
             f"<div class='kpi-card'><div class='kpi-title'>Mínimo {eje_y_real}</div>"
             f"<div class='kpi-value'>{_formatear_valor_kpi_eje_y(y_min, y_pct, y_escala_0_100, y_miles, eje_y=eje_y_real)}</div></div>",
             unsafe_allow_html=True,
         )
+    with c4:
+        st.markdown(
+            f"<div class='kpi-card'><div class='kpi-title'>Ítems en perfil</div>"
+            f"<div class='kpi-value'>{len(df_resumen):,}</div></div>",
+            unsafe_allow_html=True,
+        )
+    with c5:
+        st.markdown(
+            f"<div class='kpi-card kpi-card-total'>"
+            f"<div class='kpi-title'>{html.escape(label_metrica)} · {html.escape(operacion_y)}</div>"
+            f"<div class='kpi-value kpi-value-total'>{html.escape(val_total_formateado)}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+    if (
+        operacion_y == "Suma"
+        and _columna_es_metrica_aditiva_suma(eje_y_real, df_filtrado_base)
+        and eje_y_real in df_resumen.columns
+    ):
+        total_datos = _suma_numerica_columna(df_filtrado_base, eje_y_real)
+        total_graf = _suma_numerica_columna(df_resumen, eje_y_real)
+        if top_n_real > 0 and total_graf < total_datos * 0.999:
+            st.caption(
+                f"ℹ️ Total en pantalla ({total_graf:,.0f}) refleja Top **{top_n_real}** del gráfico; "
+                f"total en datos: **{total_datos:,.0f}**."
+            )
+        elif total_datos > 0 and abs(total_graf - total_datos) / total_datos > 0.01:
+            st.caption(
+                f"⚠️ La suma del gráfico ({total_graf:,.0f}) difiere del total en datos ({total_datos:,.0f}). "
+                "Revise el **Control de calidad de datos** en el panel lateral."
+            )
 
     pareto_activo_prev = (
         "color_pareto" in df_resumen.columns
@@ -5293,7 +5913,10 @@ def render_perfilado_manual_panel(
         operacion_y,
         st.session_state.get("drill_down_categoria"),
     )
-    bytes_excel = _bytes_excel_perfilado(df_export, meta_export)
+    bytes_excel = _bytes_excel_perfilado_cached(
+        json.dumps(meta_export, sort_keys=True),
+        df_export.to_csv(index=False),
+    )
     dims_tabla = _dims_tabla_metricas(
         clase_tabla, tabla_font_size, n_cols_real=len(columnas_visibles)
     )
@@ -5398,15 +6021,28 @@ def render_perfilado_manual_panel(
                 set_pareto_real,
                 fs_celda,
             )
+            estilos_por_celda.append(
+                [_ESTILO_FILA_TOTAL_TABLA] * len(columnas_visibles)
+            )
 
-        styler_tabla = _styler_tabla_metricas(df_mostrar, fmt_cols)
+        df_mostrar_tabla = _tabla_perfilado_con_fila_total(
+            df_mostrar,
+            df_filtrado_base,
+            columnas_visibles,
+            eje_x_real,
+            operaciones_por_col,
+            df_resumen=df_resumen_tabla,
+        )
+        altura_tabla_total = altura_tabla + max(28, int(dims_tabla["fs_celda"] * 1.55))
+
+        styler_tabla = _styler_tabla_metricas(df_mostrar_tabla, fmt_cols)
         fluido_tabla = _tabla_usa_layout_fluido(pareto_activo_prev, dims_tabla)
         st.markdown(
             _html_tabla_metricas_panel(
                 styler_tabla,
                 clase_tabla,
                 titulo_tabla,
-                altura_tabla,
+                altura_tabla_total,
                 dims_tabla,
                 estilos_por_fila=colores_pareto_filas,
                 estilos_por_celda=estilos_por_celda,
@@ -5486,8 +6122,8 @@ _sincronizar_revision_perfil()
 _migrar_toggle_explorador_excel_legacy()
 
 if "lri_df_datos" not in st.session_state:
-    _df0, _err0, _hojas0, _hoja0 = cargar_datos()
-    _aplicar_resultado_carga_a_sesion(_df0, _err0, _hojas0, _hoja0)
+    _df0, _err0, _hojas0, _hoja0, _meta0 = cargar_datos()
+    _aplicar_resultado_carga_a_sesion(_df0, _err0, _hojas0, _hoja0, meta_limpieza=_meta0)
 
 df = st.session_state.get("lri_df_datos")
 error_carga = st.session_state.get("lri_error_carga")
@@ -5525,7 +6161,7 @@ if df is not None:
             contenido_id = _contenido_id_excel(bytes_subidos)
             upload_id = (archivo_subido.name, contenido_id)
             if st.session_state.get("lri_upload_id") != upload_id:
-                df_up, err_up, hojas_up, hoja_up = cargar_datos_desde_upload(
+                df_up, err_up, hojas_up, hoja_up, meta_up = cargar_datos_desde_upload(
                     bytes_subidos
                 )
                 if err_up:
@@ -5538,24 +6174,19 @@ if df is not None:
                         hoja_up,
                         file_bytes=bytes_subidos,
                         reset_ejes=True,
+                        meta_limpieza=meta_up,
                     )
                     st.session_state["lri_upload_id"] = upload_id
                     st.rerun()
             st.caption(f"Archivo: {archivo_subido.name}")
         else:
-            if st.session_state.get("lri_upload_id") is not None:
-                st.session_state.pop("lri_upload_id", None)
-                df_def, err_def, hojas_def, hoja_def = cargar_datos()
-                _aplicar_resultado_carga_a_sesion(
-                    df_def,
-                    err_def,
-                    hojas_def,
-                    hoja_def,
-                    limpiar_bytes_subida=True,
-                    reset_ejes=True,
-                )
-                st.rerun()
-            st.caption(f"Por defecto: {os.path.basename(ARCHIVO_EXCEL_PATH)}")
+            upload_id = st.session_state.get("lri_upload_id")
+            if upload_id and st.session_state.get("lri_excel_bytes"):
+                df_act = st.session_state.get("lri_df_datos")
+                n_filas = len(df_act) if isinstance(df_act, pd.DataFrame) else 0
+                st.caption(f"Archivo activo: {upload_id[0]} · {n_filas:,} filas")
+            else:
+                st.caption(f"Por defecto: {os.path.basename(ARCHIVO_EXCEL_PATH)}")
 
         hojas_excel = st.session_state.get("lri_excel_hojas") or []
         hoja_activa = st.session_state.get("lri_excel_hoja_activa")
@@ -5570,7 +6201,7 @@ if df is not None:
             if hoja_elegida != hoja_activa:
                 bytes_hoja = _obtener_bytes_excel_activos()
                 if bytes_hoja:
-                    df_hoja, err_hoja, hojas_hoja, hoja_ok = _cargar_dataframe_excel(
+                    df_hoja, err_hoja, hojas_hoja, hoja_ok, meta_hoja = _cargar_dataframe_excel(
                         bytes_hoja, sheet_name=hoja_elegida
                     )
                     if err_hoja:
@@ -5582,10 +6213,13 @@ if df is not None:
                             hojas_hoja,
                             hoja_ok,
                             reset_ejes=True,
+                            meta_limpieza=meta_hoja,
                         )
                         st.rerun()
         elif hoja_activa:
             st.caption(f"Hoja de datos: {hoja_activa}")
+
+        _render_panel_auditoria_datos_sidebar()
 
         st.toggle(
             "Explorador Excel",
@@ -5667,16 +6301,15 @@ if df is not None:
             step=5,
             key="lri_man_top_n",
         )
-        if _eje_x_es_codigo_o_descripcion(st.session_state.get("lri_man_eje_x") or ""):
-            st.checkbox(
-                "Ver gráfico completo en pantalla (sin scroll)",
-                key="lri_grafico_scroll_completo",
-                help=(
-                    "Marcado: todas las barras se ajustan al ancho visible, sin barra de desplazamiento. "
-                    "Desmarcado: con más de 35 ítems se usa scroll horizontal para barras más legibles."
-                ),
-                on_change=st.rerun,
-            )
+        st.checkbox(
+            "Ver gráfico completo en pantalla (sin scroll)",
+            key="lri_grafico_scroll_completo",
+            help=(
+                "Marcado: todas las barras en el ancho visible (categorías, subcategorías, "
+                "códigos o descripciones apiñados). Desmarcado: scroll horizontal cuando hay "
+                "muchos ítems para barras más legibles."
+            ),
+        )
         forzar_sincronizacion_espejo()
 
         st.divider()
@@ -5754,7 +6387,37 @@ if df is not None:
             help="Solo la tabla de métricas detalladas (datos y encabezados).",
         )
         st.session_state["lri_tabla_fontsize"] = tabla_font_size
-        viewport_h_ui = st.select_slider("Resolución Vertical (px)", options=[720, 768, 900, 1080, 1200, 1440], value=1080, key="lri_man_viewport_h")
+
+        st.markdown("##### Ajuste a la pantalla")
+        modo_pantalla = st.radio(
+            "Tamaño de pantalla",
+            options=["Automático", "Manual"],
+            index=0,
+            horizontal=True,
+            key="lri_modo_pantalla",
+            help=(
+                "Automático: detecta el tamaño de esta ventana y adapta gráficos/escala. "
+                "Manual: elige la altura vertical como en la PC de diseño."
+            ),
+        )
+        if modo_pantalla == "Automático":
+            viewport_h_ui = _snap_altura_viewport(_VIEWPORT_H_DETECTADO)
+            escala_pct = int(round(float(st.session_state.get("lri_escala_interfaz", _ESCALA_APLICADA)) * 100))
+            st.caption(
+                f"Detectado {_VIEWPORT_W_DETECTADO}×{_VIEWPORT_H_DETECTADO} px · "
+                f"altura útil {viewport_h_ui} px · escala {escala_pct}%"
+            )
+            st.session_state["lri_man_viewport_h"] = viewport_h_ui
+        else:
+            valor_prev = int(st.session_state.get("lri_man_viewport_h", _snap_altura_viewport(_VIEWPORT_H_DETECTADO)))
+            if valor_prev not in _OPCIONES_VIEWPORT_H:
+                valor_prev = _snap_altura_viewport(valor_prev)
+            viewport_h_ui = st.select_slider(
+                "Resolución Vertical (px)",
+                options=list(_OPCIONES_VIEWPORT_H),
+                value=valor_prev,
+                key="lri_man_viewport_h",
+            )
 
     subtitulo_panel = None
     if st.session_state.get("drill_down_categoria"):
@@ -5769,6 +6432,22 @@ if df is not None:
         .kpi-card {{ background-color: #1e2130; padding: 18px; border-radius: 8px; border: 1px solid #2d3142; text-align: center; margin-bottom: 12px; }}
         .kpi-title {{ font-size: 13px; color: #a1a1aa; text-transform: uppercase; margin-bottom: 8px; letter-spacing: 0.5px; }}
         .kpi-value {{ font-size: 26px; font-weight: bold; color: #ffffff; }}
+        .kpi-card-total {{
+            background: linear-gradient(135deg, #1e293b 0%, #131722 100%);
+            border: 1px solid #334155;
+            border-left: 4px solid #38bdf8;
+        }}
+        .kpi-card-total .kpi-title {{
+            color: #cbd5e1;
+            text-transform: none;
+            letter-spacing: 0.02em;
+            line-height: 1.25;
+        }}
+        .kpi-value-total {{
+            font-size: 30px;
+            font-weight: 800;
+            color: #fbbf24;
+        }}
         .block-container {{
             padding-top: 0.35rem !important;
             padding-bottom: 0.5rem !important;
@@ -5960,9 +6639,9 @@ else:
     col_retry, _ = st.columns([1, 3])
     with col_retry:
         if st.button("Reintentar lectura del archivo"):
-            df_retry, err_retry, hojas_retry, hoja_retry = cargar_datos()
+            df_retry, err_retry, hojas_retry, hoja_retry, meta_retry = cargar_datos()
             _aplicar_resultado_carga_a_sesion(
-                df_retry, err_retry, hojas_retry, hoja_retry, reset_ejes=True
+                df_retry, err_retry, hojas_retry, hoja_retry, reset_ejes=True, meta_limpieza=meta_retry
             )
             st.rerun()
     archivo_rescate = st.file_uploader(
@@ -5971,7 +6650,7 @@ else:
         key="lri_rescate_excel",
     )
     if archivo_rescate is not None:
-        df_rescate, err_rescate, hojas_rescate, hoja_rescate = cargar_datos_desde_upload(
+        df_rescate, err_rescate, hojas_rescate, hoja_rescate, meta_rescate = cargar_datos_desde_upload(
             archivo_rescate.getvalue()
         )
         if err_rescate:
@@ -5985,6 +6664,7 @@ else:
                 hoja_rescate,
                 file_bytes=bytes_rescate,
                 reset_ejes=True,
+                meta_limpieza=meta_rescate,
             )
             st.session_state["lri_upload_id"] = (
                 archivo_rescate.name,
