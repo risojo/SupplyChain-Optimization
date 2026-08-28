@@ -20,7 +20,8 @@ import parametros
 from ui_theme import (
     TABLA_FONT_SIZE_DEFAULT,
     TABLA_FONT_SIZE_MIN,
-    altura_tabla_con_encabezado_px,
+    altura_tabla_area_scroll,
+    altura_tabla_gmroi_evai_px,
     altura_tabla_px,
     leyenda_scorecard_colores,
     leyenda_scorecard_columnas,
@@ -1228,12 +1229,8 @@ def _anchos_vista_gmroi(anchos_manual: dict[str, int] | None) -> dict[str, int]:
     return anchos
 
 
-def render_tabla_gmroi_evai(
-    tabla: pd.DataFrame,
-    *,
-    anchos_manual: dict[str, int] | None = None,
-) -> None:
-    """Muestra la tabla detallada (solo si el usuario la solicita)."""
+def render_tabla_gmroi_evai(tabla: pd.DataFrame) -> None:
+    """Muestra la tabla GMROI/EVAI completa (código → EVAI) ajustada al ancho de pantalla."""
     vista = _ordenar_vista_gmroi(_vista_tabla_gmroi(tabla))
     evai_neg_filas: frozenset[int] | None = None
     if "EVAI" in vista.columns:
@@ -1245,18 +1242,19 @@ def render_tabla_gmroi_evai(
         if neg:
             evai_neg_filas = frozenset(neg)
     fmt = _fmt_vista_gmroi(list(vista.columns))
-    fs = max(TABLA_FONT_SIZE_MIN, min(_tabla_font_px(), 15))
-    anchos = _anchos_vista_gmroi(anchos_manual)
+    fs = _tabla_font_px()
     mostrar_tabla_html(
         vista.style.format(fmt),
         fs,
         n_filas=len(vista),
-        altura_px=altura_tabla_con_encabezado_px(len(vista), fs, min_h=500, max_h=880),
+        altura_px=altura_tabla_gmroi_evai_px(fs),
         layout="alternada",
-        anchos_manual=anchos,
+        format_items=tuple(sorted(fmt.items())),
         evai_neg_filas=evai_neg_filas,
         colores_columna={"GMROI": "#facc15"},
-        cabecera_sticky_vertical=False,
+        cabecera_sticky_vertical=True,
+        ajustar_pantalla=True,
+        clase_tabla="inv-tabla-gmroi",
     )
 
 
@@ -1269,7 +1267,7 @@ def mostrar_tabla_gmroi_evai_sku(
 ) -> pd.DataFrame:
     """Calcula GMROI/EVAI por SKU y muestra la tabla detallada."""
     tabla = tabla_gmroi_evai_por_sku(df, params, dimension)
-    render_tabla_gmroi_evai(tabla, anchos_manual=anchos_manual)
+    render_tabla_gmroi_evai(tabla)
     return tabla
 
 

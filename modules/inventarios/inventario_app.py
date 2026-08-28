@@ -196,16 +196,6 @@ def _sidebar_cargar_datos() -> None:
         nombre_def = os.path.basename(data_loader.ARCHIVO_EXCEL_PATH)
         st.caption(f"Por defecto: {nombre_def}")
 
-    if st.button(
-        "↺ Restaurar plantilla (Excel + parámetros)",
-        use_container_width=True,
-        help=(
-            f"Recarga `{data_loader.NOMBRE_ARCHIVO_DEFECTO}` y restaura los valores "
-            "estándar de parámetros (borra guardados locales y asignación de drivers)."
-        ),
-    ):
-        _reiniciar_plantilla_completa()
-
 
 def _css_control_voz_sidebar() -> str:
     """Micrófono compacto en fila con el título (mismo patrón que profile1)."""
@@ -349,11 +339,10 @@ def vista_base_datos(df: pd.DataFrame, _params: dict) -> None:
         f"({n_entrada} de entrada + {n_calc} calculadas). "
         "Desplácese horizontalmente para ver demanda, inventarios y métricas financieras."
     )
-    anchos_manual = ui_theme.controles_ancho_columnas_tabla()
     st.caption(
         "Columnas fijas: **código, categoría, subcategoría, descripción**. "
         "Los **títulos permanecen visibles** al desplazar vertical u horizontalmente. "
-        "Desde **país** los datos van centrados. Use **Ajustar ancho de columnas** para lectura."
+        "Desde **país** los datos van centrados."
     )
 
     fs = _tabla_font_px()
@@ -362,9 +351,8 @@ def vista_base_datos(df: pd.DataFrame, _params: dict) -> None:
         df.style.format(fmt),
         fs,
         n_filas=len(df),
-        altura_px=ui_theme.altura_tabla_px(len(df), fs, min_h=420, max_h=720),
+        altura_px=ui_theme.altura_tabla_area_scroll(len(df), fs),
         layout="ancha",
-        anchos_manual=anchos_manual,
         format_items=tuple(sorted(fmt.items())),
     )
 
@@ -591,77 +579,46 @@ _CLAVE_TOGGLE_TABLA_GMROI = "_inv_gmroi_tabla_toggle_pendiente"
 
 
 def _aplicar_toggle_tabla_gmroi_pendiente() -> None:
-    """Aplica el toggle del botón 📋 antes de instanciar el checkbox del sidebar."""
+    """Aplica el toggle del botón 📋 antes de instanciar el checkbox de tabla."""
     if _CLAVE_TOGGLE_TABLA_GMROI in st.session_state:
         st.session_state["inv_gmroi_mostrar_tabla"] = st.session_state.pop(_CLAVE_TOGGLE_TABLA_GMROI)
 
 
-def _sidebar_gmroi_evai(df: pd.DataFrame, params: dict) -> None:
-    """Controles GMROI/EVAI en sidebar: nivel, tabla opcional y acceso al análisis."""
-    _inicializar_controles_gmroi()
-    en_vista = st.session_state.get("inv_vista") == "GMROI y EVAI"
-    with st.expander("GMROI y EVAI", expanded=en_vista):
-        st.caption(
-            "GMROI = margen bruto ÷ valor inv. promedio · "
-            "% margen bruto e % ICC sobre ventas · "
-            "EVAI = margen bruto − ICC asignado"
-        )
-        st.selectbox(
-            "Asignar ICC por",
-            options=["categoria", "subcategoria"],
-            format_func=lambda x: "Categoría" if x == "categoria" else "Subcategoría",
-            key="inv_gmroi_icc_por",
-            help="Grupo del scorecard para repartir el costo de mantener inventario.",
-        )
-        st.slider(
-            "Máx. registros (solo sin filtro)",
-            min_value=5,
-            max_value=100,
-            key="inv_gmroi_top_n",
-            help="Con nivel Código o filtros de categoría/subcategoría se muestran todos los registros.",
-        )
-        st.selectbox(
-            "Análisis Pareto",
-            options=scorecard.OPCIONES_PARETO_GMROI,
-            key="inv_gmroi_pareto_set",
-            help="Segmenta ítems en tramos (verde · amarillo · rojo) como en Perfilado.",
-        )
-        if "Desactivado" not in st.session_state.get("inv_gmroi_pareto_set", ""):
-            st.checkbox(
-                "Curva % acumulado",
-                key="inv_gmroi_pareto_acumulado",
-            )
-        st.checkbox(
-            "Mostrar tabla detallada",
-            key="inv_gmroi_mostrar_tabla",
-            help="También puede abrirla con el botón 📋 en la vista principal.",
-        )
-        try:
-            tabla_sku = scorecard.tabla_gmroi_evai_por_sku(
-                df, params, st.session_state["inv_gmroi_icc_por"]
-            )
-            resumen = scorecard.tabla_gmroi_evai_resumen(
-                tabla_sku,
-                scorecard.normalizar_nivel_gmroi(st.session_state.get("inv_gmroi_nivel", "codigo")),
-            )
-        except Exception as exc:
-            st.warning(f"No se pudo calcular: {exc}")
-            return
+def _controles_opciones_gmroi() -> None:
+    """ICC, Pareto y tabla — en la vista GMROI/EVAI (no en sidebar)."""
+    with st.expander("Opciones de análisis (ICC, Pareto, gráfico)", expanded=False):
         c1, c2 = st.columns(2)
-        c1.metric("Registros", f"{len(resumen):,}")
-        gmroi_prom = resumen["GMROI"].replace(0, np.nan).mean()
-        c2.metric("GMROI prom.", f"{gmroi_prom:.2f}" if pd.notna(gmroi_prom) else "—")
-        st.metric("EVAI total", f"$ {resumen['EVAI'].sum():,.0f}")
-        if not en_vista and st.button(
-            "Abrir análisis completo",
-            use_container_width=True,
-            key="inv_ir_gmroi_evai",
-        ):
-            st.session_state["inv_vista"] = "GMROI y EVAI"
-            st.rerun()
+        with c1:
+            st.selectbox(
+                "Asignar ICC por",
+                options=["categoria", "subcategoria"],
+                format_func=lambda x: "Categoría" if x == "categoria" else "Subcategoría",
+                key="inv_gmroi_icc_por",
+                help="Grupo del scorecard para repartir el costo de mantener inventario.",
+            )
+            st.selectbox(
+                "Análisis Pareto",
+                options=scorecard.OPCIONES_PARETO_GMROI,
+                key="inv_gmroi_pareto_set",
+                help="Segmenta ítems en tramos (verde · amarillo · rojo) como en Perfilado.",
+            )
+        with c2:
+            st.slider(
+                "Máx. registros (solo sin filtro)",
+                min_value=5,
+                max_value=100,
+                key="inv_gmroi_top_n",
+                help="Con nivel Código o filtros de categoría/subcategoría se muestran todos los registros.",
+            )
+            if "Desactivado" not in st.session_state.get("inv_gmroi_pareto_set", ""):
+                st.checkbox("Curva % acumulado", key="inv_gmroi_pareto_acumulado")
+            st.checkbox(
+                "Mostrar tabla detallada",
+                key="inv_gmroi_mostrar_tabla",
+                help="También puede abrirla con el botón 📋 más abajo.",
+            )
 
 
-_CLAVE_TOGGLE_TABLA_GMROI = "_inv_gmroi_tabla_toggle_pendiente"
 _OPCION_TODAS_CAT = "— Todas las categorías —"
 _OPCION_TODAS_SUB = "— Todas las subcategorías —"
 _OPCION_TODOS_COD = "— Todos los códigos —"
@@ -753,6 +710,7 @@ def _controles_filtro_gmroi(df: pd.DataFrame) -> tuple[str | None, str | None, s
 def vista_gmroi_evai(df: pd.DataFrame, params: dict) -> None:
     """Gráficos GMROI/EVAI por código, categoría o subcategoría; tabla opcional."""
     _inicializar_controles_gmroi()
+    _controles_opciones_gmroi()
     cat_filtro, sub_filtro, cod_filtro = _controles_filtro_gmroi(df)
     nivel = scorecard.normalizar_nivel_gmroi(st.session_state["inv_gmroi_nivel"])
     icc_por = st.session_state["inv_gmroi_icc_por"]
@@ -764,9 +722,6 @@ def vista_gmroi_evai(df: pd.DataFrame, params: dict) -> None:
     etiqueta_icc = "categoría" if icc_por == "categoria" else "subcategoría"
     pareto_txt = set_pareto if "Desactivado" not in set_pareto else "Paleta azul → blanco"
 
-    st.caption(
-        "Más opciones (ICC, Pareto, registros en gráfico, tabla) en sidebar → **GMROI y EVAI**."
-    )
     filtro_txt = ""
     if cat_filtro:
         filtro_txt += f" · **Categoría:** {cat_filtro}"
@@ -774,6 +729,7 @@ def vista_gmroi_evai(df: pd.DataFrame, params: dict) -> None:
         filtro_txt += f" · **Subcategoría:** {sub_filtro}"
     if cod_filtro:
         filtro_txt += f" · **Código:** {cod_filtro}"
+
     st.caption(
         "Fórmulas: valor inventario promedio = inventario promedio bultos × costo unitario bulto · "
         "margen bruto = ventas totales − ventas costo · "
@@ -854,15 +810,17 @@ def vista_gmroi_evai(df: pd.DataFrame, params: dict) -> None:
             st.rerun()
     with txt_col:
         if mostrar_tabla:
-            st.caption("Tabla visible — desplácese vertical y horizontalmente; columnas fijas a la izquierda.")
+            st.caption(
+                "Tabla completa de **código** a **EVAI**: se muestran **25 filas**; "
+                "use el scroll **dentro del recuadro** para ver el resto. Cabecera fija."
+            )
         else:
             st.caption(
                 "La tabla está colapsada. Use **📋 Ver tabla de cálculos** para revisar o imprimir el detalle."
             )
 
     if mostrar_tabla:
-        anchos = ui_theme.controles_ancho_columnas_tabla()
-        scorecard.render_tabla_gmroi_evai(tabla, anchos_manual=anchos)
+        scorecard.render_tabla_gmroi_evai(tabla)
         export = scorecard.tabla_export_gmroi(tabla)
         st.caption("Exportar tabla:")
         col_a, col_b = st.columns(2)
@@ -1208,7 +1166,6 @@ def main() -> None:
         err_sidebar = st.session_state.get("inv_error_carga")
         if df_sidebar is not None:
             _render_control_voz_sidebar(df_sidebar)
-            _sidebar_gmroi_evai(df_sidebar, parametros.inicializar_parametros(df_sidebar))
         elif err_sidebar:
             st.warning(err_sidebar)
 
@@ -1250,7 +1207,7 @@ def main() -> None:
             ),
             step=1,
             key="inv_tabla_fontsize_ui",
-            help="Parámetros, tablas, scorecard y asignación de drivers.",
+            help="Aplica a tablas, parámetros, scorecard y GMROI/EVAI.",
         )
 
     _inyectar_css_ui()

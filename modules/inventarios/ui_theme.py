@@ -12,8 +12,12 @@ import pandas as pd
 import streamlit as st
 
 TABLA_FONT_SIZE_DEFAULT = 17
-TABLA_FONT_SIZE_MIN = 12
+TABLA_FONT_SIZE_MIN = 10
 TABLA_FONT_SIZE_MAX = 32
+# Área visible de tablas con scroll interno (Base de datos, GMROI/EVAI).
+ALTURA_TABLA_AREA_MIN_PX = 420
+ALTURA_TABLA_AREA_MAX_PX = 720
+GMROI_FILAS_VISIBLES = 25
 
 
 def font_campos_px() -> int:
@@ -408,7 +412,8 @@ def _ancho_columna_ws(
 ) -> int:
     """Ancho por columna: manual en identidad; compacto en el resto (título completo)."""
     cl = nombre.lower().strip()
-    manual = anchos_manual or {}
+    manual_raw = anchos_manual or {}
+    manual = {k.lower().strip(): v for k, v in manual_raw.items()}
     if cl in manual:
         return int(manual[cl])
     if cl in ANCHOS_IDENTIDAD_DEFECTO and cl not in manual:
@@ -625,10 +630,84 @@ def colores_grupo_parametros(tag: str) -> ColoresGrupoParam:
     )
 
 
-def _padding_celda(font_px: int) -> str:
-    v = max(3, font_px // 6)
-    h = max(5, font_px // 3)
+def _padding_celda(font_px: int, *, compacto: bool = False) -> str:
+    if compacto:
+        v = max(2, font_px // 8)
+        h = max(3, font_px // 4)
+    else:
+        v = max(3, font_px // 6)
+        h = max(5, font_px // 3)
     return f"{v}px {h}px"
+
+
+def _anchos_pct_iguales(n_columnas: int) -> list[float]:
+    """Reparto uniforme para que todas las columnas quepan en pantalla."""
+    if n_columnas <= 0:
+        return []
+    pct = 100.0 / n_columnas
+    return [pct] * n_columnas
+
+
+def _anchos_pct_ponderados(
+    columnas: list[str],
+    pesos: dict[str, float] | None,
+    *,
+    peso_default: float = 1.0,
+) -> list[float]:
+    """Reparto en % según pesos por nombre de columna (p. ej. código y categoría más estrechas)."""
+    pesos_map = {k.lower().strip(): float(v) for k, v in (pesos or {}).items()}
+    weights = [pesos_map.get(col.lower().strip(), peso_default) for col in columnas]
+    total = sum(weights)
+    if total <= 0:
+        return _anchos_pct_iguales(len(columnas))
+    return [100.0 * w / total for w in weights]
+
+
+def _formatear_valor_celda_ancho(val: Any, fmt_spec: str | None) -> str:
+    if val is None:
+        return ""
+    try:
+        if pd.isna(val):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    if fmt_spec:
+        try:
+            return fmt_spec.format(val)
+        except (ValueError, TypeError):
+            pass
+    if isinstance(val, float):
+        if val == int(val):
+            return str(int(val))
+        return f"{val:.4g}"
+    return str(val).strip()
+
+
+def _anchos_pct_desde_contenido(
+    df: pd.DataFrame,
+    columnas: list[str],
+    fmt: dict[str, str],
+) -> list[float]:
+    """Ancho % proporcional al dato más largo de cada columna (cabecera incluida)."""
+    weights: list[float] = []
+    for col in columnas:
+        fmt_spec = fmt.get(col)
+        max_len = len(col)
+        if col in df.columns:
+            for val in df[col]:
+                texto = _formatear_valor_celda_ancho(val, fmt_spec)
+                if len(texto) > max_len:
+                    max_len = len(texto)
+        weights.append(float(max(max_len, 2)))
+    total = sum(weights)
+    if total <= 0:
+        return _anchos_pct_iguales(len(columnas))
+    return [100.0 * w / total for w in weights]
+
+
+# Cabecera fija tablas GMROI/EVAI (ajuste a pantalla).
+GMROI_HEADER_BG = "#000000"
+GMROI_HEADER_FG = "#ffffff"
 
 
 def css_interfaz(zoom_pct: int, tabla_font_px: int) -> str:
@@ -900,6 +979,90 @@ div[data-testid="stVerticalBlock"]:has(.inv-param-bloque-tabla) {{
 .inv-tabla-scroll.inv-tabla-alternada-wrap {{
     overscroll-behavior: contain;
 }}
+.inv-tabla-scroll.inv-tabla-fit-completa {{
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-shadow: inset 0 0 0 1px {WS_BORDE_TABLA};
+    overscroll-behavior-y: auto;
+    overscroll-behavior-x: none;
+    scrollbar-gutter: stable;
+}}
+.inv-tabla-scroll.inv-tabla-gmroi.inv-tabla-fit-completa {{
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable both-edges;
+    scrollbar-width: auto;
+    scrollbar-color: #3b82f6 #0a0f1a;
+}}
+.inv-tabla-scroll.inv-tabla-gmroi.inv-tabla-fit-completa::-webkit-scrollbar {{
+    height: 26px;
+    width: 22px;
+}}
+.inv-tabla-scroll.inv-tabla-gmroi.inv-tabla-fit-completa::-webkit-scrollbar-track {{
+    background: #0a0f1a;
+    border-radius: 10px;
+    margin: 2px;
+}}
+.inv-tabla-scroll.inv-tabla-gmroi.inv-tabla-fit-completa::-webkit-scrollbar-thumb {{
+    background: linear-gradient(180deg, #60a5fa 0%, #2563eb 55%, #1d4ed8 100%);
+    border-radius: 10px;
+    border: 3px solid #0a0f1a;
+    min-height: 48px;
+}}
+.inv-tabla-scroll.inv-tabla-gmroi.inv-tabla-fit-completa::-webkit-scrollbar-thumb:hover {{
+    background: linear-gradient(180deg, #93c5fd 0%, #3b82f6 55%, #2563eb 100%);
+}}
+.inv-tabla-gmroi.inv-tabla-fit-completa {{
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+}}
+.inv-tabla-fit-completa .inv-tabla-ws {{
+    width: 100% !important;
+    max-width: 100% !important;
+    table-layout: fixed !important;
+}}
+.inv-tabla-fit-completa .inv-tabla-ws th,
+.inv-tabla-fit-completa .inv-tabla-ws td {{
+    white-space: normal !important;
+    word-break: break-word !important;
+    overflow: visible !important;
+}}
+.inv-tabla-fit-completa .inv-tabla-ws th[style*="left:"],
+.inv-tabla-fit-completa .inv-tabla-ws td[style*="left:"] {{
+    position: static !important;
+    left: auto !important;
+    box-shadow: none !important;
+}}
+.inv-tabla-gmroi.inv-tabla-fit-completa .inv-tabla-ws thead th {{
+    position: sticky !important;
+    top: 0 !important;
+    z-index: 40 !important;
+    background: {GMROI_HEADER_BG} !important;
+    color: {GMROI_HEADER_FG} !important;
+    background-clip: padding-box !important;
+    overflow: visible !important;
+    white-space: normal !important;
+    word-break: break-word !important;
+    line-height: 1.25 !important;
+    vertical-align: middle !important;
+    box-shadow: 0 2px 0 #333333;
+}}
+section[data-testid="stMain"] div[data-testid="stElementContainer"]:has(.inv-tabla-fit-completa),
+section[data-testid="stMain"] div[data-testid="stMarkdownContainer"]:has(.inv-tabla-fit-completa) {{
+    overflow: visible !important;
+    max-width: 100% !important;
+}}
+.inv-tabla-gmroi.inv-tabla-fit-completa .inv-tabla-ws th:nth-child(1),
+.inv-tabla-gmroi.inv-tabla-fit-completa .inv-tabla-ws td:nth-child(1),
+.inv-tabla-gmroi.inv-tabla-fit-completa .inv-tabla-ws th:nth-child(3),
+.inv-tabla-gmroi.inv-tabla-fit-completa .inv-tabla-ws td:nth-child(3) {{
+    padding-left: 2px !important;
+    padding-right: 2px !important;
+    word-break: break-all !important;
+}}
 .inv-tabla-head-flow .inv-tabla-ws thead th {{
     position: relative !important;
     top: auto !important;
@@ -969,39 +1132,6 @@ section[data-testid="stMain"] [data-testid="stVerticalBlock"] {{
 }}
 </style>
 """
-
-
-def controles_ancho_columnas_tabla() -> dict[str, int]:
-    """Sliders para ensanchar columnas de lectura (similar a arrastrar en Excel)."""
-    with st.expander("📐 Ajustar ancho de columnas", expanded=False):
-        st.caption(
-            "Ensanche **categoría**, **subcategoría** y **descripción** para leer mejor. "
-            "El resto de columnas se mantienen compactas."
-        )
-        c1, c2, c3 = st.columns(3)
-        return {
-            "categoria": c1.slider(
-                "Categoría (px)",
-                min_value=120,
-                max_value=320,
-                value=ANCHOS_IDENTIDAD_DEFECTO["categoria"],
-                key="inv_tabla_w_categoria",
-            ),
-            "subcategoria": c2.slider(
-                "Subcategoría (px)",
-                min_value=140,
-                max_value=360,
-                value=ANCHOS_IDENTIDAD_DEFECTO["subcategoria"],
-                key="inv_tabla_w_subcategoria",
-            ),
-            "descripcion": c3.slider(
-                "Descripción (px)",
-                min_value=220,
-                max_value=520,
-                value=ANCHOS_IDENTIDAD_DEFECTO["descripcion"],
-                key="inv_tabla_w_descripcion",
-            ),
-        }
 
 
 def leyenda_tabla_wall_street() -> None:
@@ -1296,8 +1426,9 @@ def _estilo_celda_alternada(
     resaltar_negativo: bool = False,
     color_texto: str | None = None,
     cabecera_sticky_vertical: bool = True,
+    ajustar_pantalla: bool = False,
 ) -> str:
-    pad = _padding_celda(font_px)
+    pad = _padding_celda(font_px, compacto=ajustar_pantalla)
     alto = max(38, int(font_px * 1.45))
     if es_header:
         alto_hdr = max(48, int(font_px * 1.75))
@@ -1319,12 +1450,15 @@ def _estilo_celda_alternada(
         else ("left" if col_i < 4 else "right")
     )
     if es_header:
-        est = _WS_ESTILOS[_categoria_columna_ws(nombre)]
-        bg = est.th_bg if col_i % 2 == 0 else est.th_bg_alt
-        fg = est.th_fg
+        if ajustar_pantalla:
+            bg, fg = GMROI_HEADER_BG, GMROI_HEADER_FG
+        else:
+            est = _WS_ESTILOS[_categoria_columna_ws(nombre)]
+            bg = est.th_bg if col_i % 2 == 0 else est.th_bg_alt
+            fg = est.th_fg
         peso = "font-weight:700;"
         sticky = ""
-        if left_fijo is not None:
+        if not ajustar_pantalla and left_fijo is not None:
             z = 55 + col_i
             sombra = (
                 "box-shadow:6px 0 12px rgba(0,0,0,0.45);"
@@ -1333,8 +1467,10 @@ def _estilo_celda_alternada(
             )
             top = "top:0;" if cabecera_sticky_vertical else ""
             sticky = f"position:sticky;{top}left:{left_fijo}px;z-index:{z};{sombra}"
-        elif col_i < WS_COLUMNAS_FIJAS and cabecera_sticky_vertical:
+        elif not ajustar_pantalla and col_i < WS_COLUMNAS_FIJAS and cabecera_sticky_vertical:
             sticky = "position:sticky;top:0;z-index:35;"
+        elif ajustar_pantalla and cabecera_sticky_vertical:
+            sticky = "position:sticky;top:0;z-index:40;background-clip:padding-box;"
         wrap = "white-space:normal;word-break:break-word;overflow:visible;"
     else:
         bg, fg = PALETA_FILAS_ALTERNADAS[fila_i % len(PALETA_FILAS_ALTERNADAS)]
@@ -1346,7 +1482,7 @@ def _estilo_celda_alternada(
             fg = "#ff3333"
             peso = "font-weight:700;"
         sticky = ""
-        if left_fijo is not None:
+        if not ajustar_pantalla and left_fijo is not None:
             z = 20 + col_i
             sombra = (
                 "box-shadow:6px 0 12px rgba(0,0,0,0.45);"
@@ -1354,11 +1490,12 @@ def _estilo_celda_alternada(
                 else ""
             )
             sticky = f"position:sticky;left:{left_fijo}px;z-index:{z};{sombra}"
-        wrap = (
-            "white-space:normal;word-break:break-word;overflow:visible;"
-            if col_i < 4
-            else "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
-        )
+        if ajustar_pantalla:
+            wrap = "white-space:normal;word-break:break-word;overflow:visible;"
+        elif col_i < 4:
+            wrap = "white-space:normal;word-break:break-word;overflow:visible;"
+        else:
+            wrap = "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
     nums = "font-variant-numeric:tabular-nums;" if align != "left" else ""
     return f"{base}{peso}color:{fg};background:{bg};text-align:{align};{wrap}{sticky}{nums}"
 
@@ -1458,6 +1595,9 @@ def _colgroup_html(
     columnas: list[str] | None = None,
     font_px: int = TABLA_FONT_SIZE_DEFAULT,
     anchos_manual: dict[str, int] | None = None,
+    ajustar_pantalla: bool = False,
+    pesos_columna_pct: dict[str, float] | None = None,
+    anchos_pct: list[float] | None = None,
 ) -> str:
     if layout == "ancha" and columnas:
         anchos = _anchos_columnas_ws(columnas, font_px, anchos_manual=anchos_manual)
@@ -1466,10 +1606,17 @@ def _colgroup_html(
         ]
         return "<colgroup>" + "".join(partes) + "</colgroup>"
     if layout == "alternada" and columnas:
-        anchos = _anchos_columnas_ws(columnas, font_px, anchos_manual=anchos_manual)
-        partes = [
-            f'<col style="width:{w}px;min-width:{w}px">' for w in anchos
-        ]
+        if ajustar_pantalla:
+            if anchos_pct:
+                pcts = anchos_pct
+            else:
+                pcts = _anchos_pct_ponderados(columnas, pesos_columna_pct)
+            partes = [f'<col style="width:{pct:.4f}%">' for pct in pcts]
+        else:
+            anchos = _anchos_columnas_ws(columnas, font_px, anchos_manual=anchos_manual)
+            partes = [
+                f'<col style="width:{w}px;min-width:{w}px">' for w in anchos
+            ]
         return "<colgroup>" + "".join(partes) + "</colgroup>"
     if layout == "parametros":
         return '<colgroup><col style="width:64%"><col style="width:36%"></colgroup>'
@@ -1513,6 +1660,9 @@ def _aplicar_font_inline_html(
     evai_neg_filas: frozenset[int] | None = None,
     colores_columna: dict[str, str] | None = None,
     cabecera_sticky_vertical: bool = True,
+    ajustar_pantalla: bool = False,
+    pesos_columna_pct: dict[str, float] | None = None,
+    anchos_pct: list[float] | None = None,
 ) -> str:
     usar_ws = layout == "ancha" and columnas
     usar_alternada = layout == "alternada" and columnas
@@ -1580,6 +1730,8 @@ def _aplicar_font_inline_html(
         return ""
 
     def _left_fijo(col_i: int) -> int | None:
+        if ajustar_pantalla:
+            return None
         if col_i < WS_COLUMNAS_FIJAS and anchos_ws:
             return _left_columna_fija(anchos_ws, col_i)
         return None
@@ -1604,6 +1756,7 @@ def _aplicar_font_inline_html(
                 columnas=columnas,
                 left_fijo=_left_fijo(col_i),
                 cabecera_sticky_vertical=cabecera_sticky_vertical,
+                ajustar_pantalla=ajustar_pantalla,
             )
         elif usar_ws:
             estilo = _estilo_columna_ws(
@@ -1660,6 +1813,7 @@ def _aplicar_font_inline_html(
                 left_fijo=_left_fijo(col_i),
                 resaltar_negativo=resaltar,
                 color_texto=color_col if not resaltar else None,
+                ajustar_pantalla=ajustar_pantalla,
             )
         elif usar_ws:
             estilo = _estilo_columna_ws(
@@ -1708,12 +1862,19 @@ def _aplicar_font_inline_html(
             f"table-layout:fixed;width:{ancho_total}px;min-width:100%;"
         )
     elif usar_alternada and columnas:
-        ancho_total = sum(anchos_ws)
-        table_style = (
-            "border-collapse:separate;border-spacing:0;"
-            f"table-layout:fixed;width:{ancho_total}px;"
-            "font-family:Consolas,'IBM Plex Mono','Segoe UI',system-ui,sans-serif;"
-        )
+        if ajustar_pantalla:
+            table_style = (
+                "border-collapse:separate;border-spacing:0;"
+                "table-layout:fixed;width:100%;max-width:100%;"
+                "font-family:Consolas,'IBM Plex Mono','Segoe UI',system-ui,sans-serif;"
+            )
+        else:
+            ancho_total = sum(anchos_ws)
+            table_style = (
+                "border-collapse:separate;border-spacing:0;"
+                f"table-layout:fixed;width:{ancho_total}px;"
+                "font-family:Consolas,'IBM Plex Mono','Segoe UI',system-ui,sans-serif;"
+            )
     elif usar_ws and columnas:
         ancho_total = sum(anchos_ws)
         table_style = (
@@ -1731,6 +1892,9 @@ def _aplicar_font_inline_html(
         columnas=columnas,
         font_px=font_px,
         anchos_manual=anchos_manual,
+        ajustar_pantalla=ajustar_pantalla,
+        pesos_columna_pct=pesos_columna_pct,
+        anchos_pct=anchos_pct,
     )
     if layout == "scorecard":
         clase = ' class="inv-tabla-scorecard"'
@@ -1752,6 +1916,27 @@ def _aplicar_font_inline_html(
 def altura_tabla_px(n_filas: int, font_px: int, min_h: int = 280, max_h: int = 780) -> int:
     alto_fila = max(30, int(font_px * 1.45))
     return int(min(max_h, max(min_h, 40 + n_filas * alto_fila)))
+
+
+def altura_tabla_area_scroll(n_filas: int, font_px: int) -> int:
+    """Recuadro fijo como Base de datos: scroll vertical solo dentro del área."""
+    return altura_tabla_px(
+        n_filas,
+        font_px,
+        min_h=ALTURA_TABLA_AREA_MIN_PX,
+        max_h=ALTURA_TABLA_AREA_MAX_PX,
+    )
+
+
+def altura_tabla_gmroi_evai_px(
+    font_px: int,
+    *,
+    filas_visibles: int = GMROI_FILAS_VISIBLES,
+) -> int:
+    """Altura fija para mostrar ``filas_visibles`` filas de datos + cabecera; el resto con scroll."""
+    alto_hdr = max(52, int(font_px * 2.0))
+    alto_fila = max(38, int(font_px * 1.45))
+    return int(alto_hdr + 14 + filas_visibles * alto_fila)
 
 
 def altura_tabla_con_encabezado_px(
@@ -1840,6 +2025,9 @@ def mostrar_tabla_html(
     anchos_manual: dict[str, int] | None = None,
     format_items: tuple[tuple[str, str], ...] | None = None,
     mostrar_completa: bool = False,
+    ajustar_pantalla: bool = False,
+    pesos_columna_pct: dict[str, float] | None = None,
+    clase_tabla: str = "",
     evai_neg_filas: frozenset[int] | None = None,
     colores_columna: dict[str, str] | None = None,
     cabecera_sticky_vertical: bool = True,
@@ -1861,6 +2049,12 @@ def mostrar_tabla_html(
         else:
             idx_name = df.index.name or "KPI"
             columnas = [str(idx_name), *list(df.columns)]
+
+    anchos_pct: list[float] | None = None
+    if ajustar_pantalla and isinstance(df, pd.DataFrame) and columnas:
+        fmt_dict = dict(format_items) if format_items else {}
+        anchos_pct = _anchos_pct_desde_contenido(df, columnas, fmt_dict)
+
     usar_cache_ws = (
         layout == "ancha"
         and isinstance(df, pd.DataFrame)
@@ -1890,6 +2084,9 @@ def mostrar_tabla_html(
             evai_neg_filas=evai_neg_filas,
             colores_columna=colores_columna,
             cabecera_sticky_vertical=cabecera_sticky_vertical,
+            ajustar_pantalla=ajustar_pantalla,
+            pesos_columna_pct=pesos_columna_pct,
+            anchos_pct=anchos_pct,
         )
     if n_filas is None and isinstance(df, pd.DataFrame):
         n_filas = len(df)
@@ -1907,7 +2104,13 @@ def mostrar_tabla_html(
         fondo = WS_FONDO_TABLA
         borde = WS_BORDE_TABLA
     elif layout == "alternada" and columnas:
-        clase_origen += " inv-tabla-ws-wrap inv-tabla-alternada-wrap"
+        clase_origen += " inv-tabla-alternada-wrap"
+        if ajustar_pantalla:
+            clase_origen += " inv-tabla-fit-completa"
+            if clase_tabla:
+                clase_origen += f" {clase_tabla.strip()}"
+        else:
+            clase_origen += " inv-tabla-ws-wrap"
         if not cabecera_sticky_vertical:
             clase_origen += " inv-tabla-head-flow"
         fondo = WS_FONDO_TABLA
@@ -1924,7 +2127,11 @@ def mostrar_tabla_html(
     if layout == "ancha" and columnas:
         overflow = "overflow-x:scroll;overflow-y:auto;"
     elif layout == "alternada" and columnas:
-        overflow = "overflow-x:scroll;overflow-y:auto;"
+        overflow = (
+            "overflow-x:hidden;overflow-y:auto;"
+            if ajustar_pantalla
+            else "overflow-x:scroll;overflow-y:auto;"
+        )
     elif layout == "scorecard" and mostrar_completa:
         overflow = "overflow-x:scroll;overflow-y:hidden;"
     elif layout == "scorecard":
@@ -1933,10 +2140,24 @@ def mostrar_tabla_html(
         overflow = "overflow:auto;"
     bloque = (
         f'<div class="inv-tabla-scroll{clase_origen}" style="height:{altura_px}px;'
-        f"min-height:{altura_px}px;max-height:{altura_px}px;{overflow}{ancho_wrap}"
+        f"min-height:{altura_px}px;max-height:{altura_px}px;{overflow}"
+        f"{'width:100%;max-width:100%;box-sizing:border-box;' if ajustar_pantalla else ''}"
+        f"{ancho_wrap}"
         f"border:1px solid {borde};border-radius:4px;background:{fondo};"
         f'">{html_tabla}</div>'
     )
+    if clase_tabla.strip() == "inv-tabla-gmroi":
+        bloque += (
+            "<script>"
+            "(function(){"
+            "const run=function(){"
+            "const el=document.querySelector('.inv-tabla-gmroi.inv-tabla-fit-completa');"
+            "if(el){el.scrollTop=0;}"
+            "};"
+            "run();setTimeout(run,150);"
+            "})();"
+            "</script>"
+        )
     st.markdown(bloque, unsafe_allow_html=True)
 
 
