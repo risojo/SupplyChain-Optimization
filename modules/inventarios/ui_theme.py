@@ -989,6 +989,30 @@ div[data-testid="stVerticalBlock"]:has(.inv-param-bloque-tabla) {{
     overscroll-behavior-x: none;
     scrollbar-gutter: stable;
 }}
+.inv-tabla-scroll.inv-tabla-resize {{
+    overflow-x: auto !important;
+    overflow-y: auto !important;
+}}
+.inv-tabla-ws th {{
+    position: relative;
+}}
+.inv-col-resizer {{
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 7px;
+    height: 100%;
+    cursor: col-resize;
+    z-index: 12;
+    touch-action: none;
+}}
+.inv-col-resizer:hover {{
+    background: rgba(96, 165, 250, 0.45);
+}}
+.inv-tabla-scroll.inv-tabla-gmroi.inv-tabla-fit-completa.inv-tabla-resize {{
+    overflow-x: auto !important;
+    overflow-y: auto !important;
+}}
 .inv-tabla-scroll.inv-tabla-gmroi.inv-tabla-fit-completa {{
     overflow-x: hidden !important;
     overflow-y: auto !important;
@@ -1982,6 +2006,76 @@ def _anchos_manual_key(anchos_manual: dict[str, int] | None) -> tuple[tuple[str,
     return tuple(sorted(anchos_manual.items()))
 
 
+def _bloque_script_resize_columnas() -> str:
+    """Arrastre en el borde derecho de cada cabecera para ajustar ancho de columna."""
+    return (
+        "<script>"
+        "(function(){"
+        "function initResize(wrap){"
+        "if(!wrap||wrap.dataset.invResizeInit)return;"
+        "wrap.dataset.invResizeInit='1';"
+        "const table=wrap.querySelector('table');"
+        "if(!table)return;"
+        "const headers=table.querySelectorAll('thead tr:first-child th');"
+        "if(!headers.length)return;"
+        "const cols=table.querySelectorAll('colgroup col');"
+        "headers.forEach(function(th,i){"
+        "if(th.querySelector('.inv-col-resizer'))return;"
+        "th.style.position='relative';"
+        "th.dataset.col=String(i);"
+        "if(cols[i]&&!cols[i].id)cols[i].id='inv-col-'+i;"
+        "const h=document.createElement('div');"
+        "h.className='inv-col-resizer';"
+        "h.dataset.col=String(i);"
+        "h.title='Arrastre para ajustar ancho';"
+        "th.appendChild(h);"
+        "});"
+        "function colWidth(i){const th=headers[i];return th?th.offsetWidth:100;}"
+        "function setColWidth(i,w){"
+        "w=Math.max(48,Math.round(w));"
+        "const col=cols[i];"
+        "if(col){col.style.width=w+'px';col.style.minWidth=w+'px';col.style.maxWidth=w+'px';}"
+        "table.querySelectorAll('th:nth-child('+(i+1)+')').forEach(function(el){"
+        "el.style.width=w+'px';el.style.minWidth=w+'px';el.style.maxWidth=w+'px';"
+        "});"
+        "table.querySelectorAll('td:nth-child('+(i+1)+')').forEach(function(el){"
+        "el.style.width=w+'px';el.style.minWidth=w+'px';el.style.maxWidth=w+'px';"
+        "});"
+        "let total=0;"
+        "for(let j=0;j<headers.length;j++)total+=colWidth(j);"
+        "table.style.width=total+'px';"
+        "table.style.minWidth=total+'px';"
+        "table.style.maxWidth='none';"
+        "}"
+        "let drag=null;"
+        "wrap.querySelectorAll('.inv-col-resizer').forEach(function(handle){"
+        "handle.addEventListener('mousedown',function(e){"
+        "e.preventDefault();e.stopPropagation();"
+        "const idx=parseInt(handle.dataset.col,10);"
+        "drag={idx:idx,startX:e.clientX,startW:colWidth(idx)};"
+        "document.body.style.cursor='col-resize';"
+        "document.body.style.userSelect='none';"
+        "});"
+        "});"
+        "window.addEventListener('mousemove',function(e){"
+        "if(!drag)return;"
+        "setColWidth(drag.idx,drag.startW+(e.clientX-drag.startX));"
+        "});"
+        "window.addEventListener('mouseup',function(){"
+        "drag=null;"
+        "document.body.style.cursor='';"
+        "document.body.style.userSelect='';"
+        "});"
+        "}"
+        "const s=document.currentScript;"
+        "if(!s)return;"
+        "const w=s.previousElementSibling;"
+        "if(w&&w.classList.contains('inv-tabla-scroll'))initResize(w);"
+        "})();"
+        "</script>"
+    )
+
+
 @st.cache_data(show_spinner=False)
 def _html_tabla_wall_street_cached(
     df: pd.DataFrame,
@@ -2031,8 +2125,11 @@ def mostrar_tabla_html(
     evai_neg_filas: frozenset[int] | None = None,
     colores_columna: dict[str, str] | None = None,
     cabecera_sticky_vertical: bool = True,
+    redimensionar_columnas: bool | None = None,
 ) -> None:
     """Tabla HTML con letra grande y columnas juntas (controlada por el slider)."""
+    if redimensionar_columnas is None:
+        redimensionar_columnas = layout in ("ancha", "alternada", "scorecard")
     if hide_index and hasattr(styler, "hide"):
         styler = styler.hide(axis="index")
     try:
@@ -2128,9 +2225,9 @@ def mostrar_tabla_html(
         overflow = "overflow-x:scroll;overflow-y:auto;"
     elif layout == "alternada" and columnas:
         overflow = (
-            "overflow-x:hidden;overflow-y:auto;"
-            if ajustar_pantalla
-            else "overflow-x:scroll;overflow-y:auto;"
+            "overflow-x:auto;overflow-y:auto;"
+            if redimensionar_columnas or not ajustar_pantalla
+            else "overflow-x:hidden;overflow-y:auto;"
         )
     elif layout == "scorecard" and mostrar_completa:
         overflow = "overflow-x:scroll;overflow-y:hidden;"
@@ -2138,6 +2235,8 @@ def mostrar_tabla_html(
         overflow = "overflow-x:scroll;overflow-y:auto;"
     else:
         overflow = "overflow:auto;"
+    if redimensionar_columnas:
+        clase_origen += " inv-tabla-resize"
     bloque = (
         f'<div class="inv-tabla-scroll{clase_origen}" style="height:{altura_px}px;'
         f"min-height:{altura_px}px;max-height:{altura_px}px;{overflow}"
@@ -2158,6 +2257,8 @@ def mostrar_tabla_html(
             "})();"
             "</script>"
         )
+    if redimensionar_columnas:
+        bloque += _bloque_script_resize_columnas()
     st.markdown(bloque, unsafe_allow_html=True)
 
 

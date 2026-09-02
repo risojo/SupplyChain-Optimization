@@ -37,6 +37,8 @@ if _DIR_ACTUAL not in sys.path:
     sys.path.insert(0, _DIR_ACTUAL)
 
 import data_loader  # noqa: E402
+import destruccion_valor  # noqa: E402
+import narracion_voz  # noqa: E402
 import parametros  # noqa: E402
 import scorecard  # noqa: E402
 import ui_theme  # noqa: E402
@@ -585,10 +587,18 @@ def _aplicar_toggle_tabla_gmroi_pendiente() -> None:
 
 
 def _controles_opciones_gmroi() -> None:
-    """ICC, Pareto y tabla — en la vista GMROI/EVAI (no en sidebar)."""
-    with st.expander("Opciones de análisis (ICC, Pareto, gráfico)", expanded=False):
+    """ICC, Pareto, nivel y límite de gráfico — colapsable bajo los filtros."""
+    with st.expander("Opciones (ICC, Pareto, límite de gráfico)", expanded=False):
         c1, c2 = st.columns(2)
         with c1:
+            st.radio(
+                "Presentar GMROI y EVAI por",
+                options=list(scorecard._NIVELES_GMROI),
+                format_func=lambda x: scorecard._ETIQUETAS_NIVEL[x],
+                horizontal=True,
+                key="inv_gmroi_nivel",
+                help="Categoría · Subcategoría · Código (SKU).",
+            )
             st.selectbox(
                 "Asignar ICC por",
                 options=["categoria", "subcategoria"],
@@ -615,7 +625,7 @@ def _controles_opciones_gmroi() -> None:
             st.checkbox(
                 "Mostrar tabla detallada",
                 key="inv_gmroi_mostrar_tabla",
-                help="También puede abrirla con el botón 📋 más abajo.",
+                help="También puede abrirla con el botón Tabla de cálculos más abajo.",
             )
 
 
@@ -634,24 +644,7 @@ def _reset_filtros_gmroi_codigo() -> None:
 
 
 def _controles_filtro_gmroi(df: pd.DataFrame) -> tuple[str | None, str | None, str | None]:
-    """Nivel de análisis + drill-down por categoría, subcategoría y código."""
-    st.markdown("##### Presentar GMROI y EVAI por")
-    nivel = st.radio(
-        "Nivel de análisis",
-        options=list(scorecard._NIVELES_GMROI),
-        format_func=lambda x: scorecard._ETIQUETAS_NIVEL[x],
-        horizontal=True,
-        key="inv_gmroi_nivel",
-        help="Categoría: totales por categoría · Subcategoría: por subcategoría · Código: GMROI/EVAI por artículo.",
-    )
-
-    st.markdown("##### Segmentar ventas (drill-down)")
-    st.caption(
-        "Elija **categoría** (p. ej. Alimentos, Abarrotes), luego **subcategoría** y, si lo necesita, "
-        "un **código** concreto para ver GMROI y EVAI de ese artículo."
-    )
-
-    # Normalizar valores legacy del session_state
+    """Filtros superiores: categoría, subcategoría y código."""
     for clave, default in (
         ("inv_gmroi_filtro_categoria", _OPCION_TODAS_CAT),
         ("inv_gmroi_filtro_subcategoria", _OPCION_TODAS_SUB),
@@ -692,26 +685,56 @@ def _controles_filtro_gmroi(df: pd.DataFrame) -> tuple[str | None, str | None, s
     cod_opts = sorted(df.loc[mask_cod, "codigo"].dropna().astype(str).unique())
 
     with c3:
-        if nivel == "codigo":
-            cod_sel = st.selectbox(
-                "Código (producto)",
-                [_OPCION_TODOS_COD, *cod_opts],
-                key="inv_gmroi_filtro_codigo",
-                help="Un artículo específico: GMROI y EVAI de ese SKU.",
-            )
-            cod_filtro = cod_sel if cod_sel != _OPCION_TODOS_COD else None
-        else:
-            st.caption("Use nivel **Código (SKU / producto)** para elegir un artículo.")
-            cod_filtro = None
+        cod_sel = st.selectbox(
+            "Código",
+            [_OPCION_TODOS_COD, *cod_opts],
+            key="inv_gmroi_filtro_codigo",
+            help="Un artículo específico: GMROI y EVAI de ese SKU.",
+        )
+    cod_filtro = cod_sel if cod_sel != _OPCION_TODOS_COD else None
 
     return cat_filtro, sub_filtro, cod_filtro
+
+
+def _render_analisis_destruccion_valor(
+    tabla_sku: pd.DataFrame,
+    *,
+    icc_por: str,
+) -> None:
+    """Bloque de texto + narración hablada para SKUs con EVAI negativo."""
+    analisis = destruccion_valor.analizar_destruccion_valor(
+        tabla_sku,
+        dimension_icc=icc_por,
+    )
+    guion = destruccion_valor.guion_prosa(analisis)
+
+    titulo_expander = "Análisis: destrucción de valor (EVAI −)"
+    if analisis.n_productos:
+        titulo_expander += (
+            f" — {analisis.n_productos} producto(s), "
+            f"−${abs(analisis.monto_total):,.0f}"
+        )
+
+    with st.expander(titulo_expander, expanded=False):
+        st.caption(
+            "Resumen del filtro actual en pantalla. Cada SKU con EVAI negativo se compara "
+            "con el promedio de su categoría/subcategoría (según ICC). "
+            "La voz narra artículo por artículo: código, pérdida y causa."
+        )
+        st.markdown(destruccion_valor.markdown_analisis(analisis))
+
+    st.markdown("##### Narración hablada")
+    narracion_voz.render_controles_narracion(
+        guion,
+        component_key=f"inv_tts_{hash(guion) & 0xFFFF}",
+    )
 
 
 def vista_gmroi_evai(df: pd.DataFrame, params: dict) -> None:
     """Gráficos GMROI/EVAI por código, categoría o subcategoría; tabla opcional."""
     _inicializar_controles_gmroi()
-    _controles_opciones_gmroi()
     cat_filtro, sub_filtro, cod_filtro = _controles_filtro_gmroi(df)
+    _controles_opciones_gmroi()
     nivel = scorecard.normalizar_nivel_gmroi(st.session_state["inv_gmroi_nivel"])
     icc_por = st.session_state["inv_gmroi_icc_por"]
     top_n = int(st.session_state["inv_gmroi_top_n"])
@@ -719,25 +742,16 @@ def vista_gmroi_evai(df: pd.DataFrame, params: dict) -> None:
     set_pareto = st.session_state["inv_gmroi_pareto_set"]
     pareto_acum = st.session_state.get("inv_gmroi_pareto_acumulado", False)
     etiqueta_nivel = scorecard._ETIQUETAS_NIVEL[nivel]
-    etiqueta_icc = "categoría" if icc_por == "categoria" else "subcategoría"
+    etiqueta_icc = "cat." if icc_por == "categoria" else "subcat."
     pareto_txt = set_pareto if "Desactivado" not in set_pareto else "Paleta azul → blanco"
 
-    filtro_txt = ""
+    filtro_txt = etiqueta_nivel
     if cat_filtro:
-        filtro_txt += f" · **Categoría:** {cat_filtro}"
+        filtro_txt += f" · {cat_filtro}"
     if sub_filtro:
-        filtro_txt += f" · **Subcategoría:** {sub_filtro}"
+        filtro_txt += f" · {sub_filtro}"
     if cod_filtro:
-        filtro_txt += f" · **Código:** {cod_filtro}"
-
-    st.caption(
-        "Fórmulas: valor inventario promedio = inventario promedio bultos × costo unitario bulto · "
-        "margen bruto = ventas totales − ventas costo · "
-        "GMROI = margen bruto ÷ valor inventario promedio · "
-        "% margen bruto = margen bruto ÷ ventas totales · "
-        "% ICC = ICC asignado ÷ ventas totales · "
-        "EVAI = margen bruto − ICC asignado"
-    )
+        filtro_txt += f" · {cod_filtro}"
 
     try:
         tabla_sku = scorecard.tabla_gmroi_evai_por_sku(df, params, icc_por)
@@ -761,17 +775,26 @@ def vista_gmroi_evai(df: pd.DataFrame, params: dict) -> None:
         if mostrar_todos_graf
         else f"top {top_n}"
     )
+    gmroi_max = float(tabla["GMROI"].max()) if not tabla.empty else 0.0
     st.caption(
-        f"Nivel: {etiqueta_nivel}{filtro_txt} · ICC por: {etiqueta_icc} · "
-        f"Gráfico: {limite_txt} · Color: {pareto_txt}"
+        f"{filtro_txt} · ICC×{etiqueta_icc} · n={len(tabla):,} · "
+        f"GMROI máx={gmroi_max:.2f} · "
+        "Fórmula: GMROI = margen bruto ÷ valor inventario promedio (sum/sum al agrupar). "
+        "Mismo dato en gráfico y tabla."
     )
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Registros", f"{len(tabla):,}")
+    evai_vals = tabla_sku["EVAI"].astype(float)
+    evai_pos = float(evai_vals[evai_vals > 0].sum())
+    evai_neg = float(evai_vals[evai_vals < 0].sum())
+    evai_neto = float(evai_vals.sum())
     gmroi_prom = tabla["GMROI"].replace(0, np.nan).mean()
-    m2.metric("GMROI promedio", f"{gmroi_prom:.2f}" if pd.notna(gmroi_prom) else "—")
-    m3.metric("EVAI total", _fmt_moneda(float(tabla["EVAI"].sum())))
-    m4.metric("Margen bruto", _fmt_moneda(float(tabla["margen bruto total"].sum())))
+
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Registros", f"{len(tabla):,}")
+    m2.metric("GMROI prom.", f"{gmroi_prom:.2f}" if pd.notna(gmroi_prom) else "—")
+    m3.metric("EVAI +", _fmt_moneda(evai_pos))
+    m4.metric("EVAI − (pérdida)", _fmt_moneda(abs(evai_neg)))
+    m5.metric("EVAI neto", _fmt_moneda(evai_neto))
 
     st.caption("Gráficos verticales — mayor a menor (desplácese horizontalmente si hay muchos códigos)")
     g1, g2 = st.columns(2, gap="large")
@@ -796,10 +819,12 @@ def vista_gmroi_evai(df: pd.DataFrame, params: dict) -> None:
             mostrar_todos=mostrar_todos_graf,
         )
 
+    _render_analisis_destruccion_valor(tabla_sku, icc_por=icc_por)
+
     st.divider()
     btn_col, txt_col = st.columns([1, 4], vertical_alignment="center")
     with btn_col:
-        etiqueta_btn = "📋 Ocultar tabla" if mostrar_tabla else "📋 Ver tabla de cálculos"
+        etiqueta_btn = "📋 Ocultar tabla" if mostrar_tabla else "📋 Tabla de cálculos"
         if st.button(
             etiqueta_btn,
             key="inv_toggle_tabla_gmroi",
@@ -816,7 +841,7 @@ def vista_gmroi_evai(df: pd.DataFrame, params: dict) -> None:
             )
         else:
             st.caption(
-                "La tabla está colapsada. Use **📋 Ver tabla de cálculos** para revisar o imprimir el detalle."
+                "La tabla está colapsada. Use **Tabla de cálculos** para revisar o imprimir el detalle."
             )
 
     if mostrar_tabla:
@@ -1130,23 +1155,72 @@ def vista_parametros_generales(df: pd.DataFrame, params: dict) -> None:
     )
 
 
-# Orden del flujo en sidebar.
-OPCIONES_VISTA = [
-    "Parámetros",
+# Vista principal (Decisiones) y herramientas de soporte (una ventana a la vez).
+VISTA_PRINCIPAL = "GMROI y EVAI"
+HERRAMIENTAS_VISTA = [
     "Base de datos",
-    "Drivers (tentativo)",
-    "Asignación de drivers",
+    "Parámetros",
     "Scorecard",
-    "GMROI y EVAI",
+    "Asignación de drivers",
+    "Drivers (tentativo)",
 ]
+OPCIONES_VISTA = [VISTA_PRINCIPAL, *HERRAMIENTAS_VISTA]
+_VISTAS_LEGACY = {
+    "Parámetros generales": "Parámetros",
+    "Drivers (DMD)": "Drivers (tentativo)",
+    "Paso 4 — Scorecard (tablero financiero)": "Scorecard",
+}
 VISTAS: dict[str, Callable[[pd.DataFrame, dict], None]] = {
     "Parámetros": vista_parametros_generales,
     "Base de datos": vista_base_datos,
     "Drivers (tentativo)": vista_drivers,
     "Asignación de drivers": vista_asignacion_drivers,
     "Scorecard": vista_scorecard,
-    "GMROI y EVAI": vista_gmroi_evai,
+    VISTA_PRINCIPAL: vista_gmroi_evai,
 }
+
+
+def _normalizar_inv_vista_sesion() -> None:
+    """GMROI/EVAI por defecto; migrar nombres legacy del menú antiguo."""
+    actual = st.session_state.get("inv_vista")
+    if actual in _VISTAS_LEGACY:
+        st.session_state["inv_vista"] = _VISTAS_LEGACY[actual]
+        return
+    if actual not in OPCIONES_VISTA:
+        st.session_state["inv_vista"] = VISTA_PRINCIPAL
+
+
+def _render_navegacion_sidebar() -> None:
+    """Decisiones + Herramientas como botones (ventanas), como en la versión anterior."""
+    _normalizar_inv_vista_sesion()
+    vista = st.session_state["inv_vista"]
+
+    st.markdown("##### Decisiones")
+    if st.button(
+        VISTA_PRINCIPAL,
+        use_container_width=True,
+        type="primary" if vista == VISTA_PRINCIPAL else "secondary",
+        help="Vista principal: GMROI, EVAI, destrucción de valor y narración.",
+    ):
+        st.session_state["inv_vista"] = VISTA_PRINCIPAL
+        st.rerun()
+
+    st.markdown("##### Herramientas")
+    for nombre in HERRAMIENTAS_VISTA:
+        activa = vista == nombre
+        if st.button(
+            nombre,
+            key=f"inv_nav_{nombre}",
+            use_container_width=True,
+            type="primary" if activa else "secondary",
+            help=f"Abre la ventana «{nombre}».",
+        ):
+            st.session_state["inv_vista"] = nombre
+            st.rerun()
+        if nombre == "Drivers (tentativo)" and activa:
+            st.caption(
+                "Vista provisional; más adelante será una función oculta del módulo."
+            )
 
 
 def main() -> None:
@@ -1170,33 +1244,12 @@ def main() -> None:
             st.warning(err_sidebar)
 
         st.divider()
-        st.markdown("##### Navegación")
-        if "inv_vista" not in st.session_state:
-            st.session_state["inv_vista"] = OPCIONES_VISTA[0]
-        elif st.session_state["inv_vista"] not in OPCIONES_VISTA:
-            legacy = {
-                "Parámetros generales": "Parámetros",
-                "Drivers (DMD)": "Drivers (tentativo)",
-                "Paso 4 — Scorecard (tablero financiero)": "Scorecard",
-            }
-            st.session_state["inv_vista"] = legacy.get(
-                st.session_state["inv_vista"],
-                OPCIONES_VISTA[0],
-            )
-        seleccion = st.radio(
-            "Vista",
-            OPCIONES_VISTA,
-            key="inv_vista",
-        )
-        if seleccion == "Drivers (tentativo)":
-            st.caption(
-                "Vista provisional; más adelante será una función oculta del módulo."
-            )
+        _render_navegacion_sidebar()
 
         st.divider()
         st.markdown("##### Ajustes de interfaz")
         st.session_state["inv_tabla_fontsize"] = st.slider(
-            "Tamaño de letra (px)",
+            "Tamaño de letra tablas (px)",
             min_value=ui_theme.TABLA_FONT_SIZE_MIN,
             max_value=ui_theme.TABLA_FONT_SIZE_MAX,
             value=int(
@@ -1207,13 +1260,29 @@ def main() -> None:
             ),
             step=1,
             key="inv_tabla_fontsize_ui",
-            help="Aplica a tablas, parámetros, scorecard y GMROI/EVAI.",
+            help="Aplica a tablas, parámetros y scorecard.",
+        )
+        st.session_state["inv_gmroi_font_ejes"] = st.slider(
+            "Tamaño letras ejes X e Y (px)",
+            min_value=8,
+            max_value=24,
+            value=int(st.session_state.get("inv_gmroi_font_ejes", 14)),
+            step=1,
+            key="inv_gmroi_font_ejes_ui",
+            help="Etiquetas de los ejes en gráficos GMROI/EVAI.",
+        )
+        st.session_state["inv_gmroi_font_barras"] = st.slider(
+            "Tamaño números en barras (px)",
+            min_value=7,
+            max_value=20,
+            value=int(st.session_state.get("inv_gmroi_font_barras", 10)),
+            step=1,
+            key="inv_gmroi_font_barras_ui",
+            help="Valores impresos sobre las barras de GMROI/EVAI.",
         )
 
     _inyectar_css_ui()
     ui_theme.cabecera_modulo_inventarios()
-
-    seleccion = st.session_state.get("inv_vista", OPCIONES_VISTA[0])
 
     df = st.session_state.get("inv_df_datos")
     if df is None:
@@ -1230,6 +1299,7 @@ def main() -> None:
         st.stop()
 
     inv_params = parametros.inicializar_parametros(df)
+    seleccion = st.session_state.get("inv_vista", VISTA_PRINCIPAL)
     VISTAS[seleccion](df, inv_params)
 
 

@@ -42,6 +42,14 @@ def _tabla_font_px() -> int:
 
     return font_campos_px()
 
+
+def _gmroi_font_ejes_px() -> int:
+    return int(st.session_state.get("inv_gmroi_font_ejes", 14))
+
+
+def _gmroi_font_barras_px() -> int:
+    return int(st.session_state.get("inv_gmroi_font_barras", 10))
+
 _MAPA_PIVOT = {
     "codigo": "count",
     "inventario promedio bultos": "sum",
@@ -1093,7 +1101,8 @@ def grafico_gmroi_barras(
     alto_fig = _altura_figura_gmroi(n)
     bargap = 0.72 if n > 30 else 0.55 if n > 15 else 0.38
     font_px = _tabla_font_px()
-    tick_px = max(9, font_px - 2) if n > 40 else max(10, font_px - 1)
+    tick_px = _gmroi_font_ejes_px()
+    barra_px = _gmroi_font_barras_px()
     titulo_txt = f"{titulo_metrica} · {etiqueta_n}"
     if pareto_activo:
         titulo_txt += " · Pareto"
@@ -1109,7 +1118,7 @@ def grafico_gmroi_barras(
             texttemplate=texttemplate,
             textposition="outside",
             textangle=-90 if n > 35 else 0,
-            textfont=dict(color=text_colors, size=9 if n > 40 else 10),
+            textfont=dict(color=text_colors, size=barra_px),
             cliponaxis=False,
             name=titulo_metrica,
         )
