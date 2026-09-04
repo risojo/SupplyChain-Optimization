@@ -26,6 +26,7 @@ __pycache__/
 
 # Parámetros guardados por el usuario (Inventarios)
 modules/inventarios/parametros_guardados.json
+modules/inventarios/parametros_actuales/
 modules/inventarios/drivers_guardados.json
 
 # Otros

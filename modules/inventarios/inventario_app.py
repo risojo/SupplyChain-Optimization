@@ -38,7 +38,7 @@ if _DIR_ACTUAL not in sys.path:
 
 import data_loader  # noqa: E402
 import destruccion_valor  # noqa: E402
-import narracion_voz  # noqa: E402
+import analisis_chatgpt  # noqa: E402
 import parametros  # noqa: E402
 import scorecard  # noqa: E402
 import ui_theme  # noqa: E402
@@ -127,40 +127,90 @@ def _limpiar_estado_sesion_inventarios(*, incluir_datos: bool = True) -> None:
             del st.session_state[key]
 
 
-def _reiniciar_plantilla_completa() -> None:
-    """Excel ``template_inventarios.xlsx`` + parámetros estándar (sin guardados locales)."""
-    _limpiar_estado_sesion_inventarios(incluir_datos=True)
-    _cargar_datos_con_cache.clear()
-    _cargar_excel_cached.clear()
-
-    params = parametros.reiniciar_a_defaults(borrar_guardado_local=True)
+def _borrar_persistencia_local_modulo() -> None:
+    """Quita drivers locales al cambiar Excel. No borra base ni actuales."""
     if os.path.isfile(ARCHIVO_DRIVERS_GUARDADO):
         try:
             os.remove(ARCHIVO_DRIVERS_GUARDADO)
         except OSError:
             pass
 
+
+def _restablecer_controles_gmroi() -> None:
+    """Filtros y opciones GMROI a valores iniciales."""
+    for clave, valor in (
+        ("inv_gmroi_nivel", "codigo"),
+        ("inv_gmroi_icc_por", "categoria"),
+        ("inv_gmroi_mostrar_tabla", False),
+        ("inv_gmroi_top_n", 20),
+        ("inv_gmroi_pareto_set", "Desactivado (Paleta Azul)"),
+        ("inv_gmroi_pareto_acumulado", False),
+        ("inv_gmroi_filtro_categoria", "— Todas las categorías —"),
+        ("inv_gmroi_filtro_subcategoria", "— Todas las subcategorías —"),
+        ("inv_gmroi_filtro_codigo", "— Todos los códigos —"),
+    ):
+        st.session_state[clave] = valor
+
+
+def _activar_plantilla_demo() -> None:
+    """``template_inventarios.xlsx`` + parámetros demo (backup) + drivers por defecto."""
+    _limpiar_estado_sesion_inventarios(incluir_datos=True)
+    _borrar_persistencia_local_modulo()
+    _restablecer_controles_gmroi()
+    _cargar_datos_con_cache.clear()
+    _cargar_excel_cached.clear()
+
     df, err = _cargar_datos_con_cache()
+    params = parametros.cargar_parametros_demo()
     st.session_state["inv_df_datos"] = df
     st.session_state["inv_error_carga"] = err
     st.session_state["inv_nombre_archivo"] = (
         data_loader.NOMBRE_ARCHIVO_DEFECTO if df is not None else None
     )
+    st.session_state.pop("inv_upload_id", None)
     if df is not None:
         parametros.restaurar_en_session_state(params, df)
     else:
         parametros.restaurar_en_session_state(params, None)
+
+
+def _activar_archivo_subido(
+    df: pd.DataFrame,
+    *,
+    nombre: str,
+    upload_id: tuple[str, int],
+) -> None:
+    """Otro Excel: limpia todo y trabaja solo con ese archivo en la sesión."""
+    _limpiar_estado_sesion_inventarios(incluir_datos=False)
+    _borrar_persistencia_local_modulo()
+    _restablecer_controles_gmroi()
+
+    params = parametros.cargar_parametros_archivo_subido()
+    st.session_state["inv_df_datos"] = df
+    st.session_state["inv_error_carga"] = None
+    st.session_state["inv_upload_id"] = upload_id
+    st.session_state["inv_nombre_archivo"] = nombre
+    parametros.restaurar_en_session_state(params, df)
+
+
+def _reiniciar_plantilla_completa() -> None:
+    """Excel ``template_inventarios.xlsx`` + parámetros demo (botón en Parámetros)."""
+    _activar_plantilla_demo()
     st.rerun()
 
 
 def _sidebar_cargar_datos() -> None:
-    """Subir Excel; si no hay archivo, usa el designado en data/sources/."""
+    """Subir Excel; si no hay archivo, usa ``template_inventarios.xlsx`` (demo)."""
     st.markdown("##### 📁 Cargar datos")
+    nombre_plantilla = data_loader.NOMBRE_ARCHIVO_DEFECTO
     archivo_subido = st.file_uploader(
         "Archivo Excel",
         type=["xlsx", "xls"],
         help=(
-            f"Si no sube archivo, se usa `{data_loader.NOMBRE_ARCHIVO_DEFECTO}` del proyecto."
+            f"Sin archivo subido se usa **{nombre_plantilla}** (demo). "
+            "Si sube otro Excel, se trabajan solo esos SKUs en esta sesión "
+            "(los parámetros base/actuales en disco no se borran). "
+            "Quite el archivo subido para volver al demo."
         ),
     )
     if archivo_subido is not None:
@@ -171,32 +221,18 @@ def _sidebar_cargar_datos() -> None:
                 st.session_state["inv_error_carga"] = err_up
                 st.error(err_up)
             else:
-                st.session_state["inv_df_datos"] = df_up
-                st.session_state["inv_error_carga"] = None
-                st.session_state["inv_upload_id"] = upload_id
-                st.session_state["inv_nombre_archivo"] = archivo_subido.name
-                st.session_state.pop("inv_parametros", None)
-                st.session_state.pop("inv_widgets_param_ok", None)
-                parametros.invalidar_cache_calculados()
-                _limpiar_claves_widgets_parametros()
+                _activar_archivo_subido(
+                    df_up,
+                    nombre=archivo_subido.name,
+                    upload_id=upload_id,
+                )
                 st.rerun()
-        st.caption(f"Archivo: {archivo_subido.name}")
+        st.caption(f"Archivo en sesión: **{archivo_subido.name}** (parámetros en blanco)")
     else:
         if st.session_state.get("inv_upload_id") is not None:
-            st.session_state.pop("inv_upload_id", None)
-            df_def, err_def = _cargar_datos_con_cache()
-            st.session_state["inv_df_datos"] = df_def
-            st.session_state["inv_error_carga"] = err_def
-            st.session_state["inv_nombre_archivo"] = (
-                data_loader.NOMBRE_ARCHIVO_DEFECTO if df_def is not None else None
-            )
-            st.session_state.pop("inv_parametros", None)
-            st.session_state.pop("inv_widgets_param_ok", None)
-            parametros.invalidar_cache_calculados()
-            _limpiar_claves_widgets_parametros()
+            _activar_plantilla_demo()
             st.rerun()
-        nombre_def = os.path.basename(data_loader.ARCHIVO_EXCEL_PATH)
-        st.caption(f"Por defecto: {nombre_def}")
+        st.caption(f"Demo activo: **{nombre_plantilla}** (parámetros y drivers de plantilla)")
 
 
 def _css_control_voz_sidebar() -> str:
@@ -701,12 +737,14 @@ def _render_analisis_destruccion_valor(
     *,
     icc_por: str,
 ) -> None:
-    """Bloque de texto + narración hablada para SKUs con EVAI negativo."""
+    """Bloque de hechos EVAI + análisis narrado por ChatGPT (voz OpenAI)."""
     analisis = destruccion_valor.analizar_destruccion_valor(
         tabla_sku,
         dimension_icc=icc_por,
     )
-    guion = destruccion_valor.guion_prosa(analisis)
+    gmroi_prom = None
+    if "GMROI" in tabla_sku.columns and not tabla_sku.empty:
+        gmroi_prom = float(tabla_sku["GMROI"].replace(0, np.nan).mean())
 
     titulo_expander = "Análisis: destrucción de valor (EVAI −)"
     if analisis.n_productos:
@@ -717,16 +755,16 @@ def _render_analisis_destruccion_valor(
 
     with st.expander(titulo_expander, expanded=False):
         st.caption(
-            "Resumen del filtro actual en pantalla. Cada SKU con EVAI negativo se compara "
-            "con el promedio de su categoría/subcategoría (según ICC). "
-            "La voz narra artículo por artículo: código, pérdida y causa."
+            "Hechos del filtro actual (EVAI negativo vs promedio del grupo ICC). "
+            "ChatGPT narra solo un **resumen**; el detalle de códigos queda impreso abajo."
         )
         st.markdown(destruccion_valor.markdown_analisis(analisis))
 
-    st.markdown("##### Narración hablada")
-    narracion_voz.render_controles_narracion(
-        guion,
-        component_key=f"inv_tts_{hash(guion) & 0xFFFF}",
+    analisis_chatgpt.render_panel_chatgpt(
+        analisis,
+        tabla_sku=tabla_sku,
+        icc_por=icc_por,
+        gmroi_promedio=gmroi_prom,
     )
 
 
@@ -889,11 +927,14 @@ def vista_scorecard(df: pd.DataFrame, params: dict) -> None:
 
     inv_alm_n, inv_alm_v = parametros.extraer_tag(params, "alm_inversiones")
     cost_alm_n, cost_alm_v = parametros.extraer_tag(params, "alm_costosgastos")
-    cost_alm_vals = cost_alm_v[1:] + [capital_pct]
+    # Montos íntegros: la suma por categorías debe igualar el parámetro (p. ej. 85 000).
+    # El % de capital se aplica solo a inversiones dentro de scorecard_completo.
+    cost_alm_vals = list(cost_alm_v)
 
     inv_inv_n, inv_inv_v = parametros.extraer_tag(params, "inv_inversiones")
     inv_calc_n, inv_calc_v = parametros.extraer_tag(params, "inv_inversiones_calculado")
     inv_cost_n, inv_cost_v = parametros.extraer_tag(params, "inv_costosgastos")
+    # Omite activo de inventario; incluye costo financiero calculado + gastos.
     cost_inv_n = inv_calc_n[1:] + inv_cost_n
     cost_inv_v = inv_calc_v[1:] + inv_cost_v
 
@@ -967,6 +1008,38 @@ def vista_scorecard(df: pd.DataFrame, params: dict) -> None:
             use_container_width=True,
             key="scorecard_dl_inv",
         )
+
+    # Control cruzado: Parámetros ↔ Costo Totales ↔ suma de categorías
+    montos_esp = scorecard.montos_esperados_por_fila(params)
+    ctrl_alm = scorecard.control_cruzado_scorecard(alm_tabla, montos_esp)
+    ctrl_inv = scorecard.control_cruzado_scorecard(inv_tabla, montos_esp)
+    ok_a, fail_a = scorecard.resumen_control_cruzado(ctrl_alm)
+    ok_i, fail_i = scorecard.resumen_control_cruzado(ctrl_inv)
+    with st.expander(
+        "Control cruzado Parámetros ↔ Scorecard (Costo Totales)",
+        expanded=(fail_a + fail_i) > 0,
+    ):
+        st.caption(
+            "Gastos: **Costo Totales** = monto digitado en Parámetros. "
+            "Inversiones: **Costo Totales** = parámetro × (% costo de capital) — cargo anual. "
+            "En ambos casos, la suma de categorías/subcategorías = **Costo Totales**."
+        )
+        if fail_a + fail_i == 0:
+            st.success(
+                f"Almacenaje: {ok_a}/{ok_a} OK · Inventarios: {ok_i}/{ok_i} OK. "
+                "Totales alineados con parámetros."
+            )
+        else:
+            st.error(
+                f"Hay diferencias: almacenaje fallas={fail_a}, inventarios fallas={fail_i}."
+            )
+        c_a, c_i = st.columns(2)
+        with c_a:
+            st.markdown("**Almacenaje**")
+            st.dataframe(ctrl_alm, use_container_width=True, hide_index=True)
+        with c_i:
+            st.markdown("**Inventarios**")
+            st.dataframe(ctrl_inv, use_container_width=True, hide_index=True)
 
     total_df = scorecard.scorecard_total(alm_tabla, inv_tabla, tabla_valor)
     st.session_state["inv_scorecard_total"] = total_df
@@ -1077,10 +1150,10 @@ def vista_parametros_generales(df: pd.DataFrame, params: dict) -> None:
 
     ui_theme.leyenda_origen_parametros()
     st.info(
-        "**Inicio:** se cargan los valores **estándar** o los **últimos guardados** "
-        "(botón abajo). Puede cambiar con **+ / −** o escribiendo el valor con el teclado. "
-        "Los bloques **rojo suave** (set box fijo) son calculados por el sistema. Pulse **Guardar parámetros** para conservar "
-        "los cambios en la próxima ejecución."
+        "Al abrir la app se cargan los **parámetros actuales** (última vez que guardó). "
+        "Edite con **+ / −** o el teclado. Los bloques **rojo suave** son calculados. "
+        "**Guardar** actualiza actuales; **Restablecer a base** vuelve al inicio; "
+        "**Actualizar parámetros base** convierte los actuales en el nuevo inicio."
     )
 
     pestaña = st.radio(
@@ -1129,25 +1202,39 @@ def vista_parametros_generales(df: pd.DataFrame, params: dict) -> None:
     parametros.actualizar_calculados_si_necesario(params, df)
     st.session_state["inv_parametros"] = params
 
-    col_g1, col_g2 = st.columns([1, 2])
+    col_g1, col_g2, col_g3 = st.columns(3)
     with col_g1:
         if st.button("Guardar parámetros", type="primary", use_container_width=True):
             params_guardar = parametros.params_desde_widgets(params)
-            parametros.guardar_parametros_editables(params_guardar)
+            parametros.guardar_parametros_actuales(params_guardar)
             parametros.actualizar_calculados_si_necesario(params_guardar, df)
             st.session_state["inv_parametros"] = params_guardar
-            st.success("Valores guardados para la próxima vez que abra la app.")
-        if st.button(
-            "Restaurar valores estándar",
-            use_container_width=True,
-            help=f"Excel `{data_loader.NOMBRE_ARCHIVO_DEFECTO}` + parámetros de plantilla.",
-        ):
-            _reiniciar_plantilla_completa()
+            st.success("Parámetros actuales actualizados. Se cargarán al reabrir la app.")
     with col_g2:
-        st.caption(
-            f"Archivos: `{os.path.basename(parametros.ARCHIVO_GUARDADO)}` (local) y "
-            f"`{os.path.basename(parametros.ARCHIVO_BACKUP)}` (respaldo en el módulo)."
-        )
+        if st.button(
+            "Restablecer a parámetros base",
+            use_container_width=True,
+            help="Vuelve a los valores de inicio (carpeta parámetros base) y los deja también como actuales.",
+        ):
+            params_base = parametros.restablecer_a_parametros_base()
+            parametros.restaurar_en_session_state(params_base, df)
+            st.success("Restablecido a parámetros base.")
+            st.rerun()
+    with col_g3:
+        if st.button(
+            "Actualizar parámetros base",
+            use_container_width=True,
+            help="Los valores actuales pasan a ser el nuevo inicio (base).",
+        ):
+            params_base = parametros.params_desde_widgets(params)
+            parametros.guardar_parametros_actuales(params_base)
+            parametros.actualizar_parametros_base(params_base)
+            parametros.actualizar_calculados_si_necesario(params_base, df)
+            st.session_state["inv_parametros"] = params_base
+            st.success("Parámetros base actualizados con los valores actuales.")
+    st.caption(
+        f"Actuales: `{parametros.DIR_ACTUALES}` · Base: `{parametros.DIR_BASE}`"
+    )
 
     st.success(
         "Parámetros listos para Scorecard y drivers. "

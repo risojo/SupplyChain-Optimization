@@ -8,7 +8,7 @@ import re
 import shutil
 import tempfile
 import unicodedata
-from textwrap import dedent
+from textwrap import dedent, wrap
 from datetime import datetime
 from typing import Any, Iterable, Optional, Tuple
 
@@ -27,25 +27,17 @@ st.set_page_config(page_title="Profile Pro", page_icon="📊", layout="wide")
 
 # ------------------------------------------------------------------------------
 # Escala visual de la interfaz. Base calibrada en 1920×1080; en pantallas más
-# chicas/grandes se ajusta sola según el ancho detectado del navegador.
+# chicas/grandes se ajusta según el ancho detectado del navegador (modo Automático).
 # ESCALA_INTERFAZ_PCT es el % en la resolución de referencia (100 = nativo).
 # ------------------------------------------------------------------------------
 ESCALA_INTERFAZ_PCT = 97
 REF_VIEWPORT_W = 1920
 REF_VIEWPORT_H = 1080
 _OPCIONES_VIEWPORT_H = (720, 768, 900, 1080, 1200, 1440)
+_COLOR_SLICER_PANTALLA = "#14b8a6"  # teal — distinto del azul Streamlit por defecto
 
-
-def _query_param_int(nombre: str) -> Optional[int]:
-    val = st.query_params.get(nombre)
-    if val is None:
-        return None
-    if isinstance(val, (list, tuple)):
-        val = val[0] if val else None
-    try:
-        return int(str(val).strip())
-    except (TypeError, ValueError):
-        return None
+_LRI_VIEWPORT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_lri_viewport")
+_lri_viewport_comp = components.declare_component("lri_viewport", path=_LRI_VIEWPORT_DIR)
 
 
 def _snap_altura_viewport(altura_px: int) -> int:
@@ -62,49 +54,39 @@ def _escala_interfaz_adaptativa(ancho_px: int) -> float:
 
 def _detectar_viewport_navegador() -> Tuple[int, int]:
     """
-    Lee el tamaño real de la ventana del navegador.
-    En la primera carga escribe lri_vw/lri_vh en la URL y recarga una vez.
+    Lee el tamaño real de la ventana del navegador vía componente (sin tocar la URL).
+    Así no se pierde el archivo cargado ni la sesión.
     """
-    vw = _query_param_int("lri_vw")
-    vh = _query_param_int("lri_vh")
-    if vw is not None and vh is not None and vw >= 320 and vh >= 400:
-        st.session_state["lri_viewport_w"] = vw
-        st.session_state["lri_viewport_h"] = vh
-        return vw, vh
-
-    # Fallback de sesión (p. ej. si los query params se limpian).
     vw_ses = st.session_state.get("lri_viewport_w")
     vh_ses = st.session_state.get("lri_viewport_h")
     if isinstance(vw_ses, int) and isinstance(vh_ses, int) and vw_ses >= 320 and vh_ses >= 400:
+        # Re-sondear en silencio para ajustar si el usuario redimensionó la ventana.
+        med = _lri_viewport_comp(key="lri_viewport_probe", default=None)
+        if isinstance(med, dict):
+            try:
+                vw = int(med.get("w") or 0)
+                vh = int(med.get("h") or 0)
+                if vw >= 320 and vh >= 400:
+                    if vw != vw_ses or vh != vh_ses:
+                        st.session_state["lri_viewport_w"] = vw
+                        st.session_state["lri_viewport_h"] = vh
+                        return vw, vh
+            except (TypeError, ValueError):
+                pass
         return vw_ses, vh_ses
 
-    components.html(
-        dedent(
-            """
-            <script>
-            (function () {
-              try {
-                const win = window.parent;
-                const w = Math.round(
-                  win.innerWidth || win.document.documentElement.clientWidth || 1920
-                );
-                const h = Math.round(
-                  win.innerHeight || win.document.documentElement.clientHeight || 1080
-                );
-                const url = new URL(win.location.href);
-                if (!url.searchParams.get("lri_vw") || !url.searchParams.get("lri_vh")) {
-                  url.searchParams.set("lri_vw", String(w));
-                  url.searchParams.set("lri_vh", String(h));
-                  win.location.replace(url.toString());
-                }
-              } catch (e) {}
-            })();
-            </script>
-            """
-        ),
-        height=0,
-        width=0,
-    )
+    med = _lri_viewport_comp(key="lri_viewport_probe", default=None)
+    if isinstance(med, dict):
+        try:
+            vw = int(med.get("w") or 0)
+            vh = int(med.get("h") or 0)
+            if vw >= 320 and vh >= 400:
+                st.session_state["lri_viewport_w"] = vw
+                st.session_state["lri_viewport_h"] = vh
+                return vw, vh
+        except (TypeError, ValueError):
+            pass
+
     return REF_VIEWPORT_W, REF_VIEWPORT_H
 
 
@@ -118,8 +100,47 @@ def _aplicar_escala_interfaz(ancho_px: int) -> float:
     return escala
 
 
+def _css_slicer_resolucion_pantalla() -> None:
+    """Resalta el select_slider de resolución con color teal (fácil de ubicar)."""
+    st.markdown(
+        f"""
+        <style>
+        /* Marcador justo antes del slicer de Resolución Vertical */
+        div[data-testid="stSidebar"] .lri-slicer-marker + div [data-testid="stWidgetLabel"] p {{
+            color: {_COLOR_SLICER_PANTALLA} !important;
+            font-weight: 700 !important;
+        }}
+        div[data-testid="stSidebar"] .lri-slicer-marker + div [data-baseweb="slider"] > div > div {{
+            background-color: {_COLOR_SLICER_PANTALLA}55 !important;
+        }}
+        div[data-testid="stSidebar"] .lri-slicer-marker + div [data-baseweb="slider"] [role="slider"] {{
+            background-color: {_COLOR_SLICER_PANTALLA} !important;
+            border-color: {_COLOR_SLICER_PANTALLA} !important;
+            box-shadow: 0 0 0 3px {_COLOR_SLICER_PANTALLA}44 !important;
+        }}
+        div[data-testid="stSidebar"] .lri-slicer-marker + div [data-testid="stThumbValue"],
+        div[data-testid="stSidebar"] .lri-slicer-marker + div [data-testid="stTickBarMin"],
+        div[data-testid="stSidebar"] .lri-slicer-marker + div [data-testid="stTickBarMax"],
+        div[data-testid="stSidebar"] .lri-slicer-marker + div [data-testid="stSliderTickBar"] {{
+            color: {_COLOR_SLICER_PANTALLA} !important;
+            font-weight: 700 !important;
+        }}
+        div[data-testid="stSidebar"] .lri-slicer-marker + div {{
+            padding: 8px 10px 4px 10px;
+            margin: 2px 0 8px 0;
+            border-radius: 10px;
+            border: 1px solid {_COLOR_SLICER_PANTALLA}66;
+            background: linear-gradient(135deg, {_COLOR_SLICER_PANTALLA}22 0%, #0f172a 75%);
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 _VIEWPORT_W_DETECTADO, _VIEWPORT_H_DETECTADO = _detectar_viewport_navegador()
 _ESCALA_APLICADA = _aplicar_escala_interfaz(_VIEWPORT_W_DETECTADO)
+
 # profile1.py vive en modules/perfilado/. La raíz del proyecto está 2 niveles
 # arriba; los datos y los assets son carpetas compartidas en esa raíz.
 _RAIZ_PROYECTO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -188,7 +209,7 @@ MAPEO_PARETO_LEGACY = {
 
 METRICA_ADICIONAL_NINGUNA = "— Ninguna —"
 # Bump al desplegar: limpia sesiones web con datos/ejes de builds anteriores.
-LRI_PROFILE_REVISION = "2026-07-27-audit-abc"
+LRI_PROFILE_REVISION = "2026-07-28-excel-vista-fix"
 
 # Inicialización del Estado de la Sesión
 ESTADOS_INICIALES = {
@@ -206,7 +227,6 @@ ESTADOS_INICIALES = {
     "comando_voz_detectado": None,
     "drill_down_categoria": None,
     "lri_pareto_set": "Desactivado (Paleta Azul)",
-    "lri_pareto_acumulado": False,
     "lri_tabla_fontsize": 18,
     "lri_etiqueta_barras_fontsize": 16,
     "prev_manual_x": None,
@@ -267,27 +287,95 @@ def _filtrar_filas_resumen_excel(df: pd.DataFrame) -> pd.DataFrame:
     return df_limpio
 
 
-def _filtrar_filas_resumen_excel_con_meta(df: pd.DataFrame) -> Tuple[pd.DataFrame, dict[str, int]]:
-    """Filtra filas de resumen y devuelve contadores para auditoría."""
-    meta = {"filas_antes": len(df), "filas_omitidas": 0}
+def _motivo_omision_fila_excel(row: pd.Series, claves: list[str]) -> Optional[str]:
+    """
+    None = la fila es un registro de datos válido.
+    str = motivo por el que se omite del análisis.
+    """
+    valores_txt: list[str] = []
+    tiene_total = False
+    for col in claves:
+        val = row.get(col)
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            continue
+        txt = str(val).strip()
+        if not txt or txt.lower() == "nan":
+            continue
+        if txt.upper() == "TOTAL":
+            tiene_total = True
+            continue
+        valores_txt.append(txt)
+
+    if tiene_total and not valores_txt:
+        return "Fila de TOTAL/resumen (contiene «TOTAL» y no identifica un producto)."
+    if tiene_total and valores_txt:
+        return "Fila de TOTAL/resumen (etiqueta «TOTAL» en columnas de identificación)."
+    if not valores_txt:
+        return (
+            "Fila vacía o sin identificación de producto "
+            f"(sin valor útil en: {', '.join(claves)})."
+        )
+    return None
+
+
+def _preview_fila_omitida(row: pd.Series, claves: list[str], max_len: int = 48) -> str:
+    partes: list[str] = []
+    for col in claves:
+        if col not in row.index:
+            continue
+        val = row.get(col)
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            continue
+        txt = str(val).strip()
+        if not txt or txt.lower() == "nan":
+            continue
+        if len(txt) > max_len:
+            txt = txt[: max_len - 1] + "…"
+        partes.append(f"{col}={txt}")
+        if len(partes) >= 3:
+            break
+    return "; ".join(partes) if partes else "(sin valores de identificación)"
+
+
+def _filtrar_filas_resumen_excel_con_meta(
+    df: pd.DataFrame,
+) -> Tuple[pd.DataFrame, dict[str, Any]]:
+    """Filtra filas de resumen y devuelve contadores + detalle de omisiones para auditoría."""
+    meta: dict[str, Any] = {
+        "filas_antes": len(df),
+        "filas_omitidas": 0,
+        "filas_omitidas_detalle": [],
+    }
     if df.empty:
         return df, meta
-    claves = [c for c in ("categoria", "subcategoria", "codigo", "descripcion", "producto", "sku") if c in df.columns]
+    claves = [
+        c
+        for c in ("categoria", "subcategoria", "codigo", "descripcion", "producto", "sku")
+        if c in df.columns
+    ]
     if not claves:
         return df.reset_index(drop=True), meta
 
-    def _fila_es_registro_datos(row: pd.Series) -> bool:
-        for col in claves:
-            val = row.get(col)
-            if val is None or (isinstance(val, float) and pd.isna(val)):
-                continue
-            txt = str(val).strip()
-            if txt and txt.lower() != "nan" and txt.upper() != "TOTAL":
-                return True
-        return False
-
-    mascara = df.apply(_fila_es_registro_datos, axis=1)
-    meta["filas_omitidas"] = int((~mascara).sum())
+    motivos = df.apply(lambda row: _motivo_omision_fila_excel(row, claves), axis=1)
+    mascara = motivos.isna()
+    omitidas = df.loc[~mascara]
+    detalle: list[dict[str, Any]] = []
+    for idx, row in omitidas.iterrows():
+        # Fila Excel ≈ índice original + 2 (encabezado en fila 1 de la hoja).
+        try:
+            excel_row = int(idx) + 2
+        except (TypeError, ValueError):
+            excel_row = None
+        detalle.append(
+            {
+                "fila_excel": excel_row,
+                "indice": idx,
+                "motivo": str(motivos.loc[idx]),
+                "vista_previa": _preview_fila_omitida(row, claves),
+            }
+        )
+    meta["filas_omitidas"] = len(detalle)
+    meta["filas_omitidas_detalle"] = detalle
     return df.loc[mascara].reset_index(drop=True), meta
 
 
@@ -296,12 +384,14 @@ def _construir_auditoria_datos(
     *,
     filas_antes: int = 0,
     filas_omitidas: int = 0,
+    filas_omitidas_detalle: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     """Auditoría rápida post-carga: alertas, totales clave y desglose por categoría."""
     audit: dict[str, Any] = {
         "filas_validas": len(df),
         "filas_excel_originales": filas_antes or len(df),
         "filas_resumen_omitidas": filas_omitidas,
+        "filas_omitidas_detalle": list(filas_omitidas_detalle or []),
         "alertas": [],
         "ok": [],
         "desglose_categoria": {},
@@ -309,7 +399,10 @@ def _construir_auditoria_datos(
     }
     try:
         return _construir_auditoria_datos_interno(
-            df, audit, filas_antes=filas_antes, filas_omitidas=filas_omitidas
+            df,
+            audit,
+            filas_antes=filas_antes,
+            filas_omitidas=filas_omitidas,
         )
     except Exception as exc:  # noqa: BLE001 — no bloquear la carga por la auditoría
         audit["alertas"].append(
@@ -336,9 +429,9 @@ def _construir_auditoria_datos_interno(
 
     if filas_omitidas > 0:
         audit["alertas"].append(
-            f"Se omitieron **{filas_omitidas}** fila(s) de resumen/TOTAL al pie del Excel "
-            f"(de {filas_antes:,} filas leídas → {len(df):,} filas de producto). "
-            "Sin esto los totales se duplicaban."
+            f"Se omitieron **{filas_omitidas}** fila(s) al cargar "
+            f"(de {filas_antes:,} leídas → {len(df):,} en análisis). "
+            "Active «Ver detalle de filas omitidas» para ver cuáles y por qué."
         )
 
     if "categoria" in df.columns:
@@ -388,23 +481,36 @@ def _construir_auditoria_datos_interno(
 
 
 def _render_panel_auditoria_datos_sidebar() -> None:
-    """Muestra control de calidad del Excel cargado (sidebar)."""
+    """Control de calidad compacto: el detalle de omisiones solo aparece con un check."""
     audit = st.session_state.get("lri_auditoria_datos")
     if not audit:
         return
-    with st.expander("Control de calidad de datos", expanded=bool(audit.get("alertas"))):
-        st.caption(
-            f"Filas Excel: {audit.get('filas_excel_originales', 0):,} leídas → "
-            f"**{audit.get('filas_validas', 0):,}** válidas"
-            + (
-                f" ({audit.get('filas_resumen_omitidas', 0):,} de resumen omitidas)"
-                if audit.get("filas_resumen_omitidas")
-                else ""
-            )
+
+    n_omit = int(audit.get("filas_resumen_omitidas") or 0)
+    n_ok = int(audit.get("filas_validas") or 0)
+    n_orig = int(audit.get("filas_excel_originales") or 0)
+    detalle = audit.get("filas_omitidas_detalle") or []
+
+    st.caption(f"Datos: **{n_ok:,}** filas en análisis" + (f" · {n_omit} omitida(s)" if n_omit else ""))
+
+    ver_omitidas = False
+    if n_omit > 0:
+        ver_omitidas = st.checkbox(
+            f"Ver detalle de filas omitidas ({n_omit})",
+            value=False,
+            key="lri_ver_filas_omitidas",
+            help="Muestra número de fila en Excel, vista previa y el motivo de la omisión.",
         )
+
+    # Expander cerrado por defecto para no ocupar el sidebar.
+    with st.expander("Control de calidad de datos", expanded=False):
+        st.caption(f"Excel: {n_orig:,} leídas → **{n_ok:,}** válidas")
         for msg in audit.get("ok") or []:
             st.success(msg)
         for msg in audit.get("alertas") or []:
+            # El aviso genérico de omisiones se reemplaza por el detalle del check.
+            if n_omit > 0 and "Se omitieron" in str(msg) and "filas omitidas" in str(msg):
+                continue
             st.warning(msg)
         desglose = audit.get("desglose_categoria") or {}
         if desglose:
@@ -414,6 +520,21 @@ def _render_panel_auditoria_datos_sidebar() -> None:
         if audit.get("categorias"):
             st.caption(f"Categorías detectadas: {', '.join(audit['categorias'])}")
 
+    if ver_omitidas and detalle:
+        st.markdown(f"**Filas omitidas ({len(detalle)})**")
+        st.caption(
+            "No entran al análisis para evitar doble conteo de totales o filas sin producto."
+        )
+        for item in detalle:
+            fila = item.get("fila_excel")
+            etiqueta_fila = f"Fila Excel **{fila}**" if fila is not None else "Fila omitida"
+            st.markdown(f"- {etiqueta_fila}: {item.get('motivo', '')}")
+            st.caption(f"  Vista previa: {item.get('vista_previa', '')}")
+    elif ver_omitidas and n_omit > 0 and not detalle:
+        st.info(
+            f"Se omitieron {n_omit} fila(s), pero no hay detalle guardado. "
+            "Vuelva a cargar el archivo para ver el motivo de cada una."
+        )
 
 def _es_columna_descartable(nombre: str) -> bool:
     """Columnas vacías o sin encabezado que Excel exporta como 'Unnamed: N'."""
@@ -496,6 +617,7 @@ def _columna_es_metrica_aditiva_suma(nombre: str, df: Optional[pd.DataFrame] = N
             "volumen",
             "venta",
             "utilidad",
+            "margen",  # margen bruto $ (el margen % se excluye arriba)
             "costo",
             "inventario",
             "valor",
@@ -668,13 +790,15 @@ def _eje_y_valido(df: pd.DataFrame, columna: Optional[str]) -> bool:
 def _resetear_estado_tras_nuevo_archivo() -> None:
     """Al cambiar de Excel u hoja, los ejes del archivo anterior no aplican."""
     st.session_state["lri_default_seeded"] = False
-    st.session_state["lri_man_eje_x"] = None
-    st.session_state["lri_man_eje_y"] = None
+    # Diferir si los selectores ya se instanciaron en este run (evita StreamlitAPIException).
+    _asignar_eje_sesion("lri_man_eje_x", None)
+    _asignar_eje_sesion("lri_man_eje_y", None)
     st.session_state["lri_man_eje_y2"] = METRICA_ADICIONAL_NINGUNA
     st.session_state["lri_man_eje_y3"] = METRICA_ADICIONAL_NINGUNA
     st.session_state["drill_down_categoria"] = None
     st.session_state.pop("lri_aplicar_voz_pendiente", None)
     st.session_state.pop("_lri_pending_man_eje_x", None)
+    st.session_state.pop("_lri_pending_man_eje_y", None)
     st.session_state["lri_excel_drill_filtros"] = {}
     for _k in (
         "lri_excel_drill_dim_sel",
@@ -682,6 +806,48 @@ def _resetear_estado_tras_nuevo_archivo() -> None:
         "lri_excel_drill_aplicar",
     ):
         st.session_state.pop(_k, None)
+
+
+def _widgets_ejes_ya_instanciados() -> bool:
+    """True después de crear los selectbox de eje X/Y en este run."""
+    return bool(st.session_state.get("_lri_widgets_ejes_listos"))
+
+
+def _clave_pending_eje(clave: str) -> str:
+    if clave == "lri_man_eje_x":
+        return "_lri_pending_man_eje_x"
+    if clave == "lri_man_eje_y":
+        return "_lri_pending_man_eje_y"
+    return f"_lri_pending_{clave}"
+
+
+def _asignar_eje_sesion(clave: str, valor: Any, *, forzar_rerun_si_diferido: bool = False) -> bool:
+    """
+    Asigna un eje en session_state de forma segura.
+    Si el widget ya existe, guarda pendiente y opcionalmente pide rerun.
+    Devuelve True si se diferió (pending).
+    """
+    pend = _clave_pending_eje(clave)
+    if _widgets_ejes_ya_instanciados():
+        if st.session_state.get(clave) != valor:
+            st.session_state[pend] = valor
+            if forzar_rerun_si_diferido:
+                st.rerun()
+        return True
+    st.session_state[clave] = valor
+    st.session_state.pop(pend, None)
+    return False
+
+
+def _aplicar_pendientes_ejes_antes_widgets(df: pd.DataFrame) -> None:
+    """Aplica ejes diferidos ANTES de instanciar los selectbox."""
+    columnas_df = df.columns.tolist()
+    pend_x = st.session_state.pop("_lri_pending_man_eje_x", None)
+    if pend_x is not None and pend_x in columnas_df:
+        st.session_state["lri_man_eje_x"] = pend_x
+    pend_y = st.session_state.pop("_lri_pending_man_eje_y", None)
+    if pend_y is not None and pend_y in columnas_df:
+        st.session_state["lri_man_eje_y"] = pend_y
 
 
 def _migrar_toggle_explorador_excel_legacy() -> None:
@@ -717,9 +883,9 @@ def _sembrar_ejes_default_si_corresponde(df: pd.DataFrame) -> None:
         default_x = cols_texto[0] if cols_texto else (columnas_df[0] if columnas_df else None)
     default_y = _resolver_eje_y_default(df)
     if default_x in columnas_df:
-        st.session_state["lri_man_eje_x"] = default_x
+        _asignar_eje_sesion("lri_man_eje_x", default_x)
     if default_y is not None:
-        st.session_state["lri_man_eje_y"] = default_y
+        _asignar_eje_sesion("lri_man_eje_y", default_y)
     st.session_state["lri_man_operacion"] = "Suma"
     st.session_state["lri_man_operacion_y"] = "Suma"
     st.session_state["lri_man_operacion_y2"] = "Suma"
@@ -731,17 +897,15 @@ def _sembrar_ejes_default_si_corresponde(df: pd.DataFrame) -> None:
 
 
 def _ajustar_ejes_a_dataframe(df: pd.DataFrame) -> None:
+    """Asegura ejes X/Y válidos para el DataFrame actual (solo antes de los widgets)."""
     columnas_df = df.columns.tolist()
     cols_texto = df.select_dtypes(include=["object", "category"]).columns.tolist()
-    if (
-        st.session_state["lri_man_eje_x"] is None
-        or st.session_state["lri_man_eje_x"] not in columnas_df
-    ):
-        st.session_state["lri_man_eje_x"] = (
-            cols_texto[0] if cols_texto else (columnas_df[0] if columnas_df else None)
-        )
+    eje_x_actual = st.session_state.get("lri_man_eje_x")
+    if eje_x_actual is None or eje_x_actual not in columnas_df:
+        nuevo_x = cols_texto[0] if cols_texto else (columnas_df[0] if columnas_df else None)
+        _asignar_eje_sesion("lri_man_eje_x", nuevo_x)
     if not _eje_y_valido(df, st.session_state.get("lri_man_eje_y")):
-        st.session_state["lri_man_eje_y"] = _resolver_eje_y_default(df)
+        _asignar_eje_sesion("lri_man_eje_y", _resolver_eje_y_default(df))
 
 
 def _es_hoja_excluida_perfil(nombre: str) -> bool:
@@ -821,7 +985,11 @@ def _parsear_bytes_excel_a_dataframe(
     file_bytes: bytes,
     sheet_name: Optional[str] = None,
 ) -> Tuple[Optional[pd.DataFrame], Optional[str], list[str], Optional[str], dict[str, int]]:
-    meta_vacio: dict[str, int] = {"filas_antes": 0, "filas_omitidas": 0}
+    meta_vacio: dict[str, Any] = {
+        "filas_antes": 0,
+        "filas_omitidas": 0,
+        "filas_omitidas_detalle": [],
+    }
     try:
         xl = pd.ExcelFile(io.BytesIO(file_bytes), engine="openpyxl")
         hojas = _filtrar_hojas_perfil(xl.sheet_names)
@@ -976,7 +1144,7 @@ def _aplicar_resultado_carga_a_sesion(
     file_bytes: Optional[bytes] = None,
     reset_ejes: bool = False,
     limpiar_bytes_subida: bool = False,
-    meta_limpieza: Optional[dict[str, int]] = None,
+    meta_limpieza: Optional[dict[str, Any]] = None,
 ) -> None:
     st.session_state["lri_df_datos"] = df
     st.session_state["lri_error_carga"] = err
@@ -996,6 +1164,7 @@ def _aplicar_resultado_carga_a_sesion(
             df,
             filas_antes=int(meta.get("filas_antes", len(df))),
             filas_omitidas=int(meta.get("filas_omitidas", 0)),
+            filas_omitidas_detalle=list(meta.get("filas_omitidas_detalle") or []),
         )
     else:
         st.session_state.pop("lri_auditoria_datos", None)
@@ -1123,7 +1292,11 @@ def _leer_bytes_archivo_excel(path: str) -> bytes:
 def cargar_datos(
     sheet_name: Optional[str] = None,
 ) -> Tuple[Optional[pd.DataFrame], Optional[str], list[str], Optional[str], dict[str, int]]:
-    meta_vacio: dict[str, int] = {"filas_antes": 0, "filas_omitidas": 0}
+    meta_vacio: dict[str, Any] = {
+        "filas_antes": 0,
+        "filas_omitidas": 0,
+        "filas_omitidas_detalle": [],
+    }
     if not os.path.isfile(ARCHIVO_EXCEL_PATH):
         msg = f"No se encontró el archivo '{os.path.basename(ARCHIVO_EXCEL_PATH)}' en el directorio."
         return None, msg, [], None, meta_vacio
@@ -2188,7 +2361,7 @@ def _metrica_margen_sobre_ventas(df: pd.DataFrame, eje_y: str) -> bool:
 
 
 def _es_utilidad_bruta_monetaria(eje_y: str) -> bool:
-    """Utilidad bruta / margen bruto absoluto → miles, sin símbolo de moneda."""
+    """Utilidad bruta / margen bruto absoluto en dinero (no %)."""
     raw = str(eje_y).strip().lower()
     n = _norm_texto(eje_y)
     if any(p in n for p in ("utilidadbruta", "margenbrutototal", "utilidadbrutatotal")):
@@ -2201,7 +2374,9 @@ def _es_utilidad_bruta_monetaria(eje_y: str) -> bool:
 
 
 def _metrica_eje_y_en_miles(eje_y: str) -> bool:
-    return _es_utilidad_bruta_monetaria(eje_y)
+    """Ya no se divide el margen bruto entre 1.000: se muestra el monto completo."""
+    del eje_y
+    return False
 
 
 def _metrica_costo_mantener_pct(df: pd.DataFrame, eje_y: str) -> bool:
@@ -2347,6 +2522,50 @@ def _es_margen_utilidad_porcentaje(eje_y: str, df: Optional[pd.DataFrame] = None
             "porcentajeutilidad",
         )
     )
+
+
+def _sufijo_tipo_metrica_ui(df: pd.DataFrame, col: str) -> str:
+    """Clasifica la métrica para el selector: $ | % | ratio | #."""
+    if not col or col == METRICA_ADICIONAL_NINGUNA:
+        return ""
+    if col not in df.columns:
+        return ""
+    if _columna_parece_dimension_eje_y(col) or _columna_es_atributo_dimension(df, col):
+        return ""
+    if _metrica_eje_y_en_porcentaje(df, col) or _columna_es_metrica_porcentaje(col, df):
+        return "%"
+    if _columna_es_metrica_ratio_inventario(col):
+        return "ratio"
+    if _es_utilidad_bruta_monetaria(col):
+        return "$"
+    n = _norm_texto(col)
+    if any(
+        p in n
+        for p in (
+            "venta",
+            "costo",
+            "valor",
+            "precio",
+            "dolar",
+            "ingreso",
+            "margenbruto",
+            "utilidadbruta",
+        )
+    ):
+        return "$"
+    if _columna_es_metrica_aditiva_suma(col, df) or pd.api.types.is_numeric_dtype(df[col]):
+        return "#"
+    return ""
+
+
+def _etiqueta_metrica_selector_ui(df: pd.DataFrame, col: str) -> str:
+    """Texto visible en selectores del eje Y; el valor interno sigue siendo el nombre de columna."""
+    if not col or col == METRICA_ADICIONAL_NINGUNA:
+        return str(col) if col is not None else ""
+    suf = _sufijo_tipo_metrica_ui(df, col)
+    if not suf:
+        return str(col)
+    return f"{col}  [{suf}]"
 
 
 def _formatear_valor_porcentaje(
@@ -4114,6 +4333,79 @@ def _angulo_etiquetas_x_grafico(n: int, eje_x: str = "", max_label_len: int = 0)
     return 0
 
 
+def _chars_wrap_etiqueta_x(n: int, eje_x: str = "", max_label_len: int = 0) -> int:
+    """
+    Ancho (caracteres) para wrap automático del eje X.
+    0 = no envolver (usar solo ángulo).
+    """
+    tipo = _tipo_dimension_catalogo(eje_x)
+    # Activar con nombres medianos/largos: subcategoría y descripción chocan fácil.
+    umbral = 12 if tipo in ("descripcion", "subcategoria") else 16
+    if max_label_len <= umbral and tipo not in ("descripcion", "subcategoria"):
+        return 0
+    if tipo in ("descripcion", "subcategoria"):
+        if max_label_len <= umbral and n <= 4:
+            return 0
+        if n <= 8:
+            return 16
+        if n <= 14:
+            return 13
+        if n <= 22:
+            return 11
+        return 9
+    if tipo in ("codigo", "otro"):
+        if max_label_len <= 16:
+            return 0
+        if n <= 10:
+            return 16
+        if n <= 20:
+            return 12
+        return 10
+    if tipo == "categoria" and max_label_len > 14:
+        return 14 if n <= 12 else 11
+    return 0
+
+
+def _envolver_etiqueta_eje_x(texto: str, ancho: int, *, max_lineas: int = 3) -> str:
+    """Parte etiquetas largas en varias líneas (<br>) para el eje X de Plotly."""
+    s = str(texto).strip()
+    if ancho <= 0 or len(s) <= ancho:
+        return s
+    lineas = wrap(s, width=ancho, break_long_words=True, break_on_hyphens=True)
+    if not lineas:
+        return s
+    if len(lineas) > max_lineas:
+        lineas = lineas[:max_lineas]
+        ultima = lineas[-1]
+        if len(ultima) >= ancho:
+            lineas[-1] = ultima[: max(1, ancho - 1)] + "…"
+        elif not ultima.endswith("…"):
+            lineas[-1] = ultima + "…"
+    # Plotly renderiza saltos de línea en ticks con <br>, no con \n.
+    return "<br>".join(lineas)
+
+
+def _etiquetas_x_grafico_con_wrap(
+    etiquetas: list[str],
+    *,
+    n: int,
+    eje_x: str,
+    max_label_len: int,
+) -> tuple[list[str], int, int, bool]:
+    """
+    Devuelve (etiquetas_para_eje, angulo, n_lineas_max, uso_wrap).
+    Las etiquetas con wrap se usan como valores X (Plotly ignora \n en ticktext de categorías).
+    """
+    ancho = _chars_wrap_etiqueta_x(n, eje_x, max_label_len)
+    if ancho <= 0:
+        ang = _angulo_etiquetas_x_grafico(n, eje_x, max_label_len)
+        return list(etiquetas), ang, 1, False
+    ticktext = [_envolver_etiqueta_eje_x(t, ancho) for t in etiquetas]
+    n_lineas = max((t.count("<br>") + 1 for t in ticktext), default=1)
+    ang = -20 if n > 28 else 0
+    return ticktext, ang, n_lineas, True
+
+
 def _altura_grafico_scroll_horizontal(n: int, viewport_h: int) -> int:
     """Altura estable cuando el ancho crece con scroll horizontal."""
     usable = max(520, viewport_h - RESERVA_VERTICAL_REF)
@@ -4122,12 +4414,26 @@ def _altura_grafico_scroll_horizontal(n: int, viewport_h: int) -> int:
     return int(max(520, min(920, usable * 0.88)))
 
 
-def _margen_inferior_grafico(n: int, eje_x: str = "", max_label_len: int = 0) -> int:
-    ang = _angulo_etiquetas_x_grafico(n, eje_x, max_label_len)
+def _margen_inferior_grafico(
+    n: int,
+    eje_x: str = "",
+    max_label_len: int = 0,
+    *,
+    angulo_x: Optional[int] = None,
+    n_lineas_etiqueta: int = 1,
+    uso_wrap: bool = False,
+) -> int:
+    ang = (
+        int(angulo_x)
+        if angulo_x is not None
+        else _angulo_etiquetas_x_grafico(n, eje_x, max_label_len)
+    )
+    if uso_wrap:
+        return max(110, 48 + int(n_lineas_etiqueta) * 22 + (14 if ang < 0 else 0))
     extra = min(80, max(0, max_label_len - 12) * 2)
     if ang == -90:
         return 140 + extra
-    if ang == -45:
+    if ang <= -40:
         return 110 + extra // 2
     return 72 + extra // 3
 
@@ -4159,6 +4465,84 @@ def _usar_scroll_horizontal_grafico(
     return _scroll_grafico_activo(n, eje_x, ver_completo_pantalla=ver_completo_pantalla)
 
 
+def _items_nomenclatura_pareto(set_pareto: str = "") -> list[tuple[str, str]]:
+    """Etiqueta + color para la leyenda Pareto (inicio del gráfico)."""
+    a, b, c = _etiquetas_tramos_pareto(set_pareto) if set_pareto else ("Top", "Medio", "Cola")
+    return [
+        (f"{a} · verde", COLOR_PARETO_TOP),
+        (f"{b} · amarillo", COLOR_PARETO_MEDIO),
+        (f"{c} · rojo", COLOR_PARETO_COLA),
+    ]
+
+
+def _items_nomenclatura_multimetrica(
+    col_principal: str,
+    operacion_principal: str,
+    metricas_extras: Optional[list[dict[str, Any]]] = None,
+) -> list[tuple[str, str]]:
+    items: list[tuple[str, str]] = [
+        (
+            _etiqueta_metrica_grafico(col_principal, operacion_principal, False, False),
+            _COLORES_BARRAS_MULTIMETRICA[0],
+        )
+    ]
+    for i, m in enumerate(metricas_extras or [], start=1):
+        color = _COLORES_BARRAS_MULTIMETRICA[min(i, len(_COLORES_BARRAS_MULTIMETRICA) - 1)]
+        items.append(
+            (
+                _etiqueta_metrica_grafico(
+                    m.get("columna", ""),
+                    m.get("operacion", "Suma"),
+                    bool(m.get("y_pct")),
+                    bool(m.get("y_tasa_mant")),
+                ),
+                color,
+            )
+        )
+    return items
+
+
+def _html_nomenclatura_colores(items: list[tuple[str, str]]) -> str:
+    """Barra de nomenclatura fija al inicio (no viaja al final del scroll horizontal)."""
+    if not items:
+        return ""
+    chips = []
+    for nombre, color in items:
+        chips.append(
+            "<span style='display:inline-flex;align-items:center;gap:7px;"
+            "margin:0 16px 0 0;white-space:nowrap;'>"
+            f"<span style='width:12px;height:12px;border-radius:3px;background:{color};"
+            "box-shadow:0 0 0 1px rgba(255,255,255,0.15);flex-shrink:0;'></span>"
+            f"<span style='color:#e2e8f0;font-size:0.92rem;font-weight:600;'>"
+            f"{html.escape(str(nombre))}</span></span>"
+        )
+    return (
+        "<div class='lri-nomenclatura-colores' style='"
+        "display:flex;flex-wrap:wrap;align-items:center;gap:4px 0;"
+        "padding:8px 10px;margin:0 0 8px 0;"
+        "border:1px solid #1e3a5f;border-radius:8px;background:#0f1419;'>"
+        "<span style='color:#94a3b8;font-size:0.78rem;text-transform:uppercase;"
+        "letter-spacing:0.04em;margin-right:10px;font-weight:700;'>Colores</span>"
+        + "".join(chips)
+        + "</div>"
+    )
+
+
+def _layout_leyenda_inicio_grafico(base_font_size: int) -> dict[str, Any]:
+    """Leyenda Plotly anclada al inicio (izquierda / arriba), no al final del gráfico ancho."""
+    return dict(
+        orientation="h",
+        yanchor="bottom",
+        y=1.02,
+        xanchor="left",
+        x=0.0,
+        font=dict(color="#e2e8f0", size=max(11, base_font_size - 1)),
+        bgcolor="rgba(15,20,25,0.75)",
+        bordercolor="rgba(30,58,95,0.8)",
+        borderwidth=1,
+    )
+
+
 def _mostrar_grafico_barras(
     fig: go.Figure,
     n_barras: int,
@@ -4167,8 +4551,14 @@ def _mostrar_grafico_barras(
     eje_x: str = "",
     max_label_len: int = 0,
     ver_completo_pantalla: bool = False,
+    nomenclatura: Optional[list[tuple[str, str]]] = None,
 ) -> None:
-    """Render: scroll extendido o gráfico completo ajustado al ancho visible."""
+    """Render: scroll extendido o gráfico completo; nomenclatura siempre al inicio."""
+    if nomenclatura:
+        # Nomenclatura fuera del scroll: siempre visible al inicio (no al final del gráfico ancho).
+        st.markdown(_html_nomenclatura_colores(nomenclatura), unsafe_allow_html=True)
+        fig.update_layout(showlegend=False)
+
     scroll_activo = _scroll_grafico_activo(
         n_barras, eje_x, ver_completo_pantalla=ver_completo_pantalla
     )
@@ -4442,7 +4832,6 @@ def fig_ranking_barras(
     y_es_tasa_mantenimiento: bool = False,
     y_escala_0_100: bool = False,
     y_miles: bool = False,
-    mostrar_acumulado: bool = False,
     ancho_fig_px: Optional[int] = None,
     metricas_extras: Optional[list[dict[str, Any]]] = None,
     ver_completo_pantalla: bool = False,
@@ -4475,7 +4864,6 @@ def fig_ranking_barras(
         else:
             marker_config = dict(color=_COLORES_BARRAS_MULTIMETRICA[0], cornerradius=6)
             titulo_adicional = ""
-        pareto_activo = False
     elif colores_barras[0] is None:
         marker_config = dict(
             color=ys,
@@ -4486,14 +4874,9 @@ def fig_ranking_barras(
             cornerradius=6,
         )
         titulo_adicional = ""
-        pareto_activo = False
     else:
         marker_config = dict(color=colores_barras, cornerradius=6)
-        titulo_adicional = " (Segmentación Pareto ABC"
-        if mostrar_acumulado:
-            titulo_adicional += " · curva acumulada"
-        titulo_adicional += ")"
-        pareto_activo = True
+        titulo_adicional = " (Segmentación Pareto ABC)"
 
     if multimetrica:
         partes = [_etiqueta_metrica_grafico(col_val, operacion, y_en_porcentaje, y_es_tasa_mantenimiento)]
@@ -4566,11 +4949,26 @@ def fig_ranking_barras(
     max_label_len = int(xs_cat.str.len().max()) if len(xs_cat) else 0
     scroll_h = _scroll_grafico_activo(n, col_cat, ver_completo_pantalla=ver_completo_pantalla)
     bargap, bargroupgap = _bargap_por_n(n, dual=multimetrica)
-    angulo_x = _angulo_etiquetas_x_grafico(n, col_cat, max_label_len)
-    margen_b = _margen_inferior_grafico(n, col_cat, max_label_len)
+    ticktext_x, angulo_x, n_lineas_x, uso_wrap_x = _etiquetas_x_grafico_con_wrap(
+        xs_cat.tolist(),
+        n=n,
+        eje_x=col_cat,
+        max_label_len=max_label_len,
+    )
+    # Con wrap: usar las etiquetas multilínea como categorías X (Plotly no aplica
+    # saltos de línea si solo van en ticktext de un eje category).
+    xs_plot = ticktext_x if uso_wrap_x else xs_cat.tolist()
+    margen_b = _margen_inferior_grafico(
+        n,
+        col_cat,
+        max_label_len,
+        angulo_x=angulo_x,
+        n_lineas_etiqueta=n_lineas_x,
+        uso_wrap=uso_wrap_x,
+    )
 
     barra1_kw: dict[str, Any] = dict(
-        x=xs_cat,
+        x=xs_plot,
         y=ys_plot,
         text=text_labels,
         texttemplate=texttemplate,
@@ -4610,7 +5008,7 @@ def fig_ranking_barras(
                 metrica_eje_sec = m
         fig.add_trace(
             go.Bar(
-                x=xs_cat,
+                x=xs_plot,
                 y=ys_m_plot,
                 text=text_m,
                 texttemplate=tmpl_m,
@@ -4657,23 +5055,20 @@ def fig_ranking_barras(
         xaxis=dict(
             type="category",
             tickangle=angulo_x,
-            tickfont=dict(size=base_font_size, color="#e2e8f0"),
+            tickfont=dict(
+                size=max(10, base_font_size - (2 if uso_wrap_x else 0)),
+                color="#e2e8f0",
+            ),
             title=dict(text=col_cat, font=dict(size=base_font_size + 2, color="#ffffff")),
             categoryorder="array",
-            categoryarray=xs_cat.tolist(),
+            categoryarray=xs_plot,
+            automargin=True,
+            ticklabelposition="outside bottom",
         ),
         yaxis=yaxis_kw,
     )
     if multimetrica:
-        layout_kw["legend"] = dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1,
-            font=dict(color="#e2e8f0", size=base_font_size - 1),
-            bgcolor="rgba(0,0,0,0)",
-        )
+        layout_kw["legend"] = _layout_leyenda_inicio_grafico(base_font_size)
         if usa_eje_secundario and metrica_eje_sec is not None:
             layout_kw["yaxis2"] = _layout_eje_y_metrica(
                 metrica_eje_sec["columna"],
@@ -4693,7 +5088,11 @@ def fig_ranking_barras(
         n,
         dual=multimetrica,
         eje_x=col_cat,
-        max_label_len=max_label_len,
+        max_label_len=(
+            (_chars_wrap_etiqueta_x(n, col_cat, max_label_len) or max_label_len)
+            if uso_wrap_x
+            else max_label_len
+        ),
     )
     if scroll_h:
         layout_kw["width"] = ancho_scroll
@@ -4702,42 +5101,6 @@ def fig_ranking_barras(
         layout_kw["width"] = ancho_fig_px
     else:
         layout_kw["autosize"] = True
-
-    if pareto_activo and mostrar_acumulado and not multimetrica:
-        total_y = float(np.nansum(ys))
-        if total_y > 0:
-            cum_pct = np.cumsum(ys) / total_y
-            xs = df_resumen[col_cat].astype(str)
-            fig.add_trace(
-                go.Scatter(
-                    x=xs,
-                    y=cum_pct,
-                    name="% acumulado",
-                    mode="lines+markers",
-                    line=dict(color="#38bdf8", width=2.5),
-                    marker=dict(size=7, color="#38bdf8", line=dict(width=1, color="#0f172a")),
-                    yaxis="y2",
-                    hovertemplate="%{x}<br>Acumulado: %{y:.2%}<extra></extra>",
-                )
-            )
-            layout_kw["showlegend"] = True
-            layout_kw["legend"] = dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1,
-                font=dict(color="#e2e8f0", size=base_font_size - 1),
-                bgcolor="rgba(0,0,0,0)",
-            )
-            layout_kw["yaxis2"] = dict(
-                title=dict(text="% acumulado", font=dict(size=base_font_size + 2, color="#38bdf8")),
-                tickfont=dict(size=base_font_size, color="#38bdf8"),
-                overlaying="y",
-                side="right",
-                tickformat=".2%",
-                showgrid=False,
-            )
 
     fig.update_layout(**layout_kw)
     return fig
@@ -5293,20 +5656,12 @@ def _render_excel_explorador_unificado(df: pd.DataFrame, viewport_h: int = REF_V
     altura_px = _altura_contenedor_tabla_excel(
         len(df_vista), font_px, pantalla_completa=pantalla_completa, viewport_h=viewport_h
     )
-    file_bytes = _obtener_bytes_excel_activos() or b""
-    contenido_id = st.session_state.get("lri_excel_contenido_id") or _contenido_id_excel(file_bytes)
-    drill_json = json.dumps(st.session_state.get("lri_excel_drill_filtros") or {}, sort_keys=True)
-    doc_html = _html_explorador_excel_cached(
-        contenido_id,
-        drill_json,
-        hoja,
-        font_px,
-        altura_px,
-        pantalla_completa,
-        file_bytes,
-        "hscroll-revert-v2",
+    # Siempre armar el HTML desde el DataFrame ya cargado en sesión.
+    # Releer bytes fallaba en Render/upload y dejaba el explorador en blanco ("Sin datos").
+    doc_html = _documento_html_excel_interactivo(
+        df_vista, font_px, altura_px, pantalla_completa=pantalla_completa
     )
-    st.iframe(doc_html, height=altura_px + 18, width="stretch")
+    st.iframe(doc_html, height=altura_px + 28, width="stretch")
 
     col_csv, col_xlsx = st.columns(2)
     col_csv.download_button(
@@ -5462,8 +5817,8 @@ def _documento_html_excel_interactivo(
         * {{ box-sizing: border-box; }}
         html, body {{
             margin: 0; padding: 0;
-            height: {altura_px + 14}px;
-            max-height: {altura_px + 14}px;
+            height: {altura_px + 24}px;
+            max-height: {altura_px + 24}px;
             background: {_EXCEL_WS_FONDO};
             font-family: Arial, sans-serif;
             overflow: hidden;
@@ -5471,13 +5826,13 @@ def _documento_html_excel_interactivo(
         #lri-excel-shell {{
             display: flex;
             flex-direction: column;
-            height: {altura_px + 14}px;
-            max-height: {altura_px + 14}px;
+            height: {altura_px + 24}px;
+            max-height: {altura_px + 24}px;
             width: 100%;
         }}
         #lri-excel-scroll-top {{
-            flex: 0 0 14px;
-            overflow-x: auto;
+            flex: 0 0 22px;
+            overflow-x: scroll;
             overflow-y: hidden;
             background: #0a0f1a;
             border: 1px solid {_EXCEL_WS_BORDE};
@@ -5485,24 +5840,32 @@ def _documento_html_excel_interactivo(
             border-radius: 6px 6px 0 0;
             scrollbar-width: auto;
             scrollbar-color: #3b82f6 #0a0f1a;
+            scrollbar-gutter: stable;
         }}
         #lri-excel-scroll-top-inner {{
             height: 1px;
+            min-width: 100%;
         }}
         #lri-excel-scroll-top::-webkit-scrollbar {{
-            height: 14px;
+            height: 18px;
+            display: block;
         }}
-        #lri-excel-scroll-top::-webkit-scrollbar-track {{ background: #0a0f1a; }}
+        #lri-excel-scroll-top::-webkit-scrollbar-track {{
+            background: #0a0f1a;
+            display: block;
+        }}
         #lri-excel-scroll-top::-webkit-scrollbar-thumb {{
             background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%);
             border-radius: 6px;
+            border: 2px solid #0a0f1a;
+            min-width: 48px;
         }}
         #lri-excel-root {{
             flex: 1 1 auto;
             min-height: 0;
             width: 100%;
             max-width: 100%;
-            overflow-x: auto;
+            overflow-x: scroll;
             overflow-y: auto;
             overscroll-behavior: contain;
             -webkit-overflow-scrolling: touch;
@@ -5513,10 +5876,12 @@ def _documento_html_excel_interactivo(
             box-shadow: inset 0 0 0 1px #0f172a, 0 4px 20px rgba(0,0,0,0.35);
             scrollbar-width: auto;
             scrollbar-color: #3b82f6 #0a0f1a;
+            scrollbar-gutter: stable;
         }}
         #lri-excel-root::-webkit-scrollbar {{
             height: 14px;
             width: 12px;
+            display: block;
         }}
         #lri-excel-root::-webkit-scrollbar-track {{ background: #0a0f1a; }}
         #lri-excel-root::-webkit-scrollbar-thumb {{
@@ -5628,7 +5993,8 @@ def _documento_html_excel_interactivo(
             function syncTopScrollWidth() {{
                 const table = root.querySelector('table');
                 if (table && topInner) {{
-                    topInner.style.width = Math.max(table.scrollWidth, root.clientWidth) + 'px';
+                    // +2 px asegura que la barra horizontal superior siempre tenga recorrido visible.
+                    topInner.style.width = (Math.max(table.scrollWidth, root.clientWidth) + 2) + 'px';
                 }}
             }}
 
@@ -5709,9 +6075,23 @@ def _documento_html_excel_interactivo(
                 document.body.style.userSelect = '';
             }});
 
-            refreshFrozen();
-            syncTopScrollWidth();
+            function bootSync() {{
+                refreshFrozen();
+                syncTopScrollWidth();
+            }}
+            bootSync();
+            requestAnimationFrame(function() {{
+                bootSync();
+                requestAnimationFrame(bootSync);
+            }});
+            window.addEventListener('load', bootSync);
             window.addEventListener('resize', syncTopScrollWidth);
+            if (window.ResizeObserver) {{
+                const ro = new ResizeObserver(syncTopScrollWidth);
+                ro.observe(root);
+                const table = root.querySelector('table');
+                if (table) ro.observe(table);
+            }}
         }})();
         </script>
         </body>
@@ -6052,10 +6432,6 @@ def render_perfilado_manual_panel(
         )
         st.markdown("</div>", unsafe_allow_html=True)
 
-    mostrar_acumulado = (
-        st.session_state.get("lri_pareto_acumulado", False)
-        and not metricas_extras
-    )
     fig = fig_ranking_barras(
         df_resumen,
         eje_x_real,
@@ -6067,7 +6443,6 @@ def render_perfilado_manual_panel(
         y_es_tasa_mantenimiento=y_tasa_mant,
         y_escala_0_100=y_escala_0_100,
         y_miles=y_miles,
-        mostrar_acumulado=mostrar_acumulado,
         ancho_fig_px=ancho_fig_pareto if pareto_activo_prev and ancho_fig_pareto > 0 else None,
         metricas_extras=metricas_extras,
         ver_completo_pantalla=ver_completo_graf,
@@ -6082,6 +6457,14 @@ def render_perfilado_manual_panel(
         else 0
     )
 
+    nomenclatura_graf: list[tuple[str, str]] = []
+    if pareto_activo_prev:
+        nomenclatura_graf.extend(_items_nomenclatura_pareto(set_pareto_real))
+    if metricas_extras:
+        nomenclatura_graf.extend(
+            _items_nomenclatura_multimetrica(eje_y_real, operacion_y, metricas_extras)
+        )
+
     if pareto_activo_prev:
         with col_chart:
             _mostrar_grafico_barras(
@@ -6091,6 +6474,7 @@ def render_perfilado_manual_panel(
                 eje_x=eje_x_real,
                 max_label_len=max_label_graf,
                 ver_completo_pantalla=ver_completo_graf,
+                nomenclatura=nomenclatura_graf or None,
             )
         with col_sum:
             _mostrar_resumen_pareto_ejecutivo(
@@ -6112,6 +6496,7 @@ def render_perfilado_manual_panel(
                 eje_x=eje_x_real,
                 max_label_len=max_label_graf,
                 ver_completo_pantalla=ver_completo_graf,
+                nomenclatura=nomenclatura_graf or None,
             )
 
 
@@ -6137,13 +6522,11 @@ if df is not None:
 
     _sincronizar_operaciones_metricas()
 
+    # Antes de cualquier selectbox de ejes: sembrar/ajustar y aplicar pendientes.
+    st.session_state["_lri_widgets_ejes_listos"] = False
+    _aplicar_pendientes_ejes_antes_widgets(df)
     _sembrar_ejes_default_si_corresponde(df)
     _ajustar_ejes_a_dataframe(df)
-
-    # Eje X diferido (p. ej. botón "Volver"): no tocar lri_man_eje_x tras instanciar el selectbox.
-    pend_eje_x = st.session_state.pop("_lri_pending_man_eje_x", None)
-    if pend_eje_x is not None and pend_eje_x in columnas_df:
-        st.session_state["lri_man_eje_x"] = pend_eje_x
 
     with st.sidebar:
         st.title("⚙️ Operaciones LRI")
@@ -6236,7 +6619,15 @@ if df is not None:
         st.markdown("##### Selectores de Respaldo")
 
         st.selectbox("Eje X (Dimensión Logística)", options=columnas_df, key="lri_man_eje_x")
-        st.selectbox("Eje Y (Métrica principal)", options=columnas_df, key="lri_man_eje_y")
+        st.selectbox(
+            "Eje Y (Métrica principal)",
+            options=columnas_df,
+            key="lri_man_eje_y",
+            format_func=lambda c: _etiqueta_metrica_selector_ui(df, c),
+            help="[$] monto · [%] porcentaje/tasa · [ratio] rotación/meses · [#] unidades o conteos",
+        )
+        st.caption("Leyenda métricas: **[$]** monto  ·  **[%]** porcentaje  ·  **[ratio]** rotación/meses  ·  **[#]** unidades")
+        st.session_state["_lri_widgets_ejes_listos"] = True
         st.radio(
             "Cálculo · métrica principal",
             list(OPS_CALCULO),
@@ -6252,9 +6643,11 @@ if df is not None:
             "Métrica adicional 2 (opcional)",
             options=opciones_y2,
             key="lri_man_eje_y2",
+            format_func=lambda c: _etiqueta_metrica_selector_ui(df, c),
             help=(
                 "Hasta 3 métricas en el gráfico (azul, ámbar, verde). "
-                "Cada una puede usar Suma o Promedio por separado."
+                "Cada una puede usar Suma o Promedio por separado. "
+                "[$]=monto · [%]=porcentaje · [ratio]=rotación/meses · [#]=unidades."
             ),
         )
         if _metrica_adicional_activa(st.session_state.get("lri_man_eje_y2")):
@@ -6284,6 +6677,8 @@ if df is not None:
             "Métrica adicional 3 (opcional)",
             options=opciones_y3,
             key="lri_man_eje_y3",
+            format_func=lambda c: _etiqueta_metrica_selector_ui(df, c),
+            help="[$]=monto · [%]=porcentaje · [ratio]=rotación/meses · [#]=unidades.",
         )
         if _metrica_adicional_activa(st.session_state.get("lri_man_eje_y3")):
             st.radio(
@@ -6346,15 +6741,8 @@ if df is not None:
             options=opciones_pareto,
             key="lri_pareto_set",
         )
-        pareto_habilitado = st.session_state["lri_pareto_set"] != "Desactivado (Paleta Azul)"
-        if pareto_habilitado:
-            st.checkbox(
-                "Acumulado",
-                key="lri_pareto_acumulado",
-                help="Activado: muestra la curva de % acumulado en el gráfico. Desactivado: solo barras Pareto.",
-            )
-        elif st.session_state.get("lri_pareto_acumulado"):
-            st.session_state["lri_pareto_acumulado"] = False
+        if "lri_pareto_acumulado" in st.session_state:
+            st.session_state.pop("lri_pareto_acumulado", None)
 
         st.divider()
         st.markdown("##### Ajustes de Interfaz")
@@ -6397,26 +6785,39 @@ if df is not None:
             key="lri_modo_pantalla",
             help=(
                 "Automático: detecta el tamaño de esta ventana y adapta gráficos/escala. "
-                "Manual: elige la altura vertical como en la PC de diseño."
+                "Manual: elige la altura vertical con el slicer (resaltado en teal)."
             ),
         )
+        _css_slicer_resolucion_pantalla()
         if modo_pantalla == "Automático":
             viewport_h_ui = _snap_altura_viewport(_VIEWPORT_H_DETECTADO)
-            escala_pct = int(round(float(st.session_state.get("lri_escala_interfaz", _ESCALA_APLICADA)) * 100))
+            escala_pct = int(
+                round(float(st.session_state.get("lri_escala_interfaz", _ESCALA_APLICADA)) * 100)
+            )
             st.caption(
                 f"Detectado {_VIEWPORT_W_DETECTADO}×{_VIEWPORT_H_DETECTADO} px · "
                 f"altura útil {viewport_h_ui} px · escala {escala_pct}%"
             )
             st.session_state["lri_man_viewport_h"] = viewport_h_ui
         else:
-            valor_prev = int(st.session_state.get("lri_man_viewport_h", _snap_altura_viewport(_VIEWPORT_H_DETECTADO)))
+            valor_prev = int(
+                st.session_state.get(
+                    "lri_man_viewport_h", _snap_altura_viewport(_VIEWPORT_H_DETECTADO)
+                )
+                or 1080
+            )
             if valor_prev not in _OPCIONES_VIEWPORT_H:
                 valor_prev = _snap_altura_viewport(valor_prev)
+                st.session_state["lri_man_viewport_h"] = valor_prev
+            st.markdown(
+                '<div class="lri-slicer-marker" aria-hidden="true"></div>',
+                unsafe_allow_html=True,
+            )
             viewport_h_ui = st.select_slider(
                 "Resolución Vertical (px)",
                 options=list(_OPCIONES_VIEWPORT_H),
-                value=valor_prev,
                 key="lri_man_viewport_h",
+                help="Slicer de altura de pantalla (color teal). Baje el valor en laptops pequeñas.",
             )
 
     subtitulo_panel = None
@@ -6608,11 +7009,10 @@ if df is not None:
     )
     _render_cabecera_app(subtitulo_panel)
 
-    # Tras la carga en sidebar, re-sincronizar df y ejes antes del gráfico.
+    # Tras la carga en sidebar, el df ya está en sesión; no reajustar ejes aquí
+    # (los selectbox ya existen → provocaría StreamlitAPIException al cambiar de archivo).
     df = st.session_state.get("lri_df_datos")
     if df is not None:
-        _sembrar_ejes_default_si_corresponde(df)
-        _ajustar_ejes_a_dataframe(df)
         if st.session_state.get("lri_mostrar_excel_completo"):
             _render_excel_explorador_unificado(df, viewport_h_ui)
 

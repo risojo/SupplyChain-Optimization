@@ -493,6 +493,71 @@ def guardar_asignacion_drivers(
     st.session_state[CLAVE_DF_ASIGNACION] = df_guardado
 
 
+def montos_esperados_por_fila(params: dict) -> dict[str, float]:
+    """Monto esperado en «Costo Totales» por nombre de fila del scorecard.
+
+    - Gastos/costos: igual al parámetro digitado.
+    - Inversiones: parámetro × (% costo de capital / 100) — cargo anual ICC.
+    """
+    p = _parametros_scorecard(params)
+    capital = float(p["capital_pct"])
+    out: dict[str, float] = {}
+    for n, v in zip(p["inv_alm_n"], p["inv_alm_v"]):
+        out[str(n)] = float(v) * capital / 100.0
+    for n, v in zip(p["cost_alm_n"], p["cost_alm_vals"]):
+        out[str(n)] = float(v)
+    for n, v in zip(p["inv_inv_n"], p["inv_inv_v"]):
+        out[str(n)] = float(v) * capital / 100.0
+    for n, v in zip(p["cost_inv_n"], p["cost_inv_v"]):
+        out[str(n)] = float(v)
+    return out
+
+
+def control_cruzado_scorecard(
+    tabla: pd.DataFrame,
+    montos_esperados: dict[str, float],
+    *,
+    tolerancia: float = 0.51,
+) -> pd.DataFrame:
+    """Compara cada fila (salvo total) con el parámetro / cargo esperado."""
+    name_col = tabla.columns[0]
+    cats = _columnas_categorias(tabla)
+    filas: list[dict[str, object]] = []
+    cuerpo = tabla.iloc[:-1] if len(tabla) else tabla
+    for _, row in cuerpo.iterrows():
+        nombre = str(row[name_col])
+        costo_tot = float(row.get("Costo Totales", 0) or 0)
+        suma_cats = float(sum(float(row[c] or 0) for c in cats))
+        esperado = montos_esperados.get(nombre)
+        if esperado is None:
+            estado = "⚠ sin parámetro"
+            ok = False
+            esperado_f = float("nan")
+        else:
+            esperado_f = float(esperado)
+            ok = (
+                abs(costo_tot - esperado_f) <= tolerancia
+                and abs(suma_cats - costo_tot) <= tolerancia
+            )
+            estado = "OK" if ok else "FALLA"
+        filas.append(
+            {
+                "Fila": nombre,
+                "Esperado $": round(esperado_f, 0) if esperado is not None else None,
+                "Costo Totales $": round(costo_tot, 0),
+                "Suma categorías $": round(suma_cats, 0),
+                "Estado": estado,
+            }
+        )
+    return pd.DataFrame(filas)
+
+
+def resumen_control_cruzado(df_ctrl: pd.DataFrame) -> tuple[int, int]:
+    ok = int((df_ctrl["Estado"] == "OK").sum()) if not df_ctrl.empty else 0
+    fallas = int(len(df_ctrl) - ok)
+    return ok, fallas
+
+
 def construir_vista_scorecard(
     table_name: str,
     nombres: list[str],
@@ -639,14 +704,21 @@ def _redondear_gmroi(out: pd.DataFrame) -> pd.DataFrame:
 
 
 def _parametros_scorecard(params: dict) -> dict[str, object]:
-    """Extrae listas de inversiones/costos y % capital para el scorecard."""
+    """Extrae listas de inversiones/costos y % capital para el scorecard.
+
+    Los montos de costos de almacén e inventario se distribuyen íntegros por
+    categoría/subcategoría según el driver (la suma de columnas = parámetro).
+    El % de capital solo multiplica las *inversiones* en ``scorecard_completo``.
+    De ``inv_inversiones_calculado`` se omite la fila de activo de inventario
+    y se conserva el costo financiero ya calculado.
+    """
     capital_pct = float(parametros.extraer_tag(params, "gen_financieros")[1][0])
     inv_alm_n, inv_alm_v = parametros.extraer_tag(params, "alm_inversiones")
     cost_alm_n, cost_alm_v = parametros.extraer_tag(params, "alm_costosgastos")
-    cost_alm_vals = cost_alm_v[1:] + [capital_pct]
     inv_inv_n, inv_inv_v = parametros.extraer_tag(params, "inv_inversiones")
     inv_calc_n, inv_calc_v = parametros.extraer_tag(params, "inv_inversiones_calculado")
     inv_cost_n, inv_cost_v = parametros.extraer_tag(params, "inv_costosgastos")
+    # [1:]: salta «Inversión en inventario promedio $»; deja costo financiero + gastos.
     cost_inv_n = inv_calc_n[1:] + inv_cost_n
     cost_inv_v = inv_calc_v[1:] + inv_cost_v
     return {
@@ -654,7 +726,7 @@ def _parametros_scorecard(params: dict) -> dict[str, object]:
         "inv_alm_n": inv_alm_n,
         "inv_alm_v": inv_alm_v,
         "cost_alm_n": cost_alm_n,
-        "cost_alm_vals": cost_alm_vals,
+        "cost_alm_vals": list(cost_alm_v),
         "inv_inv_n": inv_inv_n,
         "inv_inv_v": inv_inv_v,
         "cost_inv_n": cost_inv_n,

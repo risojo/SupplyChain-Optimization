@@ -1,12 +1,11 @@
 """Parámetros generales de Inventarios (sin base de datos).
 
-Réplica la página ``02_Parámetros_generales`` del proyecto original:
-datos de almacenaje, inventario y generales (personal, costos, inversiones,
-ventas). Los valores editables viven en ``st.session_state``; los calculados
-se actualizan desde el Excel ``template_inventarios.xlsx``.
+Editables en disco (dos carpetas):
+- ``parametros_base/parametros.json`` — inicio/base (solo con «Actualizar parámetros base»).
+- ``parametros_actuales/parametros.json`` — últimos guardados (se cargan al abrir la app).
 
-Valores editables guardados en ``parametros_guardados.json`` al pulsar Guardar.
-Al iniciar: estándar desde ``parametros_defaults.json``, sobrescrito por lo guardado.
+Estructura de casillas: ``parametros_defaults.json``.
+Calculados: desde el Excel.
 """
 from __future__ import annotations
 
@@ -19,8 +18,14 @@ import pandas as pd
 
 _DIR_MODULO = os.path.dirname(os.path.abspath(__file__))
 ARCHIVO_DEFAULTS = os.path.join(_DIR_MODULO, "parametros_defaults.json")
+# Legado (compatibilidad)
 ARCHIVO_BACKUP = os.path.join(_DIR_MODULO, "parametros_backup.json")
 ARCHIVO_GUARDADO = os.path.join(_DIR_MODULO, "parametros_guardados.json")
+
+DIR_BASE = os.path.join(_DIR_MODULO, "parametros_base")
+DIR_ACTUALES = os.path.join(_DIR_MODULO, "parametros_actuales")
+ARCHIVO_BASE = os.path.join(DIR_BASE, "parametros.json")
+ARCHIVO_ACTUALES = os.path.join(DIR_ACTUALES, "parametros.json")
 
 # Secciones de solo lectura (se recalculan desde el Excel).
 _TAGS_CALCULADOS = frozenset({
@@ -50,33 +55,6 @@ def _filas_editables_desde_json(data: dict) -> dict[str, list[dict[str, Any]]]:
     return out
 
 
-def cargar_backup() -> dict[str, list[dict[str, Any]]] | None:
-    """Respaldo versionado en el repo (parametros_backup.json)."""
-    if not os.path.isfile(ARCHIVO_BACKUP):
-        return None
-    try:
-        with open(ARCHIVO_BACKUP, encoding="utf-8") as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    return _filas_editables_desde_json(data)
-
-
-def guardar_backup_editables(params: dict[str, list[dict[str, Any]]]) -> None:
-    """Actualiza parametros_backup.json (respaldo versionado en el repo)."""
-    payload: dict[str, Any] = {
-        "_descripcion": (
-            "Respaldo de parámetros editables. Copiar a parametros_defaults.json "
-            "o parametros_guardados.json para restaurar."
-        ),
-        **_filas_editables_para_archivo(params),
-    }
-    with open(ARCHIVO_BACKUP, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-
-
 def _filas_editables_para_archivo(
     params: dict[str, list[dict[str, Any]]],
 ) -> dict[str, list[dict[str, Any]]]:
@@ -87,50 +65,158 @@ def _fusionar_parametros_editables(
     base: dict[str, list[dict[str, Any]]],
     fuente: dict[str, list[dict[str, Any]]],
 ) -> dict[str, list[dict[str, Any]]]:
-    for tag in _tags_editables(base):
+    out = deepcopy(base)
+    for tag in _tags_editables(out):
         if tag not in fuente:
             continue
         filas = fuente[tag]
         if not isinstance(filas, list):
             continue
-        nombres_def = [r["name"] for r in base[tag]]
+        nombres_def = [r["name"] for r in out[tag]]
         por_nombre = {
             r["name"]: float(r["value"])
             for r in filas
             if isinstance(r, dict) and "name" in r and "value" in r
         }
-        base[tag] = [
-            {"name": n, "value": por_nombre.get(n, float(base[tag][i]["value"]))}
+        out[tag] = [
+            {"name": n, "value": por_nombre.get(n, float(out[tag][i]["value"]))}
             for i, n in enumerate(nombres_def)
         ]
-    return base
+    return out
+
+
+def _leer_json_editables(ruta: str) -> dict[str, list[dict[str, Any]]] | None:
+    if not os.path.isfile(ruta):
+        return None
+    try:
+        with open(ruta, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return _filas_editables_desde_json(data)
+
+
+def _escribir_json_editables(
+    ruta: str,
+    params: dict[str, list[dict[str, Any]]],
+    *,
+    descripcion: str,
+) -> None:
+    os.makedirs(os.path.dirname(ruta), exist_ok=True)
+    payload: dict[str, Any] = {
+        "_descripcion": descripcion,
+        **_filas_editables_para_archivo(params),
+    }
+    with open(ruta, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def _semilla_inicial_editables() -> dict[str, list[dict[str, Any]]]:
+    base = cargar_defaults()
+    for ruta in (ARCHIVO_BACKUP, ARCHIVO_GUARDADO):
+        legado = _leer_json_editables(ruta)
+        if legado:
+            return _fusionar_parametros_editables(base, legado)
+    return deepcopy(base)
+
+
+def asegurar_archivos_parametros() -> None:
+    os.makedirs(DIR_BASE, exist_ok=True)
+    os.makedirs(DIR_ACTUALES, exist_ok=True)
+    if not os.path.isfile(ARCHIVO_BASE):
+        _escribir_json_editables(
+            ARCHIVO_BASE,
+            _semilla_inicial_editables(),
+            descripcion=(
+                "Parámetros BASE (inicio). Solo con «Actualizar parámetros base»."
+            ),
+        )
+    if not os.path.isfile(ARCHIVO_ACTUALES):
+        fuente = _leer_json_editables(ARCHIVO_BASE) or _filas_editables_desde_json(
+            cargar_defaults()
+        )
+        _escribir_json_editables(
+            ARCHIVO_ACTUALES,
+            _fusionar_parametros_editables(cargar_defaults(), fuente),
+            descripcion="Parámetros ACTUALES (últimos). Se cargan al abrir la app.",
+        )
+
+
+def cargar_parametros_base() -> dict[str, list[dict[str, Any]]]:
+    asegurar_archivos_parametros()
+    estructura = cargar_defaults()
+    base = _leer_json_editables(ARCHIVO_BASE)
+    if base:
+        return _fusionar_parametros_editables(estructura, base)
+    return deepcopy(estructura)
+
+
+def cargar_parametros_actuales() -> dict[str, list[dict[str, Any]]]:
+    asegurar_archivos_parametros()
+    estructura = cargar_defaults()
+    actuales = _leer_json_editables(ARCHIVO_ACTUALES)
+    if actuales:
+        return _fusionar_parametros_editables(estructura, actuales)
+    return cargar_parametros_base()
+
+
+def guardar_parametros_actuales(params: dict[str, list[dict[str, Any]]]) -> None:
+    asegurar_archivos_parametros()
+    _escribir_json_editables(
+        ARCHIVO_ACTUALES,
+        params,
+        descripcion="Parámetros ACTUALES (últimos). Se cargan al abrir la app.",
+    )
+
+
+def actualizar_parametros_base(params: dict[str, list[dict[str, Any]]]) -> None:
+    asegurar_archivos_parametros()
+    _escribir_json_editables(
+        ARCHIVO_BASE,
+        params,
+        descripcion=(
+            "Parámetros BASE (inicio). Solo con «Actualizar parámetros base»."
+        ),
+    )
+
+
+def restablecer_a_parametros_base() -> dict[str, list[dict[str, Any]]]:
+    """Carga la base y la deja también en actuales."""
+    params = cargar_parametros_base()
+    guardar_parametros_actuales(params)
+    return params
+
+
+def cargar_backup() -> dict[str, list[dict[str, Any]]] | None:
+    legado = _leer_json_editables(ARCHIVO_BACKUP)
+    if legado:
+        return legado
+    asegurar_archivos_parametros()
+    return _leer_json_editables(ARCHIVO_BASE)
+
+
+def guardar_backup_editables(params: dict[str, list[dict[str, Any]]]) -> None:
+    actualizar_parametros_base(params)
 
 
 def cargar_parametros_inicio() -> dict[str, list[dict[str, Any]]]:
-    """Estándar (defaults); si hay guardado local lo aplica; si no, el backup del repo."""
-    base = cargar_defaults()
-    if os.path.isfile(ARCHIVO_GUARDADO):
-        try:
-            with open(ARCHIVO_GUARDADO, encoding="utf-8") as f:
-                guardado = json.load(f)
-            if isinstance(guardado, dict):
-                return _fusionar_parametros_editables(base, _filas_editables_desde_json(guardado))
-        except (json.JSONDecodeError, OSError):
-            pass
-    backup = cargar_backup()
-    if backup:
-        return _fusionar_parametros_editables(base, backup)
-    return base
+    return cargar_parametros_actuales()
+
+
+def cargar_parametros_demo() -> dict[str, list[dict[str, Any]]]:
+    return cargar_parametros_actuales()
+
+
+def cargar_parametros_archivo_subido() -> dict[str, list[dict[str, Any]]]:
+    """Excel nuevo: mismos actuales en disco (no se borran). Calculados salen del Excel."""
+    return cargar_parametros_actuales()
 
 
 def reiniciar_a_defaults(*, borrar_guardado_local: bool = True) -> dict[str, list[dict[str, Any]]]:
-    """Restaura parámetros editables desde ``parametros_defaults.json``."""
-    if borrar_guardado_local and os.path.isfile(ARCHIVO_GUARDADO):
-        try:
-            os.remove(ARCHIVO_GUARDADO)
-        except OSError:
-            pass
-    return deepcopy(cargar_defaults())
+    del borrar_guardado_local
+    return restablecer_a_parametros_base()
 
 
 def restaurar_en_session_state(
@@ -155,12 +241,8 @@ def restaurar_en_session_state(
 
 
 def guardar_parametros_editables(params: dict[str, list[dict[str, Any]]]) -> None:
-    """Persiste solo secciones editables (manual) para la próxima ejecución."""
-    payload: dict[str, list[dict[str, Any]]] = {}
-    for tag in _tags_editables(params):
-        payload[tag] = deepcopy(params[tag])
-    with open(ARCHIVO_GUARDADO, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    """Guardar → parámetros actuales."""
+    guardar_parametros_actuales(params)
 
 
 def clave_widget_parametro(tag: str, indice: int) -> str:
@@ -323,11 +405,14 @@ def dataframe_editable_a_tag(
 
 
 def inicializar_parametros(df: pd.DataFrame) -> dict[str, list[dict[str, Any]]]:
-    """Defaults o últimos guardados + calculados desde el Excel."""
+    """Demo (template) o estándar limpio (archivo subido) + calculados desde el Excel."""
     import streamlit as st
 
     if "inv_parametros" not in st.session_state:
-        st.session_state["inv_parametros"] = cargar_parametros_inicio()
+        if st.session_state.get("inv_upload_id"):
+            st.session_state["inv_parametros"] = cargar_parametros_archivo_subido()
+        else:
+            st.session_state["inv_parametros"] = cargar_parametros_demo()
         sincronizar_claves_widgets(st.session_state["inv_parametros"])
         invalidar_cache_calculados()
     actualizar_calculados_si_necesario(st.session_state["inv_parametros"], df)
@@ -341,7 +426,10 @@ def obtener_parametros(df: pd.DataFrame | None = None) -> dict[str, list[dict[st
     if df is not None:
         return inicializar_parametros(df)
     if "inv_parametros" not in st.session_state:
-        st.session_state["inv_parametros"] = cargar_parametros_inicio()
+        if st.session_state.get("inv_upload_id"):
+            st.session_state["inv_parametros"] = cargar_parametros_archivo_subido()
+        else:
+            st.session_state["inv_parametros"] = cargar_parametros_demo()
         sincronizar_claves_widgets(st.session_state["inv_parametros"])
     return st.session_state["inv_parametros"]
 
