@@ -36,7 +36,82 @@ REF_VIEWPORT_H = 1080
 _OPCIONES_VIEWPORT_H = (720, 768, 900, 1080, 1200, 1440)
 _COLOR_SLICER_PANTALLA = "#14b8a6"  # teal — distinto del azul Streamlit por defecto
 
-_LRI_VIEWPORT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_lri_viewport")
+# HTML del componente: embebido para que Render no falle si falta la carpeta en disco.
+_LRI_VIEWPORT_HTML = """<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html, body { margin: 0; padding: 0; overflow: hidden; height: 0; }
+    </style>
+  </head>
+  <body>
+    <script>
+      (function () {
+        function post(type, data) {
+          window.parent.postMessage(
+            Object.assign({ isStreamlitMessage: true, type: type }, data || {}),
+            "*"
+          );
+        }
+        function setReady() { post("streamlit:componentReady", { apiVersion: 1 }); }
+        function setHeight(height) { post("streamlit:setFrameHeight", { height: height }); }
+        function setValue(value) { post("streamlit:setComponentValue", { value: value }); }
+        function measure() {
+          var win = window.parent;
+          var w = Math.round(
+            (win && (win.innerWidth || (win.document && win.document.documentElement.clientWidth))) || 1920
+          );
+          var h = Math.round(
+            (win && (win.innerHeight || (win.document && win.document.documentElement.clientHeight))) || 1080
+          );
+          return { w: w, h: h };
+        }
+        function onMessage(event) {
+          var data = event.data;
+          if (!data || data.type !== "streamlit:render") return;
+          if (window._lriViewportSent) { setHeight(0); return; }
+          window._lriViewportSent = true;
+          setValue(measure());
+          setHeight(0);
+        }
+        window.addEventListener("message", onMessage);
+        setReady();
+        setHeight(0);
+        setTimeout(function () {
+          if (!window._lriViewportSent) {
+            window._lriViewportSent = true;
+            setValue(measure());
+          }
+          setHeight(0);
+        }, 50);
+      })();
+    </script>
+  </body>
+</html>
+"""
+
+
+def _asegurar_dir_componente_viewport() -> str:
+    """Garantiza index.html antes de declare_component (Render / checkout incompleto)."""
+    candidatos = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "_lri_viewport"),
+        os.path.join(tempfile.gettempdir(), "lri_viewport_component"),
+    ]
+    for target in candidatos:
+        try:
+            os.makedirs(target, exist_ok=True)
+            index_path = os.path.join(target, "index.html")
+            with open(index_path, "w", encoding="utf-8") as f:
+                f.write(_LRI_VIEWPORT_HTML)
+            if os.path.isdir(target) and os.path.isfile(index_path):
+                return target
+        except OSError:
+            continue
+    raise RuntimeError("No se pudo crear el directorio del componente lri_viewport")
+
+
+_LRI_VIEWPORT_DIR = _asegurar_dir_componente_viewport()
 _lri_viewport_comp = components.declare_component("lri_viewport", path=_LRI_VIEWPORT_DIR)
 
 
