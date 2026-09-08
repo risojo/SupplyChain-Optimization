@@ -1,22 +1,26 @@
 """Parámetros generales de Inventarios (sin base de datos).
 
-Editables en disco (dos carpetas):
-- ``parametros_base/parametros.json`` — inicio/base (solo con «Actualizar parámetros base»).
-- ``parametros_actuales/parametros.json`` — últimos guardados (se cargan al abrir la app).
+Fuente primaria: hoja ``parametros`` de ``data/sources/inventarios.xlsx``.
+Al cargar la app se leen y se escriben en JSON (actuales / base / legado).
+La UI es solo lectura; no hay edición manual en pantalla.
 
 Estructura de casillas: ``parametros_defaults.json``.
-Calculados: desde el Excel.
+Calculados (SKUs, ventas, etc.): desde la hoja de datos del Excel.
 """
 from __future__ import annotations
 
+import io
 import json
 import os
+import re
+import unicodedata
 from copy import deepcopy
 from typing import Any
 
 import pandas as pd
 
 _DIR_MODULO = os.path.dirname(os.path.abspath(__file__))
+_RAIZ_PROYECTO = os.path.dirname(os.path.dirname(_DIR_MODULO))
 ARCHIVO_DEFAULTS = os.path.join(_DIR_MODULO, "parametros_defaults.json")
 # Legado (compatibilidad)
 ARCHIVO_BACKUP = os.path.join(_DIR_MODULO, "parametros_backup.json")
@@ -27,7 +31,13 @@ DIR_ACTUALES = os.path.join(_DIR_MODULO, "parametros_actuales")
 ARCHIVO_BASE = os.path.join(DIR_BASE, "parametros.json")
 ARCHIVO_ACTUALES = os.path.join(DIR_ACTUALES, "parametros.json")
 
-# Secciones de solo lectura (se recalculan desde el Excel).
+# Excel maestro compartido (hoja data + hoja parametros).
+ARCHIVO_EXCEL_PARAMETROS = os.path.join(
+    _RAIZ_PROYECTO, "data", "sources", "inventarios.xlsx"
+)
+HOJA_PARAMETROS = "parametros"
+
+# Secciones de solo lectura (se recalculan desde el Excel de datos).
 _TAGS_CALCULADOS = frozenset({
     "inv_datos_calculados",
     "inv_inversiones_calculado",
@@ -37,6 +47,253 @@ _TAGS_CALCULADOS = frozenset({
 
 def _tags_editables(defaults: dict) -> list[str]:
     return [t for t in defaults if t not in _TAGS_CALCULADOS]
+
+
+def _norm_clave(texto: str) -> str:
+    s = str(texto).lower().strip()
+    s = unicodedata.normalize("NFD", s)
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+    return re.sub(r"[^a-z0-9]+", "", s)
+
+
+def _es_encabezado_seccion(clave: str) -> bool:
+    return clave in {
+        "parametrosalmacenaje",
+        "parametrosinventario",
+        "parametrosgenerales",
+        "datos",
+        "costosygastos",
+        "inversiones",
+    }
+
+
+def _asignar_valor(
+    params: dict[str, list[dict[str, Any]]],
+    tag: str,
+    indice: int,
+    valor: float,
+) -> None:
+    if tag not in params or indice < 0 or indice >= len(params[tag]):
+        return
+    params[tag][indice]["value"] = float(valor)
+
+
+def _resolver_destino_parametro(
+    bloque: str,
+    clave: str,
+) -> tuple[str, int] | None:
+    """Mapea etiqueta Excel (normalizada) → (tag JSON, índice) según el bloque activo."""
+    if bloque == "alm_datos":
+        if "persona" in clave and "almacen" in clave:
+            return "alm_datos", 0
+        if "metro" in clave and "almacen" in clave:
+            return "alm_datos", 1
+        if "equipo" in clave and "fax" not in clave and "comput" not in clave:
+            return "alm_datos", 2
+        if "posicion" in clave:
+            return "alm_datos", 3
+        if "otrosgastos" in clave and "almacen" in clave:
+            return "alm_datos", 4
+        return None
+
+    if bloque == "alm_costos":
+        if "manodeobra" in clave or ("mano" in clave and "obra" in clave):
+            return "alm_costosgastos", 0
+        if "alquiler" in clave or "espacio" in clave:
+            return "alm_costosgastos", 1
+        if "suministro" in clave:
+            return "alm_costosgastos", 2
+        if "energia" in clave:
+            return "alm_costosgastos", 3
+        if "3pl" in clave or "tercer" in clave:
+            return "alm_costosgastos", 4
+        if "seguro" in clave:
+            return "alm_costosgastos", 6
+        if "otrosgasto" in clave:
+            return "alm_costosgastos", 5
+        return None
+
+    if bloque == "alm_inv":
+        if "terreno" in clave or "edificio" in clave:
+            return "alm_inversiones", 0
+        if "manejo" in clave or "montacarga" in clave:
+            return "alm_inversiones", 1
+        if "almacenaje" in clave or "almacenamiento" in clave or "rack" in clave:
+            return "alm_inversiones", 2
+        if "wms" in clave:
+            return "alm_inversiones", 3
+        # Seguro = gasto directo (driver), no inversión × capital.
+        if "seguro" in clave:
+            return "alm_costosgastos", 6
+        if "otrasinversion" in clave or clave == "otrasinversiones":
+            return "alm_inversiones", 4
+        return None
+
+    if bloque == "inv_datos":
+        if "sku" in clave or "proveedor" in clave:
+            return None  # calculados desde hoja data
+        if "persona" in clave or "encargado" in clave or "planeador" in clave:
+            return "inv_datos", 0
+        if "metro" in clave and "oficina" in clave:
+            return "inv_datos", 1
+        if "equipo" in clave:
+            return "inv_datos", 2
+        return None
+
+    if bloque == "inv_costos":
+        # El seguro operativo está en inversiones de almacén (Excel) → alm_costosgastos.
+        # No pisar con la fila vacía «Seguros de Inventarios» de costos de inventario.
+        if "seguro" in clave:
+            return None
+        if "manodeobra" in clave or ("mano" in clave and "obra" in clave):
+            return "inv_costosgastos", 0
+        if "energia" in clave:
+            return "inv_costosgastos", 1
+        if "suministro" in clave:
+            return "inv_costosgastos", 2
+        if "espacio" in clave and "oficina" in clave:
+            return "inv_costosgastos", 3
+        if "otrosgasto" in clave:
+            return "inv_costosgastos", 4
+        return None
+
+    if bloque == "inv_inv":
+        if "inventoryinvestment" in clave or (
+            "inversion" in clave and "inventario" in clave and "hardware" not in clave
+        ):
+            return None  # calculado
+        if "hardware" in clave:
+            return "inv_inversiones", 0
+        if (
+            "management" in clave
+            or "software" in clave
+            or "inventorymanagement" in clave
+        ):
+            return "inv_inversiones", 1
+        return None
+
+    if bloque == "gen":
+        if "capital" in clave:
+            return "gen_financieros", 0
+        if "hora" in clave or "fte" in clave:
+            return "gen_operativos", 0
+        return None
+
+    return None
+
+
+def _parsear_hoja_parametros_df(
+    df_raw: pd.DataFrame,
+) -> dict[str, list[dict[str, Any]]]:
+    """Convierte la hoja parametros (2 columnas etiqueta/valor) a la estructura JSON."""
+    params = deepcopy(cargar_defaults())
+    if df_raw is None or df_raw.empty:
+        return params
+
+    bloque = "alm_datos"
+    ambito = "alm"  # alm | inv | gen
+
+    for _, row in df_raw.iterrows():
+        etiqueta = row.iloc[0] if len(row) > 0 else None
+        valor = row.iloc[1] if len(row) > 1 else None
+        if etiqueta is None or (isinstance(etiqueta, float) and pd.isna(etiqueta)):
+            continue
+        texto = str(etiqueta).strip()
+        if not texto or texto == "-":
+            continue
+        clave = _norm_clave(texto)
+
+        if clave.startswith("parametrosalmacenaje"):
+            ambito = "alm"
+            bloque = "alm_datos"
+            continue
+        if clave.startswith("parametrosinventario"):
+            ambito = "inv"
+            bloque = "inv_datos"
+            continue
+        if clave in {"datos"}:
+            bloque = "alm_datos" if ambito == "alm" else "inv_datos"
+            continue
+        if clave in {"costosygastos"}:
+            bloque = "alm_costos" if ambito == "alm" else "inv_costos"
+            continue
+        if clave in {"inversiones"}:
+            bloque = "alm_inv" if ambito == "alm" else "inv_inv"
+            continue
+
+        # Filas generales al final (FTE / capital) sin bloque dedicado
+        if "capital" in clave or "hora" in clave or "fte" in clave:
+            destino = _resolver_destino_parametro("gen", clave)
+        else:
+            destino = _resolver_destino_parametro(bloque, clave)
+
+        if destino is None:
+            continue
+        if valor is None or (isinstance(valor, float) and pd.isna(valor)):
+            continue
+        try:
+            num = float(valor)
+        except (TypeError, ValueError):
+            continue
+
+        tag, idx = destino
+        if tag == "gen_financieros" and abs(num) <= 1.0:
+            # Excel en fracción (0.12) → JSON en porcentaje (12)
+            num = num * 100.0
+        _asignar_valor(params, tag, idx, num)
+
+    return params
+
+
+def leer_parametros_desde_excel(
+    *,
+    ruta: str | None = None,
+    file_bytes: bytes | None = None,
+) -> dict[str, list[dict[str, Any]]] | None:
+    """Lee la hoja ``parametros``. None si no existe o falla."""
+    try:
+        if file_bytes is not None:
+            xl = pd.ExcelFile(io.BytesIO(file_bytes))
+        else:
+            path = ruta or ARCHIVO_EXCEL_PARAMETROS
+            if not os.path.isfile(path):
+                return None
+            xl = pd.ExcelFile(path)
+        hojas = {str(h).strip().lower(): h for h in xl.sheet_names}
+        nombre = hojas.get(HOJA_PARAMETROS.lower())
+        if nombre is None:
+            # tolerancia sin acento / plural
+            for k, h in hojas.items():
+                if "parametro" in k:
+                    nombre = h
+                    break
+        if nombre is None:
+            return None
+        df_raw = pd.read_excel(xl, sheet_name=nombre, header=None)
+        return _parsear_hoja_parametros_df(df_raw)
+    except (OSError, ValueError, ImportError):
+        return None
+
+
+def sincronizar_json_desde_excel(
+    *,
+    ruta: str | None = None,
+    file_bytes: bytes | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Lee Excel → escribe JSON actuales/base/legado. Si no hay hoja, usa actuales."""
+    leidos = leer_parametros_desde_excel(ruta=ruta, file_bytes=file_bytes)
+    if leidos is None:
+        return cargar_parametros_actuales()
+    guardar_parametros_actuales(leidos)
+    actualizar_parametros_base(leidos)
+    # Legado: mismos valores para quien aún lea parametros_guardados.json
+    try:
+        payload = _filas_editables_para_archivo(leidos)
+        with open(ARCHIVO_GUARDADO, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+    return leidos
 
 
 def cargar_defaults() -> dict[str, list[dict[str, Any]]]:
@@ -202,21 +459,21 @@ def guardar_backup_editables(params: dict[str, list[dict[str, Any]]]) -> None:
 
 
 def cargar_parametros_inicio() -> dict[str, list[dict[str, Any]]]:
-    return cargar_parametros_actuales()
+    return sincronizar_json_desde_excel()
 
 
 def cargar_parametros_demo() -> dict[str, list[dict[str, Any]]]:
-    return cargar_parametros_actuales()
+    return sincronizar_json_desde_excel()
 
 
 def cargar_parametros_archivo_subido() -> dict[str, list[dict[str, Any]]]:
-    """Excel nuevo: mismos actuales en disco (no se borran). Calculados salen del Excel."""
-    return cargar_parametros_actuales()
+    """Si el Excel subido trae hoja parametros, la usa; si no, perfilado.xlsx."""
+    return sincronizar_json_desde_excel()
 
 
 def reiniciar_a_defaults(*, borrar_guardado_local: bool = True) -> dict[str, list[dict[str, Any]]]:
     del borrar_guardado_local
-    return restablecer_a_parametros_base()
+    return sincronizar_json_desde_excel()
 
 
 def restaurar_en_session_state(
@@ -405,14 +662,17 @@ def dataframe_editable_a_tag(
 
 
 def inicializar_parametros(df: pd.DataFrame) -> dict[str, list[dict[str, Any]]]:
-    """Demo (template) o estándar limpio (archivo subido) + calculados desde el Excel."""
+    """Carga parámetros desde hoja Excel ``parametros`` → JSON; calculados desde datos."""
     import streamlit as st
 
     if "inv_parametros" not in st.session_state:
-        if st.session_state.get("inv_upload_id"):
-            st.session_state["inv_parametros"] = cargar_parametros_archivo_subido()
+        bytes_up = st.session_state.get("inv_excel_bytes")
+        if bytes_up:
+            st.session_state["inv_parametros"] = sincronizar_json_desde_excel(
+                file_bytes=bytes_up
+            )
         else:
-            st.session_state["inv_parametros"] = cargar_parametros_demo()
+            st.session_state["inv_parametros"] = sincronizar_json_desde_excel()
         sincronizar_claves_widgets(st.session_state["inv_parametros"])
         invalidar_cache_calculados()
     actualizar_calculados_si_necesario(st.session_state["inv_parametros"], df)
@@ -426,10 +686,7 @@ def obtener_parametros(df: pd.DataFrame | None = None) -> dict[str, list[dict[st
     if df is not None:
         return inicializar_parametros(df)
     if "inv_parametros" not in st.session_state:
-        if st.session_state.get("inv_upload_id"):
-            st.session_state["inv_parametros"] = cargar_parametros_archivo_subido()
-        else:
-            st.session_state["inv_parametros"] = cargar_parametros_demo()
+        st.session_state["inv_parametros"] = sincronizar_json_desde_excel()
         sincronizar_claves_widgets(st.session_state["inv_parametros"])
     return st.session_state["inv_parametros"]
 

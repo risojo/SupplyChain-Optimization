@@ -2,7 +2,7 @@
 
 Versión de trabajo del módulo de Inventarios. Reusa la lógica analítica del
 proyecto original del freelance, pero leyendo directamente el Excel maestro en
-``data/sources/template_inventarios.xlsx`` (mismo enfoque que Perfilado).
+``data/sources/inventarios.xlsx`` (hoja data + parametros).
 
 Ejecutar:
     streamlit run modules/inventarios/inventario_app.py
@@ -152,8 +152,101 @@ def _restablecer_controles_gmroi() -> None:
         st.session_state[clave] = valor
 
 
+def _aplicar_parametros_y_recalcular_todo(*, file_bytes: bytes | None = None) -> None:
+    """Guarda params desde Excel → JSON y fuerza recálculo de GMROI, EVAI y Scorecard."""
+    _cargar_datos_con_cache.clear()
+    _cargar_excel_cached.clear()
+    parametros.invalidar_cache_calculados()
+    parametros.limpiar_claves_widgets()
+
+    claves_exactas = {
+        "inv_parametros",
+        "inv_widgets_param_ok",
+        "inv_calc_fingerprint",
+        "inv_asignacion_fingerprint",
+        scorecard.CLAVE_EDITOR_ASIGNACION,
+        scorecard.CLAVE_DF_ASIGNACION,
+    }
+    for key in list(st.session_state.keys()):
+        if not isinstance(key, str):
+            continue
+        if key.startswith("inv_gmroi_font"):
+            continue
+        if (
+            key in claves_exactas
+            or key.startswith("inv_param_")
+            or key.startswith("inv_sc_")
+            or key.startswith("inv_asig_")
+            or key.startswith("inv_gmroi_")
+        ):
+            del st.session_state[key]
+
+    if file_bytes is not None:
+        params = parametros.sincronizar_json_desde_excel(file_bytes=file_bytes)
+        df, err = data_loader.cargar_datos_desde_upload(file_bytes)
+    else:
+        params = parametros.sincronizar_json_desde_excel()
+        df, err = _cargar_datos_con_cache()
+        st.session_state["inv_nombre_archivo"] = (
+            data_loader.NOMBRE_ARCHIVO_DEFECTO if df is not None else None
+        )
+        st.session_state.pop("inv_upload_id", None)
+        st.session_state.pop("inv_excel_bytes", None)
+
+    st.session_state["inv_df_datos"] = df
+    st.session_state["inv_error_carga"] = err
+    if df is not None:
+        parametros.restaurar_en_session_state(params, df)
+    else:
+        parametros.restaurar_en_session_state(params, None)
+
+    # Tras actualizar parámetros: Decisiones (GMROI/EVAI) se recalculan al instante.
+    st.session_state["inv_vista"] = VISTA_PRINCIPAL
+    _restablecer_controles_gmroi()
+    ruta = data_loader.ARCHIVO_EXCEL_PATH
+    st.session_state["inv_excel_mtime_sync"] = (
+        os.path.getmtime(ruta) if os.path.isfile(ruta) else None
+    )
+    st.session_state["inv_params_refresco_ok"] = True
+
+
+def _auto_refresco_si_excel_cambio() -> None:
+    """Si el Excel en disco cambió, guarda params y recalcula toda la app."""
+    ruta = data_loader.ARCHIVO_EXCEL_PATH
+    if not os.path.isfile(ruta):
+        return
+    if st.session_state.get("inv_upload_id"):
+        return
+    mtime = os.path.getmtime(ruta)
+    prev = st.session_state.get("inv_excel_mtime_sync")
+    if prev is None:
+        st.session_state["inv_excel_mtime_sync"] = mtime
+        return
+    if float(prev) == float(mtime):
+        return
+    _aplicar_parametros_y_recalcular_todo()
+    st.rerun()
+
+
+@st.fragment(run_every=3)
+def _vigilante_actualizacion_parametros() -> None:
+    """Cada 3 s revisa el Excel; si cambió, recalcula GMROI/EVAI/Scorecard solo."""
+    ruta = data_loader.ARCHIVO_EXCEL_PATH
+    if not os.path.isfile(ruta) or st.session_state.get("inv_upload_id"):
+        return
+    mtime = os.path.getmtime(ruta)
+    prev = st.session_state.get("inv_excel_mtime_sync")
+    if prev is None:
+        st.session_state["inv_excel_mtime_sync"] = mtime
+        return
+    if float(prev) == float(mtime):
+        return
+    _aplicar_parametros_y_recalcular_todo()
+    st.rerun()
+
+
 def _activar_plantilla_demo() -> None:
-    """``template_inventarios.xlsx`` + parámetros demo (backup) + drivers por defecto."""
+    """``inventarios.xlsx`` (hoja data) + parámetros desde hoja parametros."""
     _limpiar_estado_sesion_inventarios(incluir_datos=True)
     _borrar_persistencia_local_modulo()
     _restablecer_controles_gmroi()
@@ -200,17 +293,15 @@ def _reiniciar_plantilla_completa() -> None:
 
 
 def _sidebar_cargar_datos() -> None:
-    """Subir Excel; si no hay archivo, usa ``template_inventarios.xlsx`` (demo)."""
+    """Subir Excel; si no hay archivo, usa ``inventarios.xlsx``."""
     st.markdown("##### 📁 Cargar datos")
     nombre_plantilla = data_loader.NOMBRE_ARCHIVO_DEFECTO
     archivo_subido = st.file_uploader(
         "Archivo Excel",
         type=["xlsx", "xls"],
         help=(
-            f"Sin archivo subido se usa **{nombre_plantilla}** (demo). "
-            "Si sube otro Excel, se trabajan solo esos SKUs en esta sesión "
-            "(los parámetros base/actuales en disco no se borran). "
-            "Quite el archivo subido para volver al demo."
+            f"Sin archivo subido se usa **{nombre_plantilla}** (hojas `data` + `parametros`). "
+            "Si sube otro Excel con esas hojas, se usan en esta sesión."
         ),
     )
     if archivo_subido is not None:
@@ -357,7 +448,7 @@ def _formatos_tabla_completa(df: pd.DataFrame) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 def vista_base_datos(df: pd.DataFrame, _params: dict) -> None:
     st.caption(
-        "Tabla completa desde `template_inventarios.xlsx`. "
+        "Tabla completa desde `inventarios.xlsx` (hoja data). "
         "Revise el paso 1 (parámetros) antes de analizar drivers."
     )
 
@@ -1020,8 +1111,10 @@ def vista_scorecard(df: pd.DataFrame, params: dict) -> None:
         expanded=(fail_a + fail_i) > 0,
     ):
         st.caption(
-            "Gastos: **Costo Totales** = monto digitado en Parámetros. "
-            "Inversiones: **Costo Totales** = parámetro × (% costo de capital) — cargo anual. "
+            "Gastos (incl. **Seguros del inventario**): **Costo Totales** = monto del parámetro "
+            "(reparto solo por % driver, sin × capital). "
+            "Inversiones de almacén (edificio, equipos, WMS, etc.): "
+            "**Costo Totales** = parámetro × (% costo de capital). "
             "En ambos casos, la suma de categorías/subcategorías = **Costo Totales**."
         )
         if fail_a + fail_i == 0:
@@ -1097,8 +1190,8 @@ def _parametros_calculados_setbox(
         )
     ui_theme.titulo_seccion_parametros(titulo, editable=False, font_px=fs, tag=tag)
     st.caption(
-        "Valores **fijos** (rojo suave): calculados por el sistema al cargar el Excel. "
-        "Mismo set box que los editables, sin cambios manuales."
+        "Valores **fijos** (rojo suave): desde la hoja Excel de parámetros o calculados "
+        "desde la hoja de datos. Sin edición manual en pantalla."
     )
     ui_theme.editor_parametros_solo_lectura(
         tabla,
@@ -1143,17 +1236,13 @@ def _editor_parametros(
 
 
 def vista_parametros_generales(df: pd.DataFrame, params: dict) -> None:
-    """Ingreso manual: personal, costos de almacén, inversiones, capital %, etc."""
-    if not st.session_state.get("inv_widgets_param_ok"):
-        parametros.sincronizar_claves_widgets(params, force=True)
-        st.session_state["inv_widgets_param_ok"] = True
-
+    """Solo lectura: valores desde hoja Excel ``parametros`` (escritos en JSON)."""
     ui_theme.leyenda_origen_parametros()
     st.info(
-        "Al abrir la app se cargan los **parámetros actuales** (última vez que guardó). "
-        "Edite con **+ / −** o el teclado. Los bloques **rojo suave** son calculados. "
-        "**Guardar** actualiza actuales; **Restablecer a base** vuelve al inicio; "
-        "**Actualizar parámetros base** convierte los actuales en el nuevo inicio."
+        "Los parámetros **ya no se editan en pantalla**. Se leen de la hoja **`parametros`** "
+        f"del Excel (`{os.path.basename(parametros.ARCHIVO_EXCEL_PARAMETROS)}`) y se "
+        "guardan en JSON. Al guardar/recargar, **toda la app se recalcula sola** "
+        "(GMROI, EVAI, Scorecard). También se actualiza sola si cambia el Excel en disco."
     )
 
     pestaña = st.radio(
@@ -1164,81 +1253,68 @@ def vista_parametros_generales(df: pd.DataFrame, params: dict) -> None:
     )
 
     if pestaña == "Parámetros Almacenaje":
-        params = _editor_parametros(params, "alm_datos", "Datos", df)
+        _parametros_calculados_setbox(params, "alm_datos", "Datos (desde Excel parámetros)")
         ui_theme.separador_parametros()
-        params = _editor_parametros(params, "alm_costosgastos", "Costos y gastos", df)
-        ui_theme.separador_parametros()
-        params = _editor_parametros(params, "alm_inversiones", "Inversiones", df)
-
-    elif pestaña == "Parámetros Inventario":
-        _parametros_calculados_setbox(params, "inv_datos_calculados", "Datos (desde Excel)")
-        ui_theme.separador_parametros()
-        params = _editor_parametros(params, "inv_datos", "Datos (manual)", df)
-        ui_theme.separador_parametros()
-        params = _editor_parametros(
-            params, "inv_costosgastos", "Costos y gastos de inventario", df
+        _parametros_calculados_setbox(
+            params, "alm_costosgastos", "Costos y gastos (desde Excel parámetros)"
         )
         ui_theme.separador_parametros()
         _parametros_calculados_setbox(
-            params, "inv_inversiones_calculado", "Inversiones (desde Excel)"
+            params, "alm_inversiones", "Inversiones (desde Excel parámetros)"
+        )
+
+    elif pestaña == "Parámetros Inventario":
+        _parametros_calculados_setbox(params, "inv_datos_calculados", "Datos (calculados hoja data)")
+        ui_theme.separador_parametros()
+        _parametros_calculados_setbox(params, "inv_datos", "Datos (desde Excel parámetros)")
+        ui_theme.separador_parametros()
+        _parametros_calculados_setbox(
+            params, "inv_costosgastos", "Costos y gastos (desde Excel parámetros)"
         )
         ui_theme.separador_parametros()
-        params = _editor_parametros(params, "inv_inversiones", "Inversiones (manual)", df)
+        _parametros_calculados_setbox(
+            params, "inv_inversiones_calculado", "Inversiones (calculadas hoja data)"
+        )
+        ui_theme.separador_parametros()
+        _parametros_calculados_setbox(
+            params, "inv_inversiones", "Inversiones (desde Excel parámetros)"
+        )
 
     else:
-        _parametros_calculados_setbox(params, "gen_financieros_calculados", "Financieros (desde Excel)")
-        ui_theme.separador_parametros()
-        params = _editor_parametros(
-            params,
-            "gen_financieros",
-            "Financieros (manual)",
-            df,
-            formato="%d",
+        _parametros_calculados_setbox(
+            params, "gen_financieros_calculados", "Financieros (calculados hoja data)"
         )
-        st.caption("El «Costo de capital de la empresa %» aplica sobre la inversión en inventario.")
         ui_theme.separador_parametros()
-        params = _editor_parametros(params, "gen_operativos", "Operativos", df)
+        _parametros_calculados_setbox(
+            params, "gen_financieros", "Financieros (desde Excel parámetros)",
+            es_porcentaje=True,
+        )
+        st.caption(
+            "El «Costo de capital de la empresa %» aplica sobre la inversión en inventario. "
+            "Si en Excel está como 0.12, el sistema lo convierte a 12%."
+        )
+        ui_theme.separador_parametros()
+        _parametros_calculados_setbox(
+            params, "gen_operativos", "Operativos (desde Excel parámetros)"
+        )
 
     parametros.actualizar_calculados_si_necesario(params, df)
     st.session_state["inv_parametros"] = params
 
-    col_g1, col_g2, col_g3 = st.columns(3)
-    with col_g1:
-        if st.button("Guardar parámetros", type="primary", use_container_width=True):
-            params_guardar = parametros.params_desde_widgets(params)
-            parametros.guardar_parametros_actuales(params_guardar)
-            parametros.actualizar_calculados_si_necesario(params_guardar, df)
-            st.session_state["inv_parametros"] = params_guardar
-            st.success("Parámetros actuales actualizados. Se cargarán al reabrir la app.")
-    with col_g2:
-        if st.button(
-            "Restablecer a parámetros base",
-            use_container_width=True,
-            help="Vuelve a los valores de inicio (carpeta parámetros base) y los deja también como actuales.",
-        ):
-            params_base = parametros.restablecer_a_parametros_base()
-            parametros.restaurar_en_session_state(params_base, df)
-            st.success("Restablecido a parámetros base.")
-            st.rerun()
-    with col_g3:
-        if st.button(
-            "Actualizar parámetros base",
-            use_container_width=True,
-            help="Los valores actuales pasan a ser el nuevo inicio (base).",
-        ):
-            params_base = parametros.params_desde_widgets(params)
-            parametros.guardar_parametros_actuales(params_base)
-            parametros.actualizar_parametros_base(params_base)
-            parametros.actualizar_calculados_si_necesario(params_base, df)
-            st.session_state["inv_parametros"] = params_base
-            st.success("Parámetros base actualizados con los valores actuales.")
-    st.caption(
-        f"Actuales: `{parametros.DIR_ACTUALES}` · Base: `{parametros.DIR_BASE}`"
-    )
+    if st.button("Recargar desde Excel", type="primary", use_container_width=True):
+        bytes_up = st.session_state.get("inv_excel_bytes")
+        _aplicar_parametros_y_recalcular_todo(
+            file_bytes=bytes_up if bytes_up else None
+        )
+        st.rerun()
 
-    st.success(
-        "Parámetros listos para Scorecard y drivers. "
-        "Los calculados (rojo suave) se actualizan al cargar el Excel."
+    st.caption(
+        f"Fuente Excel: `{parametros.ARCHIVO_EXCEL_PARAMETROS}` · hoja `{parametros.HOJA_PARAMETROS}` · "
+        f"JSON: `{parametros.DIR_ACTUALES}`"
+    )
+    st.caption(
+        "Al recargar o al guardar el Excel, la app salta a **GMROI y EVAI** y recalcula "
+        "también Scorecard con los nuevos parámetros."
     )
 
 
@@ -1312,6 +1388,8 @@ def _render_navegacion_sidebar() -> None:
 
 def main() -> None:
     _inicializar_datos_en_sesion()
+    _auto_refresco_si_excel_cambio()
+    _vigilante_actualizacion_parametros()
     _inicializar_controles_gmroi()
     _aplicar_toggle_tabla_gmroi_pendiente()
 
@@ -1370,6 +1448,11 @@ def main() -> None:
 
     _inyectar_css_ui()
     ui_theme.cabecera_modulo_inventarios()
+
+    if st.session_state.pop("inv_params_refresco_ok", False):
+        st.success(
+            "Parámetros actualizados → **GMROI, EVAI y Scorecard** recalculados automáticamente."
+        )
 
     df = st.session_state.get("inv_df_datos")
     if df is None:

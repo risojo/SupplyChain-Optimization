@@ -1,18 +1,11 @@
 """Capa de datos file-based del módulo Inventarios.
 
-Lee el Excel maestro (``data/sources/template_inventarios.xlsx``) y lo deja con
-los **mismos nombres de columna que usa Perfilado** (``perfilado.xlsx``), para
-que los criterios y nombres de columnas sean idénticos entre módulos.
+Lee el Excel maestro de Inventarios (``data/sources/inventarios.xlsx``):
+- hoja ``data`` — SKUs y métricas
+- hoja ``parametros`` — costos / capital (vía ``parametros.py``)
 
-Convención de nombres (igual a Perfilado): minúsculas, separadas por espacios,
-sin guiones ni acentos (p. ej. ``codigo``, ``ventas totales``,
-``valor inventario promedio``).
-
-Las fórmulas de las columnas calculadas replican las de Perfilado (base "por
-bulto"):
-    ventas totales            = bultos vendidos × precio unitario bulto
-    ventas costo              = bultos vendidos × costo unitario bulto
-    valor inventario promedio = inventario promedio bultos × costo unitario bulto
+Convención de nombres: minúsculas, espacios, sin guiones ni acentos
+(p. ej. ``codigo``, ``ventas totales``, ``valor inventario promedio``).
 """
 from __future__ import annotations
 
@@ -25,11 +18,12 @@ import pandas as pd
 
 _RAIZ_PROYECTO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ARCHIVO_EXCEL_PATH = os.path.join(
-    _RAIZ_PROYECTO, "data", "sources", "template_inventarios.xlsx"
+    _RAIZ_PROYECTO, "data", "sources", "inventarios.xlsx"
 )
 # Alias por compatibilidad interna
 ARCHIVO_EXCEL_DEFECTO = ARCHIVO_EXCEL_PATH
 NOMBRE_ARCHIVO_DEFECTO = os.path.basename(ARCHIVO_EXCEL_PATH)
+HOJA_DATOS = "data"
 
 MSG_ARCHIVO_EXCEL_ABIERTO = (
     "El archivo Excel está abierto en otra aplicación. Ciérrelo o suba una copia con otro nombre."
@@ -68,6 +62,10 @@ MAPA_COLUMNAS = {
     "factor_escazes": "factor escazes",
 }
 
+# Tipografía histórica en perfilado.xlsx (demada → demanda).
+for _i in (1, 3, 5):
+    MAPA_COLUMNAS[f"demada mes {_i}"] = f"demanda mes {_i}"
+
 COLUMNAS_DEMANDA = [f"demanda mes {i}" for i in range(1, 13)]
 
 COLUMNAS_NUMERICAS = [
@@ -80,7 +78,7 @@ COLUMNAS_NUMERICAS = [
 
 COLUMNAS_TEXTO = ["codigo", "categoria", "subcategoria", "descripcion", "proveedor", "pais"]
 
-# Misma estructura que template_inventarios; el archivo puede llamarse distinto.
+# Misma estructura que Perfilado; el archivo puede llamarse distinto.
 COLUMNAS_ENTRADA_OBLIGATORIAS = list(dict.fromkeys(COLUMNAS_TEXTO + COLUMNAS_NUMERICAS))
 
 # Columnas calculadas que agrega este módulo (nombres de Perfilado).
@@ -100,30 +98,58 @@ def _div_segura(numerador: pd.Series, denominador: pd.Series) -> pd.Series:
     return resultado.replace([np.inf, -np.inf], np.nan).fillna(0)
 
 
+def _renombrar_columnas_entrada(df: pd.DataFrame) -> pd.DataFrame:
+    """Aplica MAPA_COLUMNAS y unifica tipografías (demada→demanda, espacios)."""
+    df = df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+    renombres = {k: v for k, v in MAPA_COLUMNAS.items() if k in df.columns}
+    if renombres:
+        df = df.rename(columns=renombres)
+    extras = {}
+    for c in df.columns:
+        cl = str(c).strip().lower()
+        if cl.startswith("demada mes"):
+            extras[c] = cl.replace("demada mes", "demanda mes")
+    if extras:
+        df = df.rename(columns=extras)
+    # Tras strip pueden quedar encabezados duplicados (p. ej. dos «factor escazes»).
+    if df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated(keep="first")].copy()
+    return df
+
+
 def limpiar_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """Normaliza tipos: numéricas a float (comas->puntos), texto saneado."""
     df = df.copy()
 
     for col in COLUMNAS_NUMERICAS:
-        if col in df.columns:
-            serie = df[col].astype(str).str.replace(",", ".", regex=False).str.strip()
-            serie = serie.str.replace(r"[^\d\.\-\+]", "", regex=True)
-            serie = pd.to_numeric(serie, errors="coerce")
-            if col in _NO_NEGATIVAS:
-                serie = serie.mask(serie < 0, 0)
-            df[col] = serie.fillna(0)
+        if col not in df.columns:
+            continue
+        serie = df[col]
+        if isinstance(serie, pd.DataFrame):
+            serie = serie.iloc[:, 0]
+        serie = serie.astype(str).str.replace(",", ".", regex=False).str.strip()
+        serie = serie.str.replace(r"[^\d\.\-\+]", "", regex=True)
+        serie = pd.to_numeric(serie, errors="coerce")
+        if col in _NO_NEGATIVAS:
+            serie = serie.mask(serie < 0, 0)
+        df[col] = serie.fillna(0)
 
     for col in COLUMNAS_TEXTO:
-        if col in df.columns:
-            serie = df[col].astype(str).str.strip()
-            serie = serie.replace(["nan", "NaN", "NAN", ""], "Sin especificar")
-            df[col] = serie
+        if col not in df.columns:
+            continue
+        serie = df[col]
+        if isinstance(serie, pd.DataFrame):
+            serie = serie.iloc[:, 0]
+        serie = serie.astype(str).str.strip()
+        serie = serie.replace(["nan", "NaN", "NAN", ""], "Sin especificar")
+        df[col] = serie
 
     return df
 
 
 def transformar_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """Agrega las columnas calculadas con las mismas fórmulas que Perfilado."""
+    """Agrega/recalcula columnas derivadas (mismas fórmulas que Perfilado)."""
     df = df.copy()
 
     df["unidades vendidas"] = df[COLUMNAS_DEMANDA].sum(axis=1)
@@ -154,12 +180,24 @@ def _es_error_archivo_abierto(exc: BaseException) -> bool:
     return "permission denied" in msg or "permiso denegado" in msg or "[errno 13]" in msg
 
 
-def _renombrar_columnas_entrada(df: pd.DataFrame) -> pd.DataFrame:
-    """Aplica MAPA_COLUMNAS solo para columnas presentes (acepta nombres ya estilo Perfilado)."""
-    renombres = {k: v for k, v in MAPA_COLUMNAS.items() if k in df.columns}
-    if renombres:
-        df = df.rename(columns=renombres)
-    return df
+def _elegir_hoja_datos(xl: pd.ExcelFile) -> str:
+    """Preferir hoja ``data`` (Perfilado); si no, la primera hoja."""
+    por_nombre = {str(h).strip().lower(): h for h in xl.sheet_names}
+    if HOJA_DATOS in por_nombre:
+        return por_nombre[HOJA_DATOS]
+    for clave, nombre in por_nombre.items():
+        if clave in {"data", "datos", "hoja1", "sheet1"} or "dato" in clave:
+            return nombre
+    return xl.sheet_names[0]
+
+
+def _leer_excel_datos(origen: str | bytes) -> pd.DataFrame:
+    if isinstance(origen, (bytes, bytearray)):
+        xl = pd.ExcelFile(io.BytesIO(origen), engine="openpyxl")
+    else:
+        xl = pd.ExcelFile(origen, engine="openpyxl")
+    hoja = _elegir_hoja_datos(xl)
+    return pd.read_excel(xl, sheet_name=hoja)
 
 
 def validar_columnas_entrada(df: pd.DataFrame) -> list[str]:
@@ -191,19 +229,19 @@ def preparar_dataframe_inventario(df: pd.DataFrame) -> pd.DataFrame:
 def cargar_inventario(ruta: Optional[str] = None) -> pd.DataFrame:
     """Carga el Excel por ruta (uso interno; preferir ``cargar_datos`` en la app)."""
     ruta = ruta or ARCHIVO_EXCEL_PATH
-    df = pd.read_excel(ruta, engine="openpyxl")
+    df = _leer_excel_datos(ruta)
     return preparar_dataframe_inventario(df)
 
 
 def cargar_datos(
     ruta: Optional[str] = None,
 ) -> tuple[Optional[pd.DataFrame], Optional[str]]:
-    """Carga por defecto desde ``data/sources/template_inventarios.xlsx``."""
+    """Carga por defecto desde ``data/sources/perfilado.xlsx`` (hoja data)."""
     ruta = ruta or ARCHIVO_EXCEL_PATH
     if not os.path.isfile(ruta):
         return None, (
             f"No se encontró `{NOMBRE_ARCHIVO_DEFECTO}` en data/sources. "
-            "Suba un Excel con la misma estructura de columnas."
+            "Suba un Excel con la misma estructura de columnas (hoja data)."
         )
     try:
         return cargar_inventario(ruta), None
@@ -216,9 +254,9 @@ def cargar_datos(
 
 
 def cargar_datos_desde_upload(file_bytes: bytes) -> tuple[Optional[pd.DataFrame], Optional[str]]:
-    """Mismo esquema estricto de columnas; el nombre del archivo puede ser cualquiera."""
+    """Mismo esquema; prioriza hoja ``data`` si existe."""
     try:
-        df = pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl")
+        df = _leer_excel_datos(file_bytes)
         return preparar_dataframe_inventario(df), None
     except ValueError as exc:
         return None, str(exc)

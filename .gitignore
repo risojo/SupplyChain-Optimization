@@ -19,6 +19,7 @@ __pycache__/
 # Datos locales (Excel)
 *.xlsx
 !data/sources/perfilado.xlsx
+!data/sources/inventarios.xlsx
 !data/sources/template_inventarios.xlsx
 
 # Streamlit

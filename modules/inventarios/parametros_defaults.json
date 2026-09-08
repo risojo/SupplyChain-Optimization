@@ -12,14 +12,14 @@
     {"name": "Costo suministros de oficina $", "value": 2000},
     {"name": "Costos de energía (electricidad, gas, otros) $", "value": 0},
     {"name": "Servicios de terceros en logística (3PL) $", "value": 35000},
-    {"name": "Otros gastos $", "value": 1200}
+    {"name": "Otros gastos $", "value": 1200},
+    {"name": "Seguros del inventario $", "value": 15000}
   ],
   "alm_inversiones": [
     {"name": "Inversiones en edificio y terreno $", "value": 5000},
     {"name": "Sistema de manejo de materiales (montacargas, elevadores, carretillas, baterías, etc) $", "value": 150000},
     {"name": "Sistemas de almacenamiento (Racks, Conveyors, carretillas, etc) $", "value": 100000},
     {"name": "WMS (licencias, mantenimiento, etc) $", "value": 75000},
-    {"name": "Seguros del inventario $", "value": 15000},
     {"name": "Otras inversiones $", "value": 3000}
   ],
   "inv_datos": [
