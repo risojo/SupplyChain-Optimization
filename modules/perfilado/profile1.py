@@ -152,7 +152,7 @@ _ESCALA_APLICADA = _aplicar_escala_interfaz(_VIEWPORT_W_DETECTADO)
 # profile1.py vive en modules/perfilado/. La raíz del proyecto está 2 niveles
 # arriba; los datos y los assets son carpetas compartidas en esa raíz.
 _RAIZ_PROYECTO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-ARCHIVO_EXCEL_PATH = os.path.join(_RAIZ_PROYECTO, "data", "sources", "perfilado.xlsx")
+ARCHIVO_EXCEL_PATH = os.path.join(_RAIZ_PROYECTO, "data", "sources", "inventarios.xlsx")
 ARCHIVO_LOGO_LRI = os.path.join(_RAIZ_PROYECTO, "assets", "LRI_logo.png")
 TITULO_APP = "Profile Pro"
 RESERVA_VERTICAL_REF = 320

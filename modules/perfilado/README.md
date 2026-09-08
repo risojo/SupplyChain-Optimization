@@ -11,8 +11,8 @@ que corre como app Streamlit independiente y está desplegada en Render.
 
 ## Datos
 
-Usa la capa de datos compartida: lee `data/sources/perfilado.xlsx` (raíz del
-repo). El día de mañana esa fuente será SQL sin cambiar el módulo.
+Usa el Excel oficial compartido: `data/sources/inventarios.xlsx`
+(hojas `data` + `parametros`). Inventory Pro usa el mismo archivo.
 
 ## Ejecutar
 

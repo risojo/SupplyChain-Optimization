@@ -236,7 +236,7 @@ def cargar_inventario(ruta: Optional[str] = None) -> pd.DataFrame:
 def cargar_datos(
     ruta: Optional[str] = None,
 ) -> tuple[Optional[pd.DataFrame], Optional[str]]:
-    """Carga por defecto desde ``data/sources/perfilado.xlsx`` (hoja data)."""
+    """Carga por defecto desde ``data/sources/inventarios.xlsx`` (hoja data)."""
     ruta = ruta or ARCHIVO_EXCEL_PATH
     if not os.path.isfile(ruta):
         return None, (

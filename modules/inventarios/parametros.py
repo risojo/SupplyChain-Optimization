@@ -467,7 +467,7 @@ def cargar_parametros_demo() -> dict[str, list[dict[str, Any]]]:
 
 
 def cargar_parametros_archivo_subido() -> dict[str, list[dict[str, Any]]]:
-    """Si el Excel subido trae hoja parametros, la usa; si no, perfilado.xlsx."""
+    """Si el Excel subido trae hoja parametros, la usa; si no, inventarios.xlsx."""
     return sincronizar_json_desde_excel()
 
 

@@ -1,17 +1,13 @@
 # data/sources
 
-Fuentes de datos compartidas. **Una por módulo** (orden LRI):
+Excel oficial compartido (Profile Pro + Inventory Pro):
 
-| Archivo | Módulo |
+| Archivo | Uso |
 |---|---|
-| `almacenaje.xlsx` | 1. Almacenaje *(pendiente)* |
-| `compras.xlsx` | 2. Compras *(pendiente)* |
-| `template_inventarios.xlsx` | 3. Inventarios ✅ |
-| `perfilado.xlsx` | 4. Perfilado ✅ |
-| `pronostico.xlsx` | 5. Pronóstico *(pendiente)* |
-| `transportes.xlsx` | 6. Transportes *(pendiente)* |
+| `inventarios.xlsx` | Oficial: hojas `data` + `parametros` (Profile e Inventarios) |
+| `template_inventarios.xlsx` | Plantilla histórica / referencia |
 
-Todos los módulos acceden a estos datos **a través de `data/loaders.py`**
-(el "mostrador"), nunca leyendo el archivo directamente. Así, cuando al final
-del proyecto se migre a una base de datos **SQL**, solo cambia `loaders.py` y
-los módulos no se tocan.
+Otros módulos (pendientes): `almacenaje.xlsx`, `compras.xlsx`, `pronostico.xlsx`, `transportes.xlsx`.
+
+Los módulos leen estos archivos de forma directa en su app (o vía loaders).
+Cuando se migre a SQL, el punto de cambio será la capa de datos.
