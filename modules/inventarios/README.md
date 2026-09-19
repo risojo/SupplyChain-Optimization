@@ -5,7 +5,7 @@
 | Qué | Dónde |
 |-----|--------|
 | **Programa principal** | `modules/inventarios/inventario_app.py` |
-| **Excel de datos** | `data/sources/template_inventarios.xlsx` |
+| **Excel de datos** | `data/sources/perfilado.xlsx` (copia espejo: `inventarios.xlsx`) |
 | **Ejecutar en local** | `streamlit run modules/inventarios/inventario_app.py` |
 | **Render** | `lri-inventarios` → mismo comando que arriba |
 

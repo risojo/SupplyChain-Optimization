@@ -1,6 +1,6 @@
 """Parámetros generales de Inventarios (sin base de datos).
 
-Fuente primaria: hoja ``parametros`` de ``data/sources/inventarios.xlsx``.
+Fuente primaria: hoja ``parametros`` de ``data/sources/perfilado.xlsx``.
 Al cargar la app se leen y se escriben en JSON (actuales / base / legado).
 La UI es solo lectura; no hay edición manual en pantalla.
 
@@ -9,6 +9,7 @@ Calculados (SKUs, ventas, etc.): desde la hoja de datos del Excel.
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -31,9 +32,9 @@ DIR_ACTUALES = os.path.join(_DIR_MODULO, "parametros_actuales")
 ARCHIVO_BASE = os.path.join(DIR_BASE, "parametros.json")
 ARCHIVO_ACTUALES = os.path.join(DIR_ACTUALES, "parametros.json")
 
-# Excel maestro compartido (hoja data + hoja parametros).
+# Excel maestro (hoja data + hoja parametros).
 ARCHIVO_EXCEL_PARAMETROS = os.path.join(
-    _RAIZ_PROYECTO, "data", "sources", "inventarios.xlsx"
+    _RAIZ_PROYECTO, "data", "sources", "perfilado.xlsx"
 )
 HOJA_PARAMETROS = "parametros"
 
@@ -275,15 +276,33 @@ def leer_parametros_desde_excel(
         return None
 
 
+def fingerprint_excel_parametros(
+    *,
+    ruta: str | None = None,
+    file_bytes: bytes | None = None,
+) -> str:
+    """Huella del Excel de parámetros (ruta+mtime o hash de bytes)."""
+    if file_bytes is not None:
+        return "bytes:" + hashlib.md5(file_bytes).hexdigest()
+    path = ruta or ARCHIVO_EXCEL_PARAMETROS
+    if not os.path.isfile(path):
+        return "missing"
+    return f"{os.path.normcase(os.path.abspath(path))}|{os.path.getmtime(path)}"
+
+
 def sincronizar_json_desde_excel(
     *,
     ruta: str | None = None,
     file_bytes: bytes | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Lee Excel → escribe JSON actuales/base/legado. Si no hay hoja, usa actuales."""
+    """Lee hoja ``parametros`` del Excel y sobrescribe JSON actuales/base/legado.
+
+    Fuente de verdad: Excel. El JSON solo es caché de esa hoja.
+    """
     leidos = leer_parametros_desde_excel(ruta=ruta, file_bytes=file_bytes)
     if leidos is None:
-        return cargar_parametros_actuales()
+        # Sin hoja parametros: no reutilizar JSON viejo de otro archivo.
+        return deepcopy(cargar_defaults())
     guardar_parametros_actuales(leidos)
     actualizar_parametros_base(leidos)
     # Legado: mismos valores para quien aún lea parametros_guardados.json
@@ -466,8 +485,14 @@ def cargar_parametros_demo() -> dict[str, list[dict[str, Any]]]:
     return sincronizar_json_desde_excel()
 
 
-def cargar_parametros_archivo_subido() -> dict[str, list[dict[str, Any]]]:
-    """Si el Excel subido trae hoja parametros, la usa; si no, inventarios.xlsx."""
+def cargar_parametros_archivo_subido(
+    file_bytes: bytes | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Lee hoja parametros del Excel subido; si falta, usa perfilado.xlsx en disco."""
+    if file_bytes is not None:
+        leidos = leer_parametros_desde_excel(file_bytes=file_bytes)
+        if leidos is not None:
+            return sincronizar_json_desde_excel(file_bytes=file_bytes)
     return sincronizar_json_desde_excel()
 
 
@@ -479,6 +504,8 @@ def reiniciar_a_defaults(*, borrar_guardado_local: bool = True) -> dict[str, lis
 def restaurar_en_session_state(
     params: dict[str, list[dict[str, Any]]],
     df: pd.DataFrame | None = None,
+    *,
+    file_bytes: bytes | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Aplica params en sesión, widgets y calculados desde el Excel (si hay df)."""
     import streamlit as st
@@ -493,6 +520,9 @@ def restaurar_en_session_state(
             df, costo_capital_pct
         )
     st.session_state["inv_parametros"] = params
+    st.session_state["inv_params_excel_fp"] = fingerprint_excel_parametros(
+        file_bytes=file_bytes
+    )
     sincronizar_claves_widgets(params, force=True)
     return params
 
@@ -662,20 +692,27 @@ def dataframe_editable_a_tag(
 
 
 def inicializar_parametros(df: pd.DataFrame) -> dict[str, list[dict[str, Any]]]:
-    """Carga parámetros desde hoja Excel ``parametros`` → JSON; calculados desde datos."""
+    """Lee siempre la hoja ``parametros`` del Excel activo → JSON → sesión.
+
+    Si el Excel (ruta/mtime o bytes) cambió, vuelve a sincronizar y descarta
+    valores fijos de un JSON anterior.
+    """
     import streamlit as st
 
-    if "inv_parametros" not in st.session_state:
-        bytes_up = st.session_state.get("inv_excel_bytes")
+    bytes_up = st.session_state.get("inv_excel_bytes")
+    fp = fingerprint_excel_parametros(file_bytes=bytes_up)
+    debe_sync = (
+        "inv_parametros" not in st.session_state
+        or st.session_state.get("inv_params_excel_fp") != fp
+    )
+    if debe_sync:
         if bytes_up:
-            st.session_state["inv_parametros"] = sincronizar_json_desde_excel(
-                file_bytes=bytes_up
-            )
+            params = sincronizar_json_desde_excel(file_bytes=bytes_up)
         else:
-            st.session_state["inv_parametros"] = sincronizar_json_desde_excel()
-        sincronizar_claves_widgets(st.session_state["inv_parametros"])
-        invalidar_cache_calculados()
-    actualizar_calculados_si_necesario(st.session_state["inv_parametros"], df)
+            params = sincronizar_json_desde_excel()
+        restaurar_en_session_state(params, df, file_bytes=bytes_up)
+    else:
+        actualizar_calculados_si_necesario(st.session_state["inv_parametros"], df)
     return st.session_state["inv_parametros"]
 
 
@@ -685,9 +722,17 @@ def obtener_parametros(df: pd.DataFrame | None = None) -> dict[str, list[dict[st
 
     if df is not None:
         return inicializar_parametros(df)
-    if "inv_parametros" not in st.session_state:
-        st.session_state["inv_parametros"] = sincronizar_json_desde_excel()
-        sincronizar_claves_widgets(st.session_state["inv_parametros"])
+    bytes_up = st.session_state.get("inv_excel_bytes")
+    fp = fingerprint_excel_parametros(file_bytes=bytes_up)
+    if (
+        "inv_parametros" not in st.session_state
+        or st.session_state.get("inv_params_excel_fp") != fp
+    ):
+        if bytes_up:
+            params = sincronizar_json_desde_excel(file_bytes=bytes_up)
+        else:
+            params = sincronizar_json_desde_excel()
+        restaurar_en_session_state(params, None, file_bytes=bytes_up)
     return st.session_state["inv_parametros"]
 
 

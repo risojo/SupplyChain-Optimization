@@ -1,6 +1,6 @@
 """Capa de datos file-based del módulo Inventarios.
 
-Lee el Excel maestro de Inventarios (``data/sources/inventarios.xlsx``):
+Lee el Excel maestro de Inventarios (``data/sources/perfilado.xlsx``):
 - hoja ``data`` — SKUs y métricas
 - hoja ``parametros`` — costos / capital (vía ``parametros.py``)
 
@@ -18,7 +18,7 @@ import pandas as pd
 
 _RAIZ_PROYECTO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ARCHIVO_EXCEL_PATH = os.path.join(
-    _RAIZ_PROYECTO, "data", "sources", "inventarios.xlsx"
+    _RAIZ_PROYECTO, "data", "sources", "perfilado.xlsx"
 )
 # Alias por compatibilidad interna
 ARCHIVO_EXCEL_DEFECTO = ARCHIVO_EXCEL_PATH
@@ -78,6 +78,42 @@ COLUMNAS_NUMERICAS = [
 
 COLUMNAS_TEXTO = ["codigo", "categoria", "subcategoria", "descripcion", "proveedor", "pais"]
 
+# Orden FIJO de la hoja ``data`` (foto oficial del usuario). No reordenar distinto.
+ORDEN_COLUMNAS_DATA = [
+    "codigo",
+    "categoria",
+    "clase",
+    "subcategoria",
+    "descripcion",
+    "proveedor",
+    "pais",
+    "empaque",
+    "bultos tarima",
+    "cubicaje tarima",
+    *COLUMNAS_DEMANDA,
+    "ordenes anual",
+    "tiempo entrega",
+    "inventario final bulto",
+    "inventario promedio bultos",
+    "valor inventario transito",
+    "precio unitario bulto",
+    "costo unitario bulto",
+    "factor escazes",
+    "unidades vendidas",
+    "bultos vendidos",
+    "margen utilidad ventas",
+    "ventas totales",
+    "ventas costo",
+    "margen bruto total",
+    "valor inventario promedio",
+    "rotacion",
+    "meses inventario",
+    "bultos despachados mes",
+    "cubicaje inventario",
+    "costo mantener inventario",
+    "EVAI",
+]
+
 # Misma estructura que Perfilado; el archivo puede llamarse distinto.
 COLUMNAS_ENTRADA_OBLIGATORIAS = list(dict.fromkeys(COLUMNAS_TEXTO + COLUMNAS_NUMERICAS))
 
@@ -98,6 +134,13 @@ def _div_segura(numerador: pd.Series, denominador: pd.Series) -> pd.Series:
     return resultado.replace([np.inf, -np.inf], np.nan).fillna(0)
 
 
+def _aplicar_orden_columnas_fijo(df: pd.DataFrame) -> pd.DataFrame:
+    """Mantiene el orden oficial de columnas (foto perfilado.xlsx)."""
+    presentes = [c for c in ORDEN_COLUMNAS_DATA if c in df.columns]
+    extras = [c for c in df.columns if c not in ORDEN_COLUMNAS_DATA]
+    return df.loc[:, presentes + extras].copy()
+
+
 def _renombrar_columnas_entrada(df: pd.DataFrame) -> pd.DataFrame:
     """Aplica MAPA_COLUMNAS y unifica tipografías (demada→demanda, espacios)."""
     df = df.copy()
@@ -115,7 +158,7 @@ def _renombrar_columnas_entrada(df: pd.DataFrame) -> pd.DataFrame:
     # Tras strip pueden quedar encabezados duplicados (p. ej. dos «factor escazes»).
     if df.columns.duplicated().any():
         df = df.loc[:, ~df.columns.duplicated(keep="first")].copy()
-    return df
+    return _aplicar_orden_columnas_fijo(df)
 
 
 def limpiar_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -236,7 +279,7 @@ def cargar_inventario(ruta: Optional[str] = None) -> pd.DataFrame:
 def cargar_datos(
     ruta: Optional[str] = None,
 ) -> tuple[Optional[pd.DataFrame], Optional[str]]:
-    """Carga por defecto desde ``data/sources/inventarios.xlsx`` (hoja data)."""
+    """Carga por defecto desde ``data/sources/perfilado.xlsx`` (hoja data)."""
     ruta = ruta or ARCHIVO_EXCEL_PATH
     if not os.path.isfile(ruta):
         return None, (

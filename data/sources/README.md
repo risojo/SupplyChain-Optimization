@@ -1,13 +1,14 @@
 # data/sources
 
-Excel oficial compartido (Profile Pro + Inventory Pro):
+Excel oficial compartido (orden de columnas **fijo** según foto del usuario):
 
 | Archivo | Uso |
 |---|---|
-| `inventarios.xlsx` | Oficial: hojas `data` + `parametros` (Profile e Inventarios) |
+| `perfilado.xlsx` | Fuente oficial: hojas `data` + `parametros` — **Profile Pro** (`profile1.py` / `profile2.py`) e **Inventory Pro** |
+| `inventarios.xlsx` | Copia idéntica de `perfilado.xlsx` (mismo contenido y mismo orden de columnas) |
 | `template_inventarios.xlsx` | Plantilla histórica / referencia |
 
-Otros módulos (pendientes): `almacenaje.xlsx`, `compras.xlsx`, `pronostico.xlsx`, `transportes.xlsx`.
+Orden fijo de `data` (inicio):  
+`codigo → categoria → clase → subcategoria → descripcion → proveedor → pais → …`
 
-Los módulos leen estos archivos de forma directa en su app (o vía loaders).
-Cuando se migre a SQL, el punto de cambio será la capa de datos.
+No alterar el orden de columnas. Ambos módulos leen `perfilado.xlsx`.

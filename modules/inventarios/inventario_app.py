@@ -2,7 +2,7 @@
 
 Versión de trabajo del módulo de Inventarios. Reusa la lógica analítica del
 proyecto original del freelance, pero leyendo directamente el Excel maestro en
-``data/sources/inventarios.xlsx`` (hoja data + parametros).
+``data/sources/perfilado.xlsx`` (hoja data + parametros).
 
 Ejecutar:
     streamlit run modules/inventarios/inventario_app.py
@@ -76,7 +76,7 @@ PALETA = [
 
 
 def _inicializar_datos_en_sesion() -> None:
-    """Carga por defecto la primera vez (mismo patrón que profile1)."""
+    """Carga Excel + sincroniza hoja ``parametros`` → JSON la primera vez."""
     if "inv_df_datos" in st.session_state:
         return
     df, err = _cargar_datos_con_cache()
@@ -84,6 +84,17 @@ def _inicializar_datos_en_sesion() -> None:
     st.session_state["inv_error_carga"] = err
     st.session_state["inv_nombre_archivo"] = (
         data_loader.NOMBRE_ARCHIVO_DEFECTO if df is not None else None
+    )
+    st.session_state.pop("inv_excel_bytes", None)
+    # Fuente de verdad: hoja parametros de perfilado.xlsx → JSON (descarta JSON viejo).
+    params = parametros.sincronizar_json_desde_excel()
+    if df is not None:
+        parametros.restaurar_en_session_state(params, df)
+    else:
+        parametros.restaurar_en_session_state(params, None)
+    ruta = data_loader.ARCHIVO_EXCEL_PATH
+    st.session_state["inv_excel_mtime_sync"] = (
+        os.path.getmtime(ruta) if os.path.isfile(ruta) else None
     )
 
 
@@ -111,9 +122,11 @@ def _limpiar_estado_sesion_inventarios(*, incluir_datos: bool = True) -> None:
     prefixes = ("inv_param_", "inv_sc_drv_", "inv_asig_drv_")
     exactas = {
         "inv_parametros",
+        "inv_params_excel_fp",
         "inv_widgets_param_ok",
         "inv_calc_fingerprint",
         "inv_upload_id",
+        "inv_excel_bytes",
         "inv_asignacion_fingerprint",
         scorecard.CLAVE_EDITOR_ASIGNACION,
         scorecard.CLAVE_DF_ASIGNACION,
@@ -161,6 +174,7 @@ def _aplicar_parametros_y_recalcular_todo(*, file_bytes: bytes | None = None) ->
 
     claves_exactas = {
         "inv_parametros",
+        "inv_params_excel_fp",
         "inv_widgets_param_ok",
         "inv_calc_fingerprint",
         "inv_asignacion_fingerprint",
@@ -184,6 +198,7 @@ def _aplicar_parametros_y_recalcular_todo(*, file_bytes: bytes | None = None) ->
     if file_bytes is not None:
         params = parametros.sincronizar_json_desde_excel(file_bytes=file_bytes)
         df, err = data_loader.cargar_datos_desde_upload(file_bytes)
+        st.session_state["inv_excel_bytes"] = file_bytes
     else:
         params = parametros.sincronizar_json_desde_excel()
         df, err = _cargar_datos_con_cache()
@@ -196,9 +211,9 @@ def _aplicar_parametros_y_recalcular_todo(*, file_bytes: bytes | None = None) ->
     st.session_state["inv_df_datos"] = df
     st.session_state["inv_error_carga"] = err
     if df is not None:
-        parametros.restaurar_en_session_state(params, df)
+        parametros.restaurar_en_session_state(params, df, file_bytes=file_bytes)
     else:
-        parametros.restaurar_en_session_state(params, None)
+        parametros.restaurar_en_session_state(params, None, file_bytes=file_bytes)
 
     # Tras actualizar parámetros: Decisiones (GMROI/EVAI) se recalculan al instante.
     st.session_state["inv_vista"] = VISTA_PRINCIPAL
@@ -246,7 +261,7 @@ def _vigilante_actualizacion_parametros() -> None:
 
 
 def _activar_plantilla_demo() -> None:
-    """``inventarios.xlsx`` (hoja data) + parámetros desde hoja parametros."""
+    """``perfilado.xlsx`` (hoja data) + parámetros desde hoja parametros."""
     _limpiar_estado_sesion_inventarios(incluir_datos=True)
     _borrar_persistencia_local_modulo()
     _restablecer_controles_gmroi()
@@ -261,6 +276,7 @@ def _activar_plantilla_demo() -> None:
         data_loader.NOMBRE_ARCHIVO_DEFECTO if df is not None else None
     )
     st.session_state.pop("inv_upload_id", None)
+    st.session_state.pop("inv_excel_bytes", None)
     if df is not None:
         parametros.restaurar_en_session_state(params, df)
     else:
@@ -272,18 +288,20 @@ def _activar_archivo_subido(
     *,
     nombre: str,
     upload_id: tuple[str, int],
+    file_bytes: bytes,
 ) -> None:
     """Otro Excel: limpia todo y trabaja solo con ese archivo en la sesión."""
     _limpiar_estado_sesion_inventarios(incluir_datos=False)
     _borrar_persistencia_local_modulo()
     _restablecer_controles_gmroi()
 
-    params = parametros.cargar_parametros_archivo_subido()
+    st.session_state["inv_excel_bytes"] = file_bytes
+    params = parametros.cargar_parametros_archivo_subido(file_bytes)
     st.session_state["inv_df_datos"] = df
     st.session_state["inv_error_carga"] = None
     st.session_state["inv_upload_id"] = upload_id
     st.session_state["inv_nombre_archivo"] = nombre
-    parametros.restaurar_en_session_state(params, df)
+    parametros.restaurar_en_session_state(params, df, file_bytes=file_bytes)
 
 
 def _reiniciar_plantilla_completa() -> None:
@@ -293,7 +311,7 @@ def _reiniciar_plantilla_completa() -> None:
 
 
 def _sidebar_cargar_datos() -> None:
-    """Subir Excel; si no hay archivo, usa ``inventarios.xlsx``."""
+    """Subir Excel; si no hay archivo, usa ``perfilado.xlsx``."""
     st.markdown("##### 📁 Cargar datos")
     nombre_plantilla = data_loader.NOMBRE_ARCHIVO_DEFECTO
     archivo_subido = st.file_uploader(
@@ -305,9 +323,10 @@ def _sidebar_cargar_datos() -> None:
         ),
     )
     if archivo_subido is not None:
-        upload_id = (archivo_subido.name, len(archivo_subido.getvalue()))
+        raw_bytes = archivo_subido.getvalue()
+        upload_id = (archivo_subido.name, len(raw_bytes))
         if st.session_state.get("inv_upload_id") != upload_id:
-            df_up, err_up = data_loader.cargar_datos_desde_upload(archivo_subido.getvalue())
+            df_up, err_up = data_loader.cargar_datos_desde_upload(raw_bytes)
             if err_up:
                 st.session_state["inv_error_carga"] = err_up
                 st.error(err_up)
@@ -316,9 +335,13 @@ def _sidebar_cargar_datos() -> None:
                     df_up,
                     nombre=archivo_subido.name,
                     upload_id=upload_id,
+                    file_bytes=raw_bytes,
                 )
                 st.rerun()
-        st.caption(f"Archivo en sesión: **{archivo_subido.name}** (parámetros en blanco)")
+        st.caption(
+            f"Archivo en sesión: **{archivo_subido.name}** "
+            "(hoja `parametros` → JSON)"
+        )
     else:
         if st.session_state.get("inv_upload_id") is not None:
             _activar_plantilla_demo()
@@ -448,7 +471,7 @@ def _formatos_tabla_completa(df: pd.DataFrame) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 def vista_base_datos(df: pd.DataFrame, _params: dict) -> None:
     st.caption(
-        "Tabla completa desde `inventarios.xlsx` (hoja data). "
+        "Tabla completa desde `perfilado.xlsx` (hoja data). "
         "Revise el paso 1 (parámetros) antes de analizar drivers."
     )
 

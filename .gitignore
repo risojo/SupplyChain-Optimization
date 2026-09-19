@@ -19,6 +19,7 @@ __pycache__/
 # Datos locales (Excel)
 *.xlsx
 !data/sources/inventarios.xlsx
+!data/sources/perfilado.xlsx
 !data/sources/template_inventarios.xlsx
 
 # Streamlit
@@ -32,6 +33,8 @@ modules/inventarios/drivers_guardados.json
 # Otros
 .DS_Store
 *.log
+modules/perfilado/logs/
+modules/perfilado/_backups/
 
 # Zona temporal de trabajo (importación de inventarios del freelance)
 _inbox_inventarios/

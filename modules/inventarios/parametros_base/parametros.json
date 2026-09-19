@@ -3,19 +3,19 @@
   "alm_datos": [
     {
       "name": "Número de personas almacén",
-      "value": 44.0
+      "value": 28.0
     },
     {
       "name": "Metros cuadrados del almacén",
-      "value": 2955.0
+      "value": 500.0
     },
     {
       "name": "Número de equipos",
-      "value": 1.0
+      "value": 5.0
     },
     {
       "name": "Número de posiciones",
-      "value": 0.0
+      "value": 400.0
     },
     {
       "name": "Otros gastos de almacén",
@@ -25,15 +25,15 @@
   "alm_costosgastos": [
     {
       "name": "Costo mano de obra anual $",
-      "value": 486525121.0
+      "value": 85000.0
     },
     {
       "name": "Costo del alquiler del almacén $",
-      "value": 97838256.00000001
+      "value": 10000.0
     },
     {
       "name": "Costo suministros de oficina $",
-      "value": 6262932.000000001
+      "value": 2000.0
     },
     {
       "name": "Costos de energía (electricidad, gas, otros) $",
@@ -41,95 +41,95 @@
     },
     {
       "name": "Servicios de terceros en logística (3PL) $",
-      "value": 34581000.0
+      "value": 35000.0
     },
     {
       "name": "Otros gastos $",
-      "value": 8946036.0
+      "value": 1200.0
     },
     {
       "name": "Seguros del inventario $",
-      "value": 17908718.0
+      "value": 15000.0
     }
   ],
   "alm_inversiones": [
     {
       "name": "Inversiones en edificio y terreno $",
-      "value": 0.0
+      "value": 5000.0
     },
     {
       "name": "Sistema de manejo de materiales (montacargas, elevadores, carretillas, baterías, etc) $",
-      "value": 15000000.0
+      "value": 150000.0
     },
     {
       "name": "Sistemas de almacenamiento (Racks, Conveyors, carretillas, etc) $",
-      "value": 386717082.0
+      "value": 100000.0
     },
     {
       "name": "WMS (licencias, mantenimiento, etc) $",
-      "value": 1257360.0
+      "value": 75000.0
     },
     {
       "name": "Otras inversiones $",
-      "value": 0.0
+      "value": 3000.0
     }
   ],
   "inv_datos": [
     {
       "name": "Número de personas dedicadas al control de inventario (encargados y planeadores)",
-      "value": 0.0
+      "value": 23.0
     },
     {
       "name": "Metros cuadrados de oficinas inventarios",
-      "value": 1.0
+      "value": 45.0
     },
     {
       "name": "Número de equipos (fax, computadoras, etc)",
-      "value": 1.0
+      "value": 69.0
     }
   ],
   "inv_costosgastos": [
     {
       "name": "Costos de mano de obra de personas dedicadas al control de inventario $",
-      "value": 0.0
+      "value": 130.0
     },
     {
       "name": "Costos de energía de la oficina de inventarios $",
-      "value": 0.0
+      "value": 561.0
     },
     {
       "name": "Suministros de oficina de inventarios $",
-      "value": 0.0
+      "value": 1200.0
     },
     {
       "name": "Costos de espacio de oficina de inventarios $",
-      "value": 0.0
+      "value": 23666.0
     },
     {
       "name": "Otros gastos de la oficina de inventarios $",
-      "value": 0.0
+      "value": 12000.0
     }
   ],
   "inv_inversiones": [
     {
       "name": "Inversión en hardware (fax, phones, TV, computers, etc) $",
-      "value": 0.0
+      "value": 1200.0
     },
     {
       "name": "Inversión en software de inventarios $",
-      "value": 0.0
+      "value": 13222.0
     }
   ],
   "gen_financieros": [
     {
       "name": "Costo de capital de la empresa %",
-      "value": 12.0
+      "value": 16.0
     }
   ],
   "gen_operativos": [
     {
       "name": "Número de horas laborales anual FTE",
-      "value": 2500.0
+      "value": 800.0
     }
   ]
 }
