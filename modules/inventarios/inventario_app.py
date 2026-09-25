@@ -39,8 +39,10 @@ if _DIR_ACTUAL not in sys.path:
 import data_loader  # noqa: E402
 import destruccion_valor  # noqa: E402
 import analisis_chatgpt  # noqa: E402
+import asistente_ui  # noqa: E402
 import parametros  # noqa: E402
 import scorecard  # noqa: E402
+import skus_a_comprar  # noqa: E402
 import ui_theme  # noqa: E402
 
 ARCHIVO_DRIVERS_GUARDADO = scorecard.ARCHIVO_DRIVERS_GUARDADO
@@ -48,9 +50,11 @@ ARCHIVO_DRIVERS_GUARDADO = scorecard.ARCHIVO_DRIVERS_GUARDADO
 st.set_page_config(page_title="LRI Inventory Pro", page_icon="📦", layout="wide")
 
 ESCALA_INTERFAZ_PCT = 100
-# Activar cuando exista procesamiento de comandos de voz para Inventarios.
-INV_CONTROL_VOZ_HABILITADO = False
+# Micrófono en sidebar: genera/reproduce requerimiento de compra (SKUs a comprar).
+INV_CONTROL_VOZ_HABILITADO = True
 _VOICE_PAUSA_SILENCIO_SEG = 3.0
+_CLAVE_SKUS_REQ_CTX = "inv_skus_req_ctx"
+_CLAVE_SKUS_REQ_AUDIO_HASH = "inv_skus_req_audio_hash"
 
 
 def _tabla_font_px() -> int:
@@ -75,10 +79,53 @@ PALETA = [
 ]
 
 
+def _excel_disco_tiene_reposicion() -> bool:
+    """True si perfilado.xlsx en disco trae alguna columna de pronóstico/reposición."""
+    ruta = data_loader.ARCHIVO_EXCEL_PATH
+    if not os.path.isfile(ruta):
+        return False
+    try:
+        cols = [
+            str(c).strip().lower()
+            for c in pd.read_excel(ruta, sheet_name="data", nrows=0).columns
+        ]
+    except Exception:
+        return False
+    claves = ("pronostic", "desviacion", "stock seguridad", "forecast")
+    return any(any(k in c for k in claves) for c in cols)
+
+
+def _sesion_tiene_reposicion(df: pd.DataFrame | None) -> bool:
+    if df is None or not isinstance(df, pd.DataFrame):
+        return False
+    return any(c in df.columns for c in data_loader.COLUMNAS_REPOSICION)
+
+
 def _inicializar_datos_en_sesion() -> None:
     """Carga Excel + sincroniza hoja ``parametros`` → JSON la primera vez."""
+    ruta = data_loader.ARCHIVO_EXCEL_PATH
+    mtime = os.path.getmtime(ruta) if os.path.isfile(ruta) else None
+
+    # Sesión vieja sin columnas nuevas, o Excel en disco más reciente → recargar.
+    if "inv_df_datos" in st.session_state and not st.session_state.get("inv_upload_id"):
+        prev = st.session_state.get("inv_excel_mtime_sync")
+        df_ses = st.session_state.get("inv_df_datos")
+        mtime_cambio = (
+            prev is not None
+            and mtime is not None
+            and float(prev) != float(mtime)
+        )
+        falta_reposicion = _excel_disco_tiene_reposicion() and not _sesion_tiene_reposicion(
+            df_ses if isinstance(df_ses, pd.DataFrame) else None
+        )
+        if mtime_cambio or falta_reposicion:
+            _aplicar_parametros_y_recalcular_todo()
+            return
+        return
+
     if "inv_df_datos" in st.session_state:
         return
+
     df, err = _cargar_datos_con_cache()
     st.session_state["inv_df_datos"] = df
     st.session_state["inv_error_carga"] = err
@@ -92,10 +139,7 @@ def _inicializar_datos_en_sesion() -> None:
         parametros.restaurar_en_session_state(params, df)
     else:
         parametros.restaurar_en_session_state(params, None)
-    ruta = data_loader.ARCHIVO_EXCEL_PATH
-    st.session_state["inv_excel_mtime_sync"] = (
-        os.path.getmtime(ruta) if os.path.isfile(ruta) else None
-    )
+    st.session_state["inv_excel_mtime_sync"] = mtime
 
 
 @st.cache_data(show_spinner=False)
@@ -378,9 +422,24 @@ section[data-testid="stSidebar"] .lri-voz-row [data-testid="stCustomComponent"] 
 """
 
 
+def _transcribir_audio_es(audio_bytes: bytes) -> str:
+    import io
+
+    import speech_recognition as sr
+
+    r = sr.Recognizer()
+    with sr.AudioFile(io.BytesIO(audio_bytes)) as source:
+        r.adjust_for_ambient_noise(source, duration=0.15)
+        audio_data = r.record(source)
+    return r.recognize_google(audio_data, language="es-CR")
+
+
 def _render_control_voz_sidebar(_df: pd.DataFrame) -> None:
-    """Control por voz (misma fila título + micrófono que profile1)."""
-    if not INV_CONTROL_VOZ_HABILITADO or not _AUDIO_RECORDER_DISPONIBLE:
+    """Micrófono: dicta categoría / subcategoría / proveedor → ChatGPT analiza SKUs a comprar."""
+    if not INV_CONTROL_VOZ_HABILITADO:
+        return
+    if not _AUDIO_RECORDER_DISPONIBLE:
+        st.caption("Micrófono no disponible (instale `audio-recorder-streamlit`).")
         return
 
     st.markdown(_css_control_voz_sidebar(), unsafe_allow_html=True)
@@ -392,9 +451,9 @@ def _render_control_voz_sidebar(_df: pd.DataFrame) -> None:
             dedent(
                 """\
                 <div style="color:#ffffff;line-height:1.25;">
-                  <div style="font-size:1.02rem;font-weight:700;margin:0;">🎙️ Control por Voz Activo</div>
+                  <div style="font-size:1.02rem;font-weight:700;margin:0;">🎙️ Compras por voz</div>
                   <div style="font-size:0.78rem;font-weight:400;color:#e2e8f0;margin-top:2px;">
-                    Darle un clic para hablar
+                    Digas SKU, categoría, subcategoría o proveedor
                   </div>
                 </div>
                 """
@@ -417,11 +476,115 @@ def _render_control_voz_sidebar(_df: pd.DataFrame) -> None:
 
     st.markdown("</div>", unsafe_allow_html=True)
 
+    en_skus = st.session_state.get("inv_contexto_decision") == skus_a_comprar.VISTA_NOMBRE
+    tabla = st.session_state.get(skus_a_comprar.CLAVE_TABLA_COMPRAR)
+    if not en_skus or not isinstance(tabla, pd.DataFrame) or tabla.empty:
+        st.caption(
+            "Abra **SKUs a comprar**. Ejemplos: «categoría alimentos», "
+            "«proveedor Fleming», «SKU 46-020023», «artículo harina»."
+        )
+        return
+
     if audio_bytes:
-        st.info("Comandos de voz para Inventarios: en desarrollo.")
+        import hashlib
+
+        audio_hash = hashlib.md5(audio_bytes, usedforsecurity=False).hexdigest()
+        if audio_hash != st.session_state.get(_CLAVE_SKUS_REQ_AUDIO_HASH):
+            st.session_state[_CLAVE_SKUS_REQ_AUDIO_HASH] = audio_hash
+            try:
+                dictado = _transcribir_audio_es(audio_bytes)
+            except Exception as exc:
+                st.sidebar.error(f"No se entendió el audio ({exc}). Intente de nuevo.")
+                return
+
+            st.session_state["inv_comando_voz_detectado"] = dictado
+            parsed = skus_a_comprar.parsear_comando_voz_compra(dictado, tabla)
+            if not parsed:
+                st.sidebar.error(
+                    f'No reconocí categoría/subcategoría/proveedor en: "{dictado}". '
+                    "Ej.: «categoría alimentos» o «proveedor Fleming»."
+                )
+                return
+
+            skus_a_comprar.aplicar_filtro_voz_en_sesion(parsed)
+            filtrada, titulo = skus_a_comprar.filtrar_tabla_compra_por_nivel(
+                tabla, parsed["nivel"], parsed.get("valor") or ""
+            )
+            if filtrada.empty:
+                st.sidebar.warning(f"No hay SKUs a comprar para «{titulo}».")
+                st.rerun()
+                return
+
+            rot = int(
+                st.session_state.get(
+                    skus_a_comprar.CLAVE_ROTACION,
+                    skus_a_comprar._ROTACION_DESEADA_DEFAULT,
+                )
+            )
+            dias = int(
+                st.session_state.get(
+                    skus_a_comprar.CLAVE_DIAS,
+                    skus_a_comprar._DIAS_TRABAJO_DEFAULT,
+                )
+            )
+            api_key = analisis_chatgpt.obtener_api_key()
+            if not api_key:
+                st.sidebar.error(
+                    "Falta OPENAI_API_KEY (secrets.toml o panel ChatGPT)."
+                )
+                st.rerun()
+                return
+
+            with st.spinner(f"ChatGPT analizando compras · {titulo}…"):
+                try:
+                    hechos = analisis_chatgpt.hechos_requerimiento_compra(
+                        filtrada,
+                        titulo_vista=titulo,
+                        rotacion=rot,
+                        dias_trabajo=dias,
+                        col_cantidad=skus_a_comprar.COL_CANTIDAD_COMPRAR,
+                    )
+                    # Texto completo (panel) + narración corta (voz).
+                    texto = analisis_chatgpt.generar_requerimiento_compra(
+                        hechos, api_key=api_key
+                    )
+                    narracion = analisis_chatgpt.generar_analisis_compra_hablado(
+                        hechos, api_key=api_key
+                    )
+                    st.session_state[analisis_chatgpt.CLAVE_REQ_TEXTO] = texto
+                    st.session_state[analisis_chatgpt.CLAVE_REQ_FP] = __import__(
+                        "json"
+                    ).dumps(hechos, ensure_ascii=False, sort_keys=True)
+                    st.session_state[analisis_chatgpt.CLAVE_REQ_AUDIO] = None
+                    try:
+                        st.session_state[analisis_chatgpt.CLAVE_REQ_AUDIO] = (
+                            analisis_chatgpt.sintetizar_voz_openai(
+                                narracion, api_key=api_key
+                            )
+                        )
+                    except Exception as exc_voz:
+                        st.sidebar.warning(f"Análisis OK; audio no disponible: {exc_voz}")
+                    st.session_state["inv_skus_req_ctx"] = {
+                        "titulo": titulo,
+                        "hechos": hechos,
+                        "fingerprint": st.session_state[analisis_chatgpt.CLAVE_REQ_FP],
+                        "rotacion": rot,
+                        "dias": dias,
+                    }
+                    st.sidebar.success(
+                        f'Filtro: **{parsed["nivel"]}** · "{parsed.get("valor") or "todos"}"'
+                    )
+                except Exception as exc:
+                    st.sidebar.error(f"Error ChatGPT: {exc}")
+            st.rerun()
+
+    audio_out = st.session_state.get(analisis_chatgpt.CLAVE_REQ_AUDIO)
+    if audio_out:
+        st.caption("Audio del análisis de compra:")
+        st.audio(audio_out, format="audio/mp3")
 
     if st.session_state.get("inv_comando_voz_detectado"):
-        st.info(f'Instrucción: *"{st.session_state["inv_comando_voz_detectado"]}"*')
+        st.info(f'Dictado: *"{st.session_state["inv_comando_voz_detectado"]}"*')
 
 
 def _fmt_moneda(v: float) -> str:
@@ -736,25 +899,37 @@ def _aplicar_toggle_tabla_gmroi_pendiente() -> None:
         st.session_state["inv_gmroi_mostrar_tabla"] = st.session_state.pop(_CLAVE_TOGGLE_TABLA_GMROI)
 
 
+def _on_cambio_nivel_gmroi() -> None:
+    """Al presentar por categoría/subcategoría, alinear el ICC al mismo grano."""
+    nivel = scorecard.normalizar_nivel_gmroi(str(st.session_state.get("inv_gmroi_nivel") or ""))
+    if nivel == "subcategoria":
+        st.session_state["inv_gmroi_icc_por"] = "subcategoria"
+    elif nivel == "categoria":
+        st.session_state["inv_gmroi_icc_por"] = "categoria"
+
+
 def _controles_opciones_gmroi() -> None:
-    """ICC, Pareto, nivel y límite de gráfico — colapsable bajo los filtros."""
+    """Nivel de presentación (siempre visible) + ICC/Pareto/límite en expander."""
+    st.radio(
+        "Presentar GMROI y EVAI por",
+        options=list(scorecard._NIVELES_GMROI),
+        format_func=lambda x: scorecard._ETIQUETAS_NIVEL[x],
+        horizontal=True,
+        key="inv_gmroi_nivel",
+        on_change=_on_cambio_nivel_gmroi,
+        help="Código (SKU) · Categoría · Subcategoría. "
+        "Al elegir categoría o subcategoría, el ICC se alinea automáticamente.",
+    )
     with st.expander("Opciones (ICC, Pareto, límite de gráfico)", expanded=False):
         c1, c2 = st.columns(2)
         with c1:
-            st.radio(
-                "Presentar GMROI y EVAI por",
-                options=list(scorecard._NIVELES_GMROI),
-                format_func=lambda x: scorecard._ETIQUETAS_NIVEL[x],
-                horizontal=True,
-                key="inv_gmroi_nivel",
-                help="Categoría · Subcategoría · Código (SKU).",
-            )
             st.selectbox(
                 "Asignar ICC por",
                 options=["categoria", "subcategoria"],
                 format_func=lambda x: "Categoría" if x == "categoria" else "Subcategoría",
                 key="inv_gmroi_icc_por",
-                help="Grupo del scorecard para repartir el costo de mantener inventario.",
+                help="Grupo del scorecard para repartir el costo de mantener inventario. "
+                "Debe coincidir con el nivel de presentación para EVAI coherente.",
             )
             st.selectbox(
                 "Análisis Pareto",
@@ -764,11 +939,12 @@ def _controles_opciones_gmroi() -> None:
             )
         with c2:
             st.slider(
-                "Máx. registros (solo sin filtro)",
+                "Máx. registros (solo nivel Código)",
                 min_value=5,
                 max_value=100,
                 key="inv_gmroi_top_n",
-                help="Con nivel Código o filtros de categoría/subcategoría se muestran todos los registros.",
+                help="Con Categoría o Subcategoría se muestran todos los grupos. "
+                "Este límite aplica solo al nivel Código sin filtro.",
             )
             if "Desactivado" not in st.session_state.get("inv_gmroi_pareto_set", ""):
                 st.checkbox("Curva % acumulado", key="inv_gmroi_pareto_acumulado")
@@ -885,6 +1061,15 @@ def _render_analisis_destruccion_valor(
 def vista_gmroi_evai(df: pd.DataFrame, params: dict) -> None:
     """Gráficos GMROI/EVAI por código, categoría o subcategoría; tabla opcional."""
     _inicializar_controles_gmroi()
+    # Alinear ICC al grano de presentación ANTES de crear los widgets
+    nivel_prev = scorecard.normalizar_nivel_gmroi(
+        str(st.session_state.get("inv_gmroi_nivel") or "codigo")
+    )
+    if nivel_prev == "subcategoria":
+        st.session_state["inv_gmroi_icc_por"] = "subcategoria"
+    elif nivel_prev == "categoria":
+        st.session_state["inv_gmroi_icc_por"] = "categoria"
+
     cat_filtro, sub_filtro, cod_filtro = _controles_filtro_gmroi(df)
     _controles_opciones_gmroi()
     nivel = scorecard.normalizar_nivel_gmroi(st.session_state["inv_gmroi_nivel"])
@@ -917,11 +1102,21 @@ def vista_gmroi_evai(df: pd.DataFrame, params: dict) -> None:
             st.warning("No hay productos para los filtros seleccionados.")
             return
         tabla = scorecard.tabla_gmroi_evai_resumen(tabla_sku, nivel)
+        if tabla.empty:
+            st.warning(
+                f"No hay grupos de {etiqueta_nivel.lower()} con datos para graficar. "
+                "Revise filtros o la columna subcategoría en la base."
+            )
+            return
     except Exception as exc:
         st.error(f"No se pudo calcular GMROI/EVAI: {exc}")
         return
 
-    mostrar_todos_graf = nivel == "codigo" or bool(cat_filtro or sub_filtro)
+    # Categoría y subcategoría: siempre todos los grupos. Top N solo en nivel Código.
+    if nivel in ("categoria", "subcategoria"):
+        mostrar_todos_graf = True
+    else:
+        mostrar_todos_graf = bool(cat_filtro or sub_filtro or cod_filtro)
     limite_txt = (
         f"todos ({len(tabla):,})"
         if mostrar_todos_graf
@@ -1164,10 +1359,11 @@ def vista_scorecard(df: pd.DataFrame, params: dict) -> None:
 
     hdr_kpi, _ = st.columns([5, 1], gap="small", vertical_alignment="center")
     with hdr_kpi:
+        grano = "categoría" if dimension == "categoria" else "subcategoría"
         ui_theme.titulo_seccion_scorecard(
             3,
             "Resumen y métricas",
-            subtitulo="ICC, ICR, rotación, GMROI, EVAI y ratios por categoría",
+            subtitulo=f"ICC, ICR, rotación, GMROI, EVAI y ratios por {grano}",
             font_px=fs,
         )
     scorecard.mostrar_kpis_totales(total_df)
@@ -1343,19 +1539,50 @@ def vista_parametros_generales(df: pd.DataFrame, params: dict) -> None:
 
 # Vista principal (Decisiones) y herramientas de soporte (una ventana a la vez).
 VISTA_PRINCIPAL = "GMROI y EVAI"
-HERRAMIENTAS_VISTA = [
+VISTA_SKUS_COMPRAR = skus_a_comprar.VISTA_NOMBRE
+VISTA_STOCK_SEGURIDAD = skus_a_comprar.HERRAMIENTA_STOCK_SEGURIDAD
+VISTA_DEMANDA_TR = skus_a_comprar.HERRAMIENTA_DEMANDA_TR
+VISTA_CANTIDAD_MINIMA = skus_a_comprar.HERRAMIENTA_CANTIDAD_MINIMA
+VISTA_ASISTENTE_LRI = skus_a_comprar.HERRAMIENTA_ASISTENTE
+DECISIONES_VISTA = [VISTA_PRINCIPAL, VISTA_SKUS_COMPRAR]
+# Herramientas según la decisión activa (cambio radical de menú).
+HERRAMIENTAS_GMROI = [
     "Base de datos",
     "Parámetros",
     "Scorecard",
     "Asignación de drivers",
     "Drivers (tentativo)",
 ]
-OPCIONES_VISTA = [VISTA_PRINCIPAL, *HERRAMIENTAS_VISTA]
+HERRAMIENTAS_SKUS = list(skus_a_comprar.HERRAMIENTAS_MODO)
+HERRAMIENTAS_VISTA = HERRAMIENTAS_GMROI  # compat / listado completo
+_CLAVE_CONTEXTO_DECISION = "inv_contexto_decision"
+_HERRAMIENTAS_SKUS_EXCLUSIVAS = (
+    VISTA_STOCK_SEGURIDAD,
+    VISTA_DEMANDA_TR,
+    VISTA_CANTIDAD_MINIMA,
+    VISTA_ASISTENTE_LRI,
+)
+OPCIONES_VISTA = [
+    *DECISIONES_VISTA,
+    *HERRAMIENTAS_GMROI,
+    VISTA_STOCK_SEGURIDAD,
+    VISTA_DEMANDA_TR,
+    VISTA_CANTIDAD_MINIMA,
+    VISTA_ASISTENTE_LRI,
+]
 _VISTAS_LEGACY = {
     "Parámetros generales": "Parámetros",
     "Drivers (DMD)": "Drivers (tentativo)",
     "Paso 4 — Scorecard (tablero financiero)": "Scorecard",
+    "Artículos a comprar": VISTA_SKUS_COMPRAR,
 }
+
+
+def _vista_asistente_lri(df: pd.DataFrame, params: dict) -> None:
+    """Herramienta: Asistente Inteligente de Inventarios LRI."""
+    asistente_ui.render(df, params)
+
+
 VISTAS: dict[str, Callable[[pd.DataFrame, dict], None]] = {
     "Parámetros": vista_parametros_generales,
     "Base de datos": vista_base_datos,
@@ -1363,43 +1590,96 @@ VISTAS: dict[str, Callable[[pd.DataFrame, dict], None]] = {
     "Asignación de drivers": vista_asignacion_drivers,
     "Scorecard": vista_scorecard,
     VISTA_PRINCIPAL: vista_gmroi_evai,
+    VISTA_SKUS_COMPRAR: skus_a_comprar.render,
+    VISTA_STOCK_SEGURIDAD: skus_a_comprar.render_stock_seguridad,
+    VISTA_DEMANDA_TR: skus_a_comprar.render_demanda_tiempo_entrega,
+    VISTA_CANTIDAD_MINIMA: skus_a_comprar.render_cantidad_minima,
+    VISTA_ASISTENTE_LRI: _vista_asistente_lri,
 }
 
 
+def _contexto_decision_activo() -> str:
+    """Decisión que manda el menú de herramientas (GMROI vs SKUs a comprar)."""
+    ctx = st.session_state.get(_CLAVE_CONTEXTO_DECISION)
+    if ctx in DECISIONES_VISTA:
+        return str(ctx)
+    vista = st.session_state.get("inv_vista", VISTA_PRINCIPAL)
+    # Solo herramientas exclusivas de reposición (Base de datos es compartida).
+    if vista == VISTA_SKUS_COMPRAR or vista in _HERRAMIENTAS_SKUS_EXCLUSIVAS:
+        st.session_state[_CLAVE_CONTEXTO_DECISION] = VISTA_SKUS_COMPRAR
+        return VISTA_SKUS_COMPRAR
+    st.session_state[_CLAVE_CONTEXTO_DECISION] = VISTA_PRINCIPAL
+    return VISTA_PRINCIPAL
+
+
+def _herramientas_del_contexto() -> list[str]:
+    if _contexto_decision_activo() == VISTA_SKUS_COMPRAR:
+        return list(HERRAMIENTAS_SKUS)
+    return list(HERRAMIENTAS_GMROI)
+
+
 def _normalizar_inv_vista_sesion() -> None:
-    """GMROI/EVAI por defecto; migrar nombres legacy del menú antiguo."""
+    """GMROI/EVAI por defecto; migrar nombres legacy; alinear con menú del contexto."""
     actual = st.session_state.get("inv_vista")
     if actual in _VISTAS_LEGACY:
         st.session_state["inv_vista"] = _VISTAS_LEGACY[actual]
-        return
-    if actual not in OPCIONES_VISTA:
-        st.session_state["inv_vista"] = VISTA_PRINCIPAL
+        actual = st.session_state["inv_vista"]
+    ctx = _contexto_decision_activo()
+    permitidas = {ctx, *_herramientas_del_contexto()}
+    if actual not in OPCIONES_VISTA or actual not in permitidas:
+        # Si estaba en Scorecard/Parámetros y pasa a SKUs, volver a la decisión.
+        st.session_state["inv_vista"] = ctx
 
 
 def _render_navegacion_sidebar() -> None:
-    """Decisiones + Herramientas como botones (ventanas), como en la versión anterior."""
+    """Decisiones + Herramientas contextuales (cambian con SKUs a comprar)."""
     _normalizar_inv_vista_sesion()
     vista = st.session_state["inv_vista"]
+    ctx = _contexto_decision_activo()
 
     st.markdown("##### Decisiones")
-    if st.button(
-        VISTA_PRINCIPAL,
-        use_container_width=True,
-        type="primary" if vista == VISTA_PRINCIPAL else "secondary",
-        help="Vista principal: GMROI, EVAI, destrucción de valor y narración.",
-    ):
-        st.session_state["inv_vista"] = VISTA_PRINCIPAL
-        st.rerun()
-
-    st.markdown("##### Herramientas")
-    for nombre in HERRAMIENTAS_VISTA:
-        activa = vista == nombre
+    for nombre in DECISIONES_VISTA:
+        activa_ctx = ctx == nombre
+        help_txt = (
+            "Vista principal: GMROI, EVAI, destrucción de valor y narración. "
+            "Restaura el menú de herramientas clásico."
+            if nombre == VISTA_PRINCIPAL
+            else skus_a_comprar.VISTA_HELP
+        )
         if st.button(
             nombre,
-            key=f"inv_nav_{nombre}",
+            key=f"inv_nav_dec_{nombre}",
+            use_container_width=True,
+            type="primary" if activa_ctx else "secondary",
+            help=help_txt,
+        ):
+            st.session_state[_CLAVE_CONTEXTO_DECISION] = nombre
+            st.session_state["inv_vista"] = nombre
+            st.rerun()
+
+    st.markdown("##### Herramientas")
+    if ctx == VISTA_SKUS_COMPRAR:
+        st.caption("Modo reposición · menú de SKUs a comprar")
+    for nombre in _herramientas_del_contexto():
+        activa = vista == nombre
+        if nombre == VISTA_STOCK_SEGURIDAD:
+            help_txt = (
+                "Calcula «stock de seguridad» = pronóstico ajustado − pronóstico."
+            )
+        elif nombre == VISTA_DEMANDA_TR:
+            help_txt = "Demanda en el TR = (pronóstico ÷ días trabajo) × tiempo entrega."
+        elif nombre == VISTA_CANTIDAD_MINIMA:
+            help_txt = (
+                "Cantidad mínima = stock de seguridad + demanda en el TR."
+            )
+        else:
+            help_txt = f"Abre la ventana «{nombre}»."
+        if st.button(
+            nombre,
+            key=f"inv_nav_{ctx}_{nombre}",
             use_container_width=True,
             type="primary" if activa else "secondary",
-            help=f"Abre la ventana «{nombre}».",
+            help=help_txt,
         ):
             st.session_state["inv_vista"] = nombre
             st.rerun()

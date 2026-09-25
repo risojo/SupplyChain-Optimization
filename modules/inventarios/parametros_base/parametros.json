@@ -3,11 +3,11 @@
   "alm_datos": [
     {
       "name": "Número de personas almacén",
-      "value": 28.0
+      "value": 25.0
     },
     {
       "name": "Metros cuadrados del almacén",
-      "value": 500.0
+      "value": 5000.0
     },
     {
       "name": "Número de equipos",
@@ -37,11 +37,11 @@
     },
     {
       "name": "Costos de energía (electricidad, gas, otros) $",
-      "value": 0.0
+      "value": 300.0
     },
     {
       "name": "Servicios de terceros en logística (3PL) $",
-      "value": 35000.0
+      "value": 3500.0
     },
     {
       "name": "Otros gastos $",
@@ -55,7 +55,7 @@
   "alm_inversiones": [
     {
       "name": "Inversiones en edificio y terreno $",
-      "value": 5000.0
+      "value": 50000.0
     },
     {
       "name": "Sistema de manejo de materiales (montacargas, elevadores, carretillas, baterías, etc) $",
@@ -81,55 +81,55 @@
     },
     {
       "name": "Metros cuadrados de oficinas inventarios",
-      "value": 45.0
+      "value": 100.0
     },
     {
       "name": "Número de equipos (fax, computadoras, etc)",
-      "value": 69.0
+      "value": 7.0
     }
   ],
   "inv_costosgastos": [
     {
       "name": "Costos de mano de obra de personas dedicadas al control de inventario $",
-      "value": 130.0
+      "value": 95000.0
     },
     {
       "name": "Costos de energía de la oficina de inventarios $",
-      "value": 561.0
+      "value": 1000.0
     },
     {
       "name": "Suministros de oficina de inventarios $",
-      "value": 1200.0
+      "value": 900.0
     },
     {
       "name": "Costos de espacio de oficina de inventarios $",
-      "value": 23666.0
+      "value": 750.0
     },
     {
       "name": "Otros gastos de la oficina de inventarios $",
-      "value": 12000.0
+      "value": 2000.0
     }
   ],
   "inv_inversiones": [
     {
       "name": "Inversión en hardware (fax, phones, TV, computers, etc) $",
-      "value": 1200.0
+      "value": 14000.0
     },
     {
       "name": "Inversión en software de inventarios $",
-      "value": 13222.0
+      "value": 65000.0
     }
   ],
   "gen_financieros": [
     {
       "name": "Costo de capital de la empresa %",
-      "value": 16.0
+      "value": 12.0
     }
   ],
   "gen_operativos": [
     {
       "name": "Número de horas laborales anual FTE",
-      "value": 800.0
+      "value": 2500.0
     }
   ]
 }

@@ -74,8 +74,17 @@ _ETIQUETAS_PCT = [
 
 
 def tabla_pivote_valores(df: pd.DataFrame, dimension: str) -> pd.DataFrame:
+    base = df.copy()
+    if "codigo" in base.columns:
+        base = base[
+            base["codigo"].notna()
+            & (base["codigo"].astype(str).str.strip() != "")
+            & (base["codigo"].astype(str).str.lower() != "nan")
+        ]
+    if dimension in base.columns:
+        base[dimension] = _normalizar_dimension_texto(base[dimension])
     pivote = pd.pivot_table(
-        df,
+        base,
         index=dimension,
         values=list(_MAPA_PIVOT.keys()),
         aggfunc=_MAPA_PIVOT,
@@ -84,7 +93,13 @@ def tabla_pivote_valores(df: pd.DataFrame, dimension: str) -> pd.DataFrame:
         sort=False,
     )
     pivote.columns = [f"{agg}({key})" for key, agg in _MAPA_PIVOT.items()]
-    return pivote.sort_values(by=dimension).round(0)
+    # Orden alfabético dejando Total al final (index, no columna).
+    if "Total" in pivote.index:
+        cuerpo = pivote.drop(index="Total").sort_index()
+        pivote = pd.concat([cuerpo, pivote.loc[["Total"]]])
+    else:
+        pivote = pivote.sort_index()
+    return pivote.round(0)
 
 
 def tabla_pivote_porcentajes(tabla_valores: pd.DataFrame) -> pd.DataFrame:
@@ -700,7 +715,23 @@ def _redondear_gmroi(out: pd.DataFrame) -> pd.DataFrame:
         "EVAI": 0,
     }
     cols = {k: v for k, v in redondeo.items() if k in out.columns}
-    return out.round(cols).fillna(0)
+    # Solo rellenar NaN en métricas numéricas — nunca en dimensiones (evita subcategoría «0»).
+    out = out.copy()
+    out[list(cols)] = out[list(cols)].round(cols).fillna(0)
+    return out
+
+
+def _normalizar_dimension_texto(serie: pd.Series, vacio: str = "(Sin clasificar)") -> pd.Series:
+    """Convierte nulos/blancos en etiqueta visible para pivotes y gráficos."""
+    def _uno(x: object) -> str:
+        if x is None or (isinstance(x, float) and np.isnan(x)) or pd.isna(x):
+            return vacio
+        t = str(x).strip()
+        if not t or t.lower() in ("nan", "none", "<na>"):
+            return vacio
+        return t
+
+    return serie.map(_uno)
 
 
 def _parametros_scorecard(params: dict) -> dict[str, object]:
@@ -792,6 +823,8 @@ def tabla_gmroi_evai_por_sku(
     dimension: str = "categoria",
 ) -> pd.DataFrame:
     """GMROI y EVAI por SKU con variables de cálculo visibles."""
+    if dimension not in ("categoria", "subcategoria"):
+        dimension = "categoria"
     alm_tabla, inv_tabla, _ = construir_tablas_scorecard(df, params, dimension)
     icc_grupo = icc_por_grupo(alm_tabla, inv_tabla)
 
@@ -806,10 +839,17 @@ def tabla_gmroi_evai_por_sku(
         "margen bruto total",
     ]
     out = df[columnas].copy()
+    out = out[
+        out["codigo"].notna()
+        & (out["codigo"].astype(str).str.strip() != "")
+        & (out["codigo"].astype(str).str.lower() != "nan")
+    ]
+    out["categoria"] = _normalizar_dimension_texto(out["categoria"])
+    out["subcategoria"] = _normalizar_dimension_texto(out["subcategoria"])
     grupo = out[dimension]
     totales_grupo = out.groupby(grupo, sort=False)["valor inventario promedio"].transform("sum")
     participacion = _div_seguro(out["valor inventario promedio"], totales_grupo)
-    icc_map = icc_grupo.to_dict()
+    icc_map = {str(k): float(v) for k, v in icc_grupo.items()}
     out["ICC asignado"] = participacion * grupo.map(icc_map).fillna(0)
     out["GMROI"] = _div_seguro(out["margen bruto total"], out["valor inventario promedio"])
     out["EVAI"] = out["margen bruto total"] - out["ICC asignado"]
@@ -1058,6 +1098,12 @@ def tabla_gmroi_evai_resumen(tabla_sku: pd.DataFrame, nivel: str) -> pd.DataFram
         out["_etiqueta"] = out["codigo"].astype(str)
         return _redondear_gmroi(out).sort_values("GMROI", ascending=False)
 
+    base = tabla_sku.copy()
+    if "categoria" in base.columns:
+        base["categoria"] = _normalizar_dimension_texto(base["categoria"])
+    if "subcategoria" in base.columns:
+        base["subcategoria"] = _normalizar_dimension_texto(base["subcategoria"])
+
     cols_agg = {
         "inventario promedio bultos": "sum",
         "valor inventario promedio": "sum",
@@ -1067,23 +1113,37 @@ def tabla_gmroi_evai_resumen(tabla_sku: pd.DataFrame, nivel: str) -> pd.DataFram
     }
     if nivel == "categoria":
         out = (
-            tabla_sku.groupby("categoria", sort=False)
+            base.groupby("categoria", sort=False)
             .agg(cols_agg)
             .reset_index()
         )
         out["_etiqueta"] = out["categoria"].astype(str)
     else:
         out = (
-            tabla_sku.groupby(["subcategoria", "categoria"], sort=False)
+            base.groupby(["subcategoria", "categoria"], sort=False)
             .agg(cols_agg)
             .reset_index()
         )
+        # Etiqueta única si el mismo nombre de subcategoría aparece en varias categorías
+        dup = out["subcategoria"].duplicated(keep=False)
         out["_etiqueta"] = out["subcategoria"].astype(str)
+        out.loc[dup, "_etiqueta"] = (
+            out.loc[dup, "categoria"].astype(str)
+            + " › "
+            + out.loc[dup, "subcategoria"].astype(str)
+        )
 
     out["GMROI"] = _div_seguro(out["margen bruto total"], out["valor inventario promedio"])
     out["EVAI"] = out["margen bruto total"] - out["ICC asignado"]
     out = _aplicar_pct_gmroi(out)
-    return _redondear_gmroi(out).sort_values("GMROI", ascending=False)
+    out = _redondear_gmroi(out).sort_values("GMROI", ascending=False)
+    # Descartar filas fantasma sin actividad (p. ej. residuales)
+    mask_ok = (
+        out["valor inventario promedio"].abs()
+        + out["margen bruto total"].abs()
+        + out["ventas totales"].abs()
+    ) > 0
+    return out.loc[mask_ok].reset_index(drop=True)
 
 
 def _ancho_figura_gmroi(n: int) -> int:

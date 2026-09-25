@@ -60,6 +60,24 @@ MAPA_COLUMNAS = {
     "precio_uni/bulto": "precio unitario bulto",
     "costo_uni/bulto": "costo unitario bulto",
     "factor_escazes": "factor escazes",
+    # Reposición / pronóstico (variantes de encabezado en Excel).
+    "pronóstico": "pronostico",
+    "forecast": "pronostico",
+    "desviacion standart": "desviacion estandar",
+    "desviacion standard": "desviacion estandar",
+    "desviación standart": "desviacion estandar",
+    "desviación standard": "desviacion estandar",
+    "desviación estándar": "desviacion estandar",
+    "desviacion estándar": "desviacion estandar",
+    "desviacion estandar": "desviacion estandar",
+    "stock seguridad k'": "stock seguridad k",
+    "stock seguridad k´": "stock seguridad k",
+    "stock seguridad k’": "stock seguridad k",
+    "stock de seguridad k": "stock seguridad k",
+    "stock de seguridad k'": "stock seguridad k",
+    "stock seguridad k": "stock seguridad k",
+    "pronóstico ajustado": "pronostico ajustado",
+    "forecast ajustado": "pronostico ajustado",
 }
 
 # Tipografía histórica en perfilado.xlsx (demada → demanda).
@@ -76,6 +94,28 @@ COLUMNAS_NUMERICAS = [
     "precio unitario bulto", "costo unitario bulto", "factor escazes",
 ]
 
+# Columnas de reposición / pronóstico (opcionales: si vienen en el Excel se leen).
+COLUMNAS_REPOSICION = [
+    "pronostico",
+    "desviacion estandar",
+    "stock seguridad k",
+    "pronostico ajustado",
+]
+# Columna calculada en modo SKUs a comprar (no viene del Excel).
+COLUMNA_STOCK_SEGURIDAD = "stock de seguridad"
+COLUMNA_DEMANDA_DIARIA = "demanda diaria"
+COLUMNA_DEMANDA_TR = "demanda en el tiempo de entrega"
+COLUMNA_CANTIDAD_MINIMA = "cantidad minima de inventario"
+COLUMNA_CANTIDAD_COMPRAR = "cantidad a comprar"
+COLUMNAS_CALC_REPOSICION = (
+    COLUMNA_STOCK_SEGURIDAD,
+    COLUMNA_DEMANDA_DIARIA,
+    COLUMNA_DEMANDA_TR,
+    COLUMNA_CANTIDAD_MINIMA,
+    COLUMNA_CANTIDAD_COMPRAR,
+)
+COLUMNAS_NUMERICAS = list(dict.fromkeys([*COLUMNAS_NUMERICAS, *COLUMNAS_REPOSICION]))
+
 COLUMNAS_TEXTO = ["codigo", "categoria", "subcategoria", "descripcion", "proveedor", "pais"]
 
 # Orden FIJO de la hoja ``data`` (foto oficial del usuario). No reordenar distinto.
@@ -91,6 +131,13 @@ ORDEN_COLUMNAS_DATA = [
     "bultos tarima",
     "cubicaje tarima",
     *COLUMNAS_DEMANDA,
+    # Reposición / pronóstico: misma posición que en perfilado.xlsx (tras demanda 1–12).
+    *COLUMNAS_REPOSICION,
+    COLUMNA_STOCK_SEGURIDAD,  # calculada (Stock de seguridad); si existe, va aquí
+    COLUMNA_DEMANDA_DIARIA,
+    COLUMNA_DEMANDA_TR,
+    COLUMNA_CANTIDAD_MINIMA,
+    COLUMNA_CANTIDAD_COMPRAR,
     "ordenes anual",
     "tiempo entrega",
     "inventario final bulto",
@@ -115,7 +162,16 @@ ORDEN_COLUMNAS_DATA = [
 ]
 
 # Misma estructura que Perfilado; el archivo puede llamarse distinto.
-COLUMNAS_ENTRADA_OBLIGATORIAS = list(dict.fromkeys(COLUMNAS_TEXTO + COLUMNAS_NUMERICAS))
+# Las columnas de reposición son opcionales (no entran en obligatorias).
+COLUMNAS_ENTRADA_OBLIGATORIAS = list(
+    dict.fromkeys(
+        [
+            c
+            for c in (COLUMNAS_TEXTO + COLUMNAS_NUMERICAS)
+            if c not in COLUMNAS_REPOSICION
+        ]
+    )
+)
 
 # Columnas calculadas que agrega este módulo (nombres de Perfilado).
 COLUMNAS_CALCULADAS = [
@@ -132,6 +188,52 @@ def _div_segura(numerador: pd.Series, denominador: pd.Series) -> pd.Series:
     """División que evita inf/NaN cuando el denominador es 0."""
     resultado = numerador / denominador.replace({0: np.nan})
     return resultado.replace([np.inf, -np.inf], np.nan).fillna(0)
+
+
+def _norm_encabezado_columna(nombre: str) -> str:
+    """Minúsculas, sin acentos raros; unifica apóstrofes de «stock seguridad k'»."""
+    import unicodedata
+
+    s = str(nombre).strip().lower()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    for apo in ("'", "´", "’", "`"):
+        s = s.replace(apo, "")
+    s = " ".join(s.split())
+    return s
+
+
+_ALIAS_REPOSICION_NORM = {
+    "pronostico": "pronostico",
+    "forecast": "pronostico",
+    "desviacion standart": "desviacion estandar",
+    "desviacion standard": "desviacion estandar",
+    "desviacion estandar": "desviacion estandar",
+    "stock seguridad k": "stock seguridad k",
+    "stock de seguridad k": "stock seguridad k",
+    "pronostico ajustado": "pronostico ajustado",
+    "forecast ajustado": "pronostico ajustado",
+}
+
+
+def _renombrar_columnas_reposicion(df: pd.DataFrame) -> pd.DataFrame:
+    """Mapea variantes de las 4 columnas nuevas a nombres canónicos."""
+    renombres: dict[str, str] = {}
+    usados = set(df.columns)
+    for c in list(df.columns):
+        canon = _ALIAS_REPOSICION_NORM.get(_norm_encabezado_columna(c))
+        if not canon or c == canon:
+            continue
+        if canon in usados and canon != c:
+            # Ya existe el canónico: no duplicar; se deja la columna original
+            # solo si el canónico no está (caso tipografía distinta).
+            continue
+        renombres[c] = canon
+        usados.add(canon)
+        usados.discard(c)
+    if renombres:
+        df = df.rename(columns=renombres)
+    return df
 
 
 def _aplicar_orden_columnas_fijo(df: pd.DataFrame) -> pd.DataFrame:
@@ -155,6 +257,7 @@ def _renombrar_columnas_entrada(df: pd.DataFrame) -> pd.DataFrame:
             extras[c] = cl.replace("demada mes", "demanda mes")
     if extras:
         df = df.rename(columns=extras)
+    df = _renombrar_columnas_reposicion(df)
     # Tras strip pueden quedar encabezados duplicados (p. ej. dos «factor escazes»).
     if df.columns.duplicated().any():
         df = df.loc[:, ~df.columns.duplicated(keep="first")].copy()
@@ -192,8 +295,18 @@ def limpiar_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def transformar_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """Agrega/recalcula columnas derivadas (mismas fórmulas que Perfilado)."""
+    """Agrega/recalcula columnas derivadas (mismas fórmulas que Perfilado).
+
+    No sobrescribe las columnas de reposición (pronóstico, desviación, stock k, etc.).
+    """
     df = df.copy()
+    # Conservar columnas de análisis de compra/pronóstico tal cual vienen del Excel
+    # y columnas calculadas de reposición si ya están en sesión.
+    reposicion_vals = {
+        c: df[c].copy()
+        for c in (*COLUMNAS_REPOSICION, *COLUMNAS_CALC_REPOSICION)
+        if c in df.columns
+    }
 
     df["unidades vendidas"] = df[COLUMNAS_DEMANDA].sum(axis=1)
     df["bultos vendidos"] = _div_segura(df["unidades vendidas"], df["empaque"])
@@ -211,7 +324,9 @@ def transformar_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         df["inventario final bulto"], df["bultos tarima"]
     ) * df["cubicaje tarima"]
 
-    return df
+    for c, serie in reposicion_vals.items():
+        df[c] = serie
+    return _aplicar_orden_columnas_fijo(df)
 
 
 def _es_error_archivo_abierto(exc: BaseException) -> bool:

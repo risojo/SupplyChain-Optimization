@@ -1,14 +1,17 @@
 import base64
 import hashlib
+import html
 import io
+import json
 import os
 import re
 import shutil
+import sys
 import tempfile
 import unicodedata
-from textwrap import dedent
+from textwrap import dedent, wrap
 from datetime import datetime
-from typing import Any, Optional, Tuple
+from typing import Any, Iterable, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -18,31 +21,151 @@ import streamlit as st
 import streamlit.components.v1 as components
 from audio_recorder_streamlit import audio_recorder
 
+_DIR_PERFILADO = os.path.dirname(os.path.abspath(__file__))
+if _DIR_PERFILADO not in sys.path:
+    sys.path.insert(0, _DIR_PERFILADO)
+
+import analisis_chatgpt_profile  # noqa: E402
+
+# ==============================================================================
+# LABORATORIO: profile2.py — copia de trabajo (ChatGPT / experimentos).
+# Producción en Render = profile1.py (render.yaml). No desplegar este archivo.
+# Local: streamlit run modules/perfilado/profile2.py
 # ==============================================================================
 # CONFIGURACIÓN GLOBAL DE LA APLICACIÓN
 # ==============================================================================
-st.set_page_config(page_title="LRI Analytics Pro (prueba)", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Profile Pro (lab)", page_icon="📊", layout="wide")
 
 # ------------------------------------------------------------------------------
-# Escala visual FIJA de la interfaz (independiente del zoom d++el navegador).
-# Garantiza que la app se vea igual en local y en Render para cualquier usuario,
-# sin que nadie tenga que tocar Ctrl +/-. Se expresa en PORCENTAJE de tamaño:
-#   100 = nativo, 95 = 5% reducido, 90 = 10% reducido, etc.
-# Ajusta solo este número para agrandar (subir) o achicar (bajar) toda la interfaz.
+# Escala visual de la interfaz. Base calibrada en 1920×1080; en pantallas más
+# chicas/grandes se ajusta según el ancho detectado del navegador (modo Automático).
+# ESCALA_INTERFAZ_PCT es el % en la resolución de referencia (100 = nativo).
 # ------------------------------------------------------------------------------
 ESCALA_INTERFAZ_PCT = 97
-st.markdown(
-    f"<style>.stApp {{ zoom: {ESCALA_INTERFAZ_PCT / 100}; }}</style>",
-    unsafe_allow_html=True,
-)
-
 REF_VIEWPORT_W = 1920
 REF_VIEWPORT_H = 1080
-# profile2.py — copia temporal para pruebas (p. ej. info_canet.xlsx con encabezado en fila 2).
+_OPCIONES_VIEWPORT_H = (720, 768, 900, 1080, 1200, 1440)
+_COLOR_SLICER_PANTALLA = "#14b8a6"  # teal — distinto del azul Streamlit por defecto
+
+# Detección de viewport sin componente Streamlit local (Render fallaba si faltaba
+# la carpeta _lri_viewport). Usamos resolución de referencia; el slicer del
+# sidebar permite ajustar la altura manualmente.
+_LRI_VIEWPORT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_lri_viewport")
+
+
+def _lri_viewport_comp(*, key: str | None = None, default: Any = None) -> Any:
+    """Stub compatible: sin declare_component (evita crash en despliegue)."""
+    del key
+    return default
+
+
+def _snap_altura_viewport(altura_px: int) -> int:
+    """Elige la opción de altura usable más cercana a la altura real de la ventana."""
+    return min(_OPCIONES_VIEWPORT_H, key=lambda x: abs(x - int(altura_px)))
+
+
+def _escala_interfaz_adaptativa(ancho_px: int) -> float:
+    """Zoom relativo al ancho de referencia 1920 (acotado para legibilidad)."""
+    base = ESCALA_INTERFAZ_PCT / 100.0
+    factor = max(0.55, min(1.35, float(ancho_px) / float(REF_VIEWPORT_W)))
+    return max(0.68, min(1.08, base * factor))
+
+
+def _detectar_viewport_navegador() -> Tuple[int, int]:
+    """
+    Lee el tamaño real de la ventana del navegador vía componente (sin tocar la URL).
+    Así no se pierde el archivo cargado ni la sesión.
+    """
+    vw_ses = st.session_state.get("lri_viewport_w")
+    vh_ses = st.session_state.get("lri_viewport_h")
+    if isinstance(vw_ses, int) and isinstance(vh_ses, int) and vw_ses >= 320 and vh_ses >= 400:
+        # Re-sondear en silencio para ajustar si el usuario redimensionó la ventana.
+        med = _lri_viewport_comp(key="lri_viewport_probe", default=None)
+        if isinstance(med, dict):
+            try:
+                vw = int(med.get("w") or 0)
+                vh = int(med.get("h") or 0)
+                if vw >= 320 and vh >= 400:
+                    if vw != vw_ses or vh != vh_ses:
+                        st.session_state["lri_viewport_w"] = vw
+                        st.session_state["lri_viewport_h"] = vh
+                        return vw, vh
+            except (TypeError, ValueError):
+                pass
+        return vw_ses, vh_ses
+
+    med = _lri_viewport_comp(key="lri_viewport_probe", default=None)
+    if isinstance(med, dict):
+        try:
+            vw = int(med.get("w") or 0)
+            vh = int(med.get("h") or 0)
+            if vw >= 320 and vh >= 400:
+                st.session_state["lri_viewport_w"] = vw
+                st.session_state["lri_viewport_h"] = vh
+                return vw, vh
+        except (TypeError, ValueError):
+            pass
+
+    return REF_VIEWPORT_W, REF_VIEWPORT_H
+
+
+def _aplicar_escala_interfaz(ancho_px: int) -> float:
+    escala = _escala_interfaz_adaptativa(ancho_px)
+    st.markdown(
+        f"<style>.stApp {{ zoom: {escala:.4f}; }}</style>",
+        unsafe_allow_html=True,
+    )
+    st.session_state["lri_escala_interfaz"] = escala
+    return escala
+
+
+def _css_slicer_resolucion_pantalla() -> None:
+    """Resalta el select_slider de resolución con color teal (fácil de ubicar)."""
+    st.markdown(
+        f"""
+        <style>
+        /* Marcador justo antes del slicer de Resolución Vertical */
+        div[data-testid="stSidebar"] .lri-slicer-marker + div [data-testid="stWidgetLabel"] p {{
+            color: {_COLOR_SLICER_PANTALLA} !important;
+            font-weight: 700 !important;
+        }}
+        div[data-testid="stSidebar"] .lri-slicer-marker + div [data-baseweb="slider"] > div > div {{
+            background-color: {_COLOR_SLICER_PANTALLA}55 !important;
+        }}
+        div[data-testid="stSidebar"] .lri-slicer-marker + div [data-baseweb="slider"] [role="slider"] {{
+            background-color: {_COLOR_SLICER_PANTALLA} !important;
+            border-color: {_COLOR_SLICER_PANTALLA} !important;
+            box-shadow: 0 0 0 3px {_COLOR_SLICER_PANTALLA}44 !important;
+        }}
+        div[data-testid="stSidebar"] .lri-slicer-marker + div [data-testid="stThumbValue"],
+        div[data-testid="stSidebar"] .lri-slicer-marker + div [data-testid="stTickBarMin"],
+        div[data-testid="stSidebar"] .lri-slicer-marker + div [data-testid="stTickBarMax"],
+        div[data-testid="stSidebar"] .lri-slicer-marker + div [data-testid="stSliderTickBar"] {{
+            color: {_COLOR_SLICER_PANTALLA} !important;
+            font-weight: 700 !important;
+        }}
+        div[data-testid="stSidebar"] .lri-slicer-marker + div {{
+            padding: 8px 10px 4px 10px;
+            margin: 2px 0 8px 0;
+            border-radius: 10px;
+            border: 1px solid {_COLOR_SLICER_PANTALLA}66;
+            background: linear-gradient(135deg, {_COLOR_SLICER_PANTALLA}22 0%, #0f172a 75%);
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+_VIEWPORT_W_DETECTADO, _VIEWPORT_H_DETECTADO = _detectar_viewport_navegador()
+_ESCALA_APLICADA = _aplicar_escala_interfaz(_VIEWPORT_W_DETECTADO)
+
+# profile1.py vive en modules/perfilado/. La raíz del proyecto está 2 niveles
+# arriba; los datos y los assets son carpetas compartidas en esa raíz.
 _RAIZ_PROYECTO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-ARCHIVO_EXCEL_PATH = os.path.join(_RAIZ_PROYECTO, "data", "sources", "info_canet.xlsx")
+ARCHIVO_EXCEL_PATH = os.path.join(_RAIZ_PROYECTO, "data", "sources", "perfilado.xlsx")
 ARCHIVO_LOGO_LRI = os.path.join(_RAIZ_PROYECTO, "assets", "LRI_logo.png")
-TITULO_APP = "LRI Analytics Pro — prueba profile2"
+TITULO_APP = "Profile Pro — laboratorio (profile2)"
 RESERVA_VERTICAL_REF = 320
 MSG_ARCHIVO_EXCEL_ABIERTO = (
     "Archivo abierto: cierre el archivo Excel en su computadora y vuelva a cargar la aplicación."
@@ -54,9 +177,32 @@ _VOICE_PAUSA_SILENCIO_SEG = 3.0  # segundos de silencio para cerrar la grabació
 COLOR_PARETO_TOP = "#22c55e"
 COLOR_PARETO_MEDIO = "#eab308"
 COLOR_PARETO_COLA = "#ef4444"
+
+# -----------------------------------------------------------------------------
+# Pareto invertido (menor es mejor)
+# -----------------------------------------------------------------------------
+# Por defecto el Pareto ordena de MAYOR a MENOR: los ítems con más valor van
+# al tramo verde. Algunas métricas de inventario / cobertura son al revés:
+# menos meses/días de inventario es deseable (verde) y más es riesgo (rojo).
+# Registrar aquí columnas o patrones normalizados; ampliar según vayamos
+# identificando variables contrarias a ventas, unidades o margen.
+_PARETO_METRICAS_MENOR_ES_MEJOR: tuple[str, ...] = (
+    "meses inventario",
+    "meses de inventario",
+    "dias inventario",
+    "dias de inventario",
+)
 # Comparativo dos métricas: barras agrupadas por categoría
 COLOR_BARRA_COMPARATIVO_1 = "#2196f3"
 COLOR_BARRA_COMPARATIVO_2 = "#f59e0b"
+COLOR_BARRA_COMPARATIVO_3 = "#22c55e"
+_COLORES_BARRAS_MULTIMETRICA = (
+    COLOR_BARRA_COMPARATIVO_1,
+    COLOR_BARRA_COMPARATIVO_2,
+    COLOR_BARRA_COMPARATIVO_3,
+)
+_TEXTOS_BARRAS_MULTIMETRICA = ("#ffffff", "#fef9c3", "#ecfdf5")
+OPS_CALCULO = ("Suma", "Promedio")
 # Fracciones de filas (suman 1): (top %, medio %, cola %)
 PRESETS_PARETO = {
     "5% - 10% - 85%": (0.05, 0.10, 0.85),
@@ -81,27 +227,45 @@ MAPEO_PARETO_LEGACY = {
 }
 
 METRICA_ADICIONAL_NINGUNA = "— Ninguna —"
+# Bump al desplegar: limpia sesiones web con datos/ejes de builds anteriores.
+LRI_PROFILE_REVISION = "2026-07-28-excel-vista-fix"
 
 # Inicialización del Estado de la Sesión
 ESTADOS_INICIALES = {
     "lri_man_eje_x": None,
     "lri_man_eje_y": None,
     "lri_man_eje_y2": METRICA_ADICIONAL_NINGUNA,
+    "lri_man_eje_y3": METRICA_ADICIONAL_NINGUNA,
     "lri_man_operacion": "Suma",
+    "lri_man_operacion_y": "Suma",
+    "lri_man_operacion_y2": "Suma",
+    "lri_man_operacion_y3": "Suma",
     "lri_man_top_n": 0,
+    "lri_man_orden_ascendente": False,
     "lri_grafico_scroll_completo": False,
     "lri_default_seeded": False,
     "comando_voz_detectado": None,
+    "prf2_vista_abc_articulos": False,
+    "prf2_chatgpt_confirmar_antes": False,
     "drill_down_categoria": None,
+    "drill_down_subcategoria": None,
     "lri_pareto_set": "Desactivado (Paleta Azul)",
-    "lri_pareto_acumulado": False,
     "lri_tabla_fontsize": 18,
+    "lri_etiqueta_barras_fontsize": 16,
     "prev_manual_x": None,
     "prev_manual_y": None,
     "prev_manual_op": None,
     "prev_manual_top": 0,
     "prev_drill_down_categoria": None,
+    "prev_drill_down_subcategoria": None,
     "lri_last_audio_hash": None,
+    "lri_excel_bytes": None,
+    "lri_excel_hojas": [],
+    "lri_excel_hoja_activa": None,
+    "lri_mostrar_excel_completo": False,
+    "lri_excel_drill_filtros": {},
+    "prf2_perfil_undo_stack": [],
+    "prf2_perfil_redo_stack": [],
 }
 
 for key, val in ESTADOS_INICIALES.items():
@@ -115,7 +279,9 @@ for key, val in ESTADOS_INICIALES.items():
 def _normalizar_nombres_columnas_df(df: pd.DataFrame) -> pd.DataFrame:
     """Unifica nombres de categoría / subcategoría al cargar cualquier Excel LRI."""
     df_out = df.copy()
-    df_out.columns = [str(c).strip() for c in df_out.columns]
+    strip_map = {c: str(c).strip() for c in df_out.columns if str(c).strip() != str(c)}
+    if strip_map:
+        df_out.rename(columns=strip_map, inplace=True)
     nuevos_nombres: dict = {}
     for col in df_out.columns:
         col_norm = col.lower().strip()
@@ -141,6 +307,261 @@ def _normalizar_nombres_columnas_df(df: pd.DataFrame) -> pd.DataFrame:
     return df_out
 
 
+def _filtrar_filas_resumen_excel(df: pd.DataFrame) -> pd.DataFrame:
+    """Elimina filas TOTAL o pies de hoja sin producto/categoría (evita doble conteo)."""
+    df_limpio, _ = _filtrar_filas_resumen_excel_con_meta(df)
+    return df_limpio
+
+
+def _motivo_omision_fila_excel(row: pd.Series, claves: list[str]) -> Optional[str]:
+    """
+    None = la fila es un registro de datos válido.
+    str = motivo por el que se omite del análisis.
+    """
+    valores_txt: list[str] = []
+    tiene_total = False
+    for col in claves:
+        val = row.get(col)
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            continue
+        txt = str(val).strip()
+        if not txt or txt.lower() == "nan":
+            continue
+        if txt.upper() == "TOTAL":
+            tiene_total = True
+            continue
+        valores_txt.append(txt)
+
+    if tiene_total and not valores_txt:
+        return "Fila de TOTAL/resumen (contiene «TOTAL» y no identifica un producto)."
+    if tiene_total and valores_txt:
+        return "Fila de TOTAL/resumen (etiqueta «TOTAL» en columnas de identificación)."
+    if not valores_txt:
+        return (
+            "Fila vacía o sin identificación de producto "
+            f"(sin valor útil en: {', '.join(claves)})."
+        )
+    return None
+
+
+def _preview_fila_omitida(row: pd.Series, claves: list[str], max_len: int = 48) -> str:
+    partes: list[str] = []
+    for col in claves:
+        if col not in row.index:
+            continue
+        val = row.get(col)
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            continue
+        txt = str(val).strip()
+        if not txt or txt.lower() == "nan":
+            continue
+        if len(txt) > max_len:
+            txt = txt[: max_len - 1] + "…"
+        partes.append(f"{col}={txt}")
+        if len(partes) >= 3:
+            break
+    return "; ".join(partes) if partes else "(sin valores de identificación)"
+
+
+def _filtrar_filas_resumen_excel_con_meta(
+    df: pd.DataFrame,
+) -> Tuple[pd.DataFrame, dict[str, Any]]:
+    """Filtra filas de resumen y devuelve contadores + detalle de omisiones para auditoría."""
+    meta: dict[str, Any] = {
+        "filas_antes": len(df),
+        "filas_omitidas": 0,
+        "filas_omitidas_detalle": [],
+    }
+    if df.empty:
+        return df, meta
+    claves = [
+        c
+        for c in ("categoria", "subcategoria", "codigo", "descripcion", "producto", "sku")
+        if c in df.columns
+    ]
+    if not claves:
+        return df.reset_index(drop=True), meta
+
+    motivos = df.apply(lambda row: _motivo_omision_fila_excel(row, claves), axis=1)
+    mascara = motivos.isna()
+    omitidas = df.loc[~mascara]
+    detalle: list[dict[str, Any]] = []
+    for idx, row in omitidas.iterrows():
+        # Fila Excel ≈ índice original + 2 (encabezado en fila 1 de la hoja).
+        try:
+            excel_row = int(idx) + 2
+        except (TypeError, ValueError):
+            excel_row = None
+        detalle.append(
+            {
+                "fila_excel": excel_row,
+                "indice": idx,
+                "motivo": str(motivos.loc[idx]),
+                "vista_previa": _preview_fila_omitida(row, claves),
+            }
+        )
+    meta["filas_omitidas"] = len(detalle)
+    meta["filas_omitidas_detalle"] = detalle
+    return df.loc[mascara].reset_index(drop=True), meta
+
+
+def _construir_auditoria_datos(
+    df: pd.DataFrame,
+    *,
+    filas_antes: int = 0,
+    filas_omitidas: int = 0,
+    filas_omitidas_detalle: Optional[list[dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    """Auditoría rápida post-carga: alertas, totales clave y desglose por categoría."""
+    audit: dict[str, Any] = {
+        "filas_validas": len(df),
+        "filas_excel_originales": filas_antes or len(df),
+        "filas_resumen_omitidas": filas_omitidas,
+        "filas_omitidas_detalle": list(filas_omitidas_detalle or []),
+        "alertas": [],
+        "ok": [],
+        "desglose_categoria": {},
+        "metricas_aditivas": [],
+    }
+    try:
+        return _construir_auditoria_datos_interno(
+            df,
+            audit,
+            filas_antes=filas_antes,
+            filas_omitidas=filas_omitidas,
+        )
+    except Exception as exc:  # noqa: BLE001 — no bloquear la carga por la auditoría
+        audit["alertas"].append(
+            f"Auditoría parcial: no se pudo validar todos los totales ({type(exc).__name__}). "
+            "Los datos sí se cargaron; puede perfilar con normalidad."
+        )
+        if not audit["ok"]:
+            audit["ok"].append(
+                f"Archivo cargado: **{len(df):,}** filas disponibles para perfilar."
+            )
+        return audit
+
+
+def _construir_auditoria_datos_interno(
+    df: pd.DataFrame,
+    audit: dict[str, Any],
+    *,
+    filas_antes: int,
+    filas_omitidas: int,
+) -> dict[str, Any]:
+    if df.empty:
+        audit["alertas"].append("El archivo no tiene filas de datos tras la limpieza.")
+        return audit
+
+    if filas_omitidas > 0:
+        audit["alertas"].append(
+            f"Se omitieron **{filas_omitidas}** fila(s) al cargar "
+            f"(de {filas_antes:,} leídas → {len(df):,} en análisis). "
+            "Active «Ver detalle de filas omitidas» para ver cuáles y por qué."
+        )
+
+    if "categoria" in df.columns:
+        sin_cat = int(df["categoria"].isna().sum())
+        if sin_cat:
+            audit["alertas"].append(
+                f"**{sin_cat}** fila(s) sin categoría; no entrarán en perfiles por categoría."
+            )
+        audit["categorias"] = sorted(df["categoria"].dropna().astype(str).unique().tolist())
+
+    dup = int(df.duplicated().sum())
+    if dup:
+        audit["alertas"].append(
+            f"**{dup}** fila(s) duplicada(s) idénticas; pueden inflar sumas si no son intencionales."
+        )
+
+    for col in df.columns:
+        if not _columna_es_metrica_aditiva_suma(str(col), df):
+            continue
+        # Nunca sumar texto (p. ej. clasificación ABC AABBCC...); solo numérico.
+        serie_num = pd.to_numeric(df[col], errors="coerce")
+        n_num = int(serie_num.notna().sum())
+        if n_num == 0 or n_num < max(1, int(0.5 * len(df))):
+            continue
+        audit["metricas_aditivas"].append(str(col))
+        total_raw = float(serie_num.fillna(0.0).sum())
+        if "subcategoria" in df.columns:
+            total_sub = float(serie_num.fillna(0.0).groupby(df["subcategoria"]).sum().sum())
+            if total_raw > 0 and abs(total_sub - total_raw) / total_raw > 0.001:
+                audit["alertas"].append(
+                    f"«{col}»: suma por subcategoría ({total_sub:,.0f}) ≠ suma directa ({total_raw:,.0f})."
+                )
+        if "categoria" in df.columns and "tarima" in _norm_texto(col) and "invent" in _norm_texto(col):
+            for cat, subtotal in serie_num.fillna(0.0).groupby(df["categoria"]).sum().items():
+                audit["desglose_categoria"][str(cat)] = float(subtotal)
+            audit["ok"].append(
+                f"Total tarimas en inventario: **{total_raw:,.0f}** "
+                f"(Insumo + Medicina u otras categorías)."
+            )
+
+    if not audit["alertas"]:
+        audit["ok"].insert(
+            0,
+            f"Archivo limpio: **{len(df):,}** filas de producto listas para perfilar.",
+        )
+    return audit
+
+
+def _render_panel_auditoria_datos_sidebar() -> None:
+    """Control de calidad compacto: el detalle de omisiones solo aparece con un check."""
+    audit = st.session_state.get("lri_auditoria_datos")
+    if not audit:
+        return
+
+    n_omit = int(audit.get("filas_resumen_omitidas") or 0)
+    n_ok = int(audit.get("filas_validas") or 0)
+    n_orig = int(audit.get("filas_excel_originales") or 0)
+    detalle = audit.get("filas_omitidas_detalle") or []
+
+    st.caption(f"Datos: **{n_ok:,}** filas en análisis" + (f" · {n_omit} omitida(s)" if n_omit else ""))
+
+    ver_omitidas = False
+    if n_omit > 0:
+        ver_omitidas = st.checkbox(
+            f"Ver detalle de filas omitidas ({n_omit})",
+            value=False,
+            key="lri_ver_filas_omitidas",
+            help="Muestra número de fila en Excel, vista previa y el motivo de la omisión.",
+        )
+
+    # Expander cerrado por defecto para no ocupar el sidebar.
+    with st.expander("Control de calidad de datos", expanded=False):
+        st.caption(f"Excel: {n_orig:,} leídas → **{n_ok:,}** válidas")
+        for msg in audit.get("ok") or []:
+            st.success(msg)
+        for msg in audit.get("alertas") or []:
+            # El aviso genérico de omisiones se reemplaza por el detalle del check.
+            if n_omit > 0 and "Se omitieron" in str(msg) and "filas omitidas" in str(msg):
+                continue
+            st.warning(msg)
+        desglose = audit.get("desglose_categoria") or {}
+        if desglose:
+            st.markdown("**Tarimas en inventario por categoría**")
+            for cat, val in sorted(desglose.items(), key=lambda x: -x[1]):
+                st.caption(f"· {cat}: **{val:,.0f}** tarimas")
+        if audit.get("categorias"):
+            st.caption(f"Categorías detectadas: {', '.join(audit['categorias'])}")
+
+    if ver_omitidas and detalle:
+        st.markdown(f"**Filas omitidas ({len(detalle)})**")
+        st.caption(
+            "No entran al análisis para evitar doble conteo de totales o filas sin producto."
+        )
+        for item in detalle:
+            fila = item.get("fila_excel")
+            etiqueta_fila = f"Fila Excel **{fila}**" if fila is not None else "Fila omitida"
+            st.markdown(f"- {etiqueta_fila}: {item.get('motivo', '')}")
+            st.caption(f"  Vista previa: {item.get('vista_previa', '')}")
+    elif ver_omitidas and n_omit > 0 and not detalle:
+        st.info(
+            f"Se omitieron {n_omit} fila(s), pero no hay detalle guardado. "
+            "Vuelva a cargar el archivo para ver el motivo de cada una."
+        )
+
 def _es_columna_descartable(nombre: str) -> bool:
     """Columnas vacías o sin encabezado que Excel exporta como 'Unnamed: N'."""
     s = str(nombre).strip()
@@ -155,19 +576,232 @@ def _columnas_numericas_usables(df: pd.DataFrame) -> list:
     ]
 
 
+def _columna_es_conteo_logistico(nombre: str) -> bool:
+    """Demanda mensual, unidades, meses de inventario y conteos: siempre numérico, nunca %."""
+    n = _norm_texto(nombre)
+    if "demanda" in n and "mes" in n:
+        return True
+    if "demandaanual" in n:
+        return True
+    if "meses" in n and ("invent" in n or "cobert" in n):
+        return True
+    if "dias" in n and "invent" in n:
+        return True
+    return any(
+        p in n
+        for p in (
+            "unidadespor",
+            "unidadesvendid",
+            "unidadesrecib",
+            "inventariopromedio",
+            "numerodefacturas",
+            "numerofacturas",
+            "rotacionunidades",
+            "bultos",
+            "pedidosanual",
+            "facturasanual",
+            "empaque",
+            "tarima",
+            "pallet",
+            "cubicaje",
+            "volumen",
+            "numerode",
+        )
+    )
+
+
+def _suma_numerica_columna(df: pd.DataFrame, col: str) -> float:
+    if col not in df.columns:
+        return 0.0
+    return float(pd.to_numeric(df[col], errors="coerce").fillna(0.0).sum())
+
+
+def _columna_es_metrica_aditiva_suma(nombre: str, df: Optional[pd.DataFrame] = None) -> bool:
+    """Tarimas, bultos, inventario $, cubicaje, ventas, etc.: se totalizan sumando."""
+    if _columna_es_metrica_ratio_inventario(nombre):
+        return False
+    if df is not None and (
+        _metrica_margen_sobre_ventas(df, nombre) or _metrica_costo_mantener_pct(df, nombre)
+    ):
+        return False
+    if _nombre_eje_y_es_porcentual(nombre):
+        return False
+    raw = str(nombre).strip().lower()
+    if "%" in raw or "pct" in raw or "porcent" in raw or "percent" in raw:
+        return False
+    if _columna_es_conteo_logistico(nombre):
+        return True
+    n = _norm_texto(nombre)
+    return any(
+        p in n
+        for p in (
+            "tarima",
+            "pallet",
+            "bulto",
+            "caja",
+            "cubicaje",
+            "volumen",
+            "venta",
+            "utilidad",
+            "margen",  # margen bruto $ (el margen % se excluye arriba)
+            "costo",
+            "inventario",
+            "valor",
+            "peso",
+            "tonelada",
+            "factura",
+            "pedido",
+            "unidad",
+            "demanda",
+            "ingreso",
+            "cajas",
+            "dolares",
+            "m3",
+        )
+    )
+
+
+def _columna_es_metrica_porcentaje(col: str, df: Optional[pd.DataFrame] = None) -> bool:
+    """True solo en columnas de margen %, tasas u otras métricas ratio — no conteos logísticos."""
+    if _columna_es_conteo_logistico(col):
+        return False
+    if df is not None and _metrica_margen_sobre_ventas(df, col):
+        return True
+    if _es_margen_utilidad_porcentaje(col, df):
+        return True
+    if df is not None and _metrica_costo_mantener_pct(df, col):
+        return True
+    return _nombre_eje_y_es_porcentual(col)
+
+
+def _columna_es_metrica_ratio_inventario(col: str) -> bool:
+    """Rotación y meses de inventario: ratios; no sumar filas, usar ponderación de cartera."""
+    n = _norm_texto(col)
+    if "rotacion" in n:
+        return True
+    return "meses" in n and ("invent" in n or "cobert" in n)
+
+
+def _pares_flujo_inventario_ponderado(
+    df: pd.DataFrame, col_ratio: str
+) -> tuple[Optional[str], Optional[str], bool]:
+    """(numerador, denominador, es_meses) para calcular ratio agregado correcto."""
+    n = _norm_texto(col_ratio)
+    es_meses = "meses" in n and ("invent" in n or "cobert" in n)
+
+    if "unidad" in n or (
+        "rotacion" in n and "costo" not in n and "venta" not in n and not es_meses
+    ):
+        num = _resolver_columna_existente(
+            df, "unidades vendidas anual", "unidades vendidas", "demanda anual"
+        )
+        den = _resolver_columna_existente(
+            df, "inventario promedio en unidades", "inventario promedio unidades"
+        )
+        if num and den:
+            return num, den, es_meses
+
+    num = _resolver_columna_existente(
+        df, "ventas costo", "costo de ventas", "ventas totales"
+    )
+    den = _resolver_columna_existente(
+        df,
+        "valor inventario promedio",
+        "inventario promedio en dolares",
+        "inventario promedio $",
+        "inventario promedio",
+    )
+    if num and den:
+        return num, den, es_meses
+
+    return None, None, es_meses
+
+
+def _valor_ratio_inventario_ponderado(df: pd.DataFrame, col_ratio: str) -> float:
+    """
+    Ratio de inventario a nivel cartera (no promedio simple de filas).
+    Rotación ≈ Σ ventas o unidades / Σ inventario; meses ≈ 12 / rotación ponderada.
+    """
+    num, den, es_meses = _pares_flujo_inventario_ponderado(df, col_ratio)
+    if num and den and num in df.columns and den in df.columns:
+        sn = float(pd.to_numeric(df[num], errors="coerce").sum())
+        sd = float(pd.to_numeric(df[den], errors="coerce").sum())
+        if not np.isfinite(sd) or sd == 0 or not np.isfinite(sn):
+            return 0.0
+        if es_meses:
+            return (12.0 * sd / sn) if sn else 0.0
+        return sn / sd
+    if col_ratio not in df.columns:
+        return 0.0
+    s = pd.to_numeric(df[col_ratio], errors="coerce").dropna()
+    return float(s.mean()) if len(s) else 0.0
+
+
+def _agrupar_ratio_inventario_ponderado(
+    df: pd.DataFrame, eje_x: str, eje_y: str
+) -> pd.DataFrame:
+    """Agrupa rotación / meses por dimensión con ponderación (Σ num / Σ den)."""
+    num, den, es_meses = _pares_flujo_inventario_ponderado(df, eje_y)
+    if not num or not den or num not in df.columns or den not in df.columns:
+        return df.groupby(eje_x)[eje_y].mean().reset_index()
+    t = df[[eje_x, num, den]].copy()
+    agg = t.groupby(eje_x, as_index=False).agg(_num=(num, "sum"), _den=(den, "sum"))
+    if es_meses:
+        agg[eje_y] = np.where(agg["_num"] != 0, 12.0 * agg["_den"] / agg["_num"], np.nan)
+    else:
+        agg[eje_y] = np.where(agg["_den"] != 0, agg["_num"] / agg["_den"], np.nan)
+    return agg[[eje_x, eje_y]]
+
+
+def _columna_parece_dimension_eje_y(nombre: str) -> bool:
+    """Evita usar proveedor/país/etc. como métrica aunque Excel los guarde como número."""
+    key = _norm_texto(nombre)
+    return any(
+        t in key
+        for t in (
+            "proveedor",
+            "pais",
+            "categoria",
+            "subcategoria",
+            "codigo",
+            "descripcion",
+            "producto",
+            "sku",
+            "articulo",
+            "nombre",
+        )
+    )
+
+
+def _columnas_metricas_y_preferidas(df: pd.DataFrame) -> list[str]:
+    return [
+        c
+        for c in _columnas_numericas_usables(df)
+        if not _columna_parece_dimension_eje_y(c)
+    ]
+
+
 def _resolver_eje_y_default(df: pd.DataFrame) -> Optional[str]:
     for candidato in (
         "ventas totales",
+        "ventas totales $",
         "ventas total",
+        "unidades vendidas anual",
         "bultos vendidos",
+        "demanda unid mes 12",
+        "demanda unid mes 1",
         "margen bruto total",
+        "margen bruto",
         "margen utilidad",
         "ventas costo",
+        "costo de ventas $",
+        "rotacion unidades",
+        "inventario promedio en unidades",
     ):
         hit = _resolver_columna_existente(df, candidato)
         if hit is not None:
             return hit
-    cols_num = _columnas_numericas_usables(df)
+    cols_num = _columnas_metricas_y_preferidas(df)
     return cols_num[0] if cols_num else None
 
 
@@ -177,6 +811,462 @@ def _eje_y_valido(df: pd.DataFrame, columna: Optional[str]) -> bool:
         and columna in df.columns
         and not _es_columna_descartable(columna)
     )
+
+
+def _resetear_estado_tras_nuevo_archivo() -> None:
+    """Al cambiar de Excel u hoja, los ejes del archivo anterior no aplican."""
+    st.session_state["lri_default_seeded"] = False
+    # Diferir si los selectores ya se instanciaron en este run (evita StreamlitAPIException).
+    _asignar_eje_sesion("lri_man_eje_x", None)
+    _asignar_eje_sesion("lri_man_eje_y", None)
+    st.session_state["lri_man_eje_y2"] = METRICA_ADICIONAL_NINGUNA
+    st.session_state["lri_man_eje_y3"] = METRICA_ADICIONAL_NINGUNA
+    st.session_state["drill_down_categoria"] = None
+    st.session_state["drill_down_subcategoria"] = None
+    st.session_state.pop("lri_aplicar_voz_pendiente", None)
+    st.session_state.pop("_lri_pending_man_eje_x", None)
+    st.session_state.pop("_lri_pending_man_eje_y", None)
+    st.session_state["lri_excel_drill_filtros"] = {}
+    for _k in (
+        "lri_excel_drill_dim_sel",
+        "lri_excel_drill_val_sel",
+        "lri_excel_drill_aplicar",
+    ):
+        st.session_state.pop(_k, None)
+
+
+def _widgets_ejes_ya_instanciados() -> bool:
+    """True después de crear los selectbox de eje X/Y en este run."""
+    return bool(st.session_state.get("_lri_widgets_ejes_listos"))
+
+
+def _clave_pending_eje(clave: str) -> str:
+    if clave == "lri_man_eje_x":
+        return "_lri_pending_man_eje_x"
+    if clave == "lri_man_eje_y":
+        return "_lri_pending_man_eje_y"
+    if clave == "lri_man_eje_y2":
+        return "_lri_pending_man_eje_y2"
+    if clave == "lri_man_eje_y3":
+        return "_lri_pending_man_eje_y3"
+    return f"_lri_pending_{clave}"
+
+
+def _asignar_eje_sesion(clave: str, valor: Any, *, forzar_rerun_si_diferido: bool = False) -> bool:
+    """
+    Asigna un eje en session_state de forma segura.
+    Si el widget ya existe, guarda pendiente y opcionalmente pide rerun.
+    Devuelve True si se diferió (pending).
+    """
+    pend = _clave_pending_eje(clave)
+    if _widgets_ejes_ya_instanciados():
+        if st.session_state.get(clave) != valor:
+            st.session_state[pend] = valor
+            if forzar_rerun_si_diferido:
+                st.rerun()
+        return True
+    st.session_state[clave] = valor
+    st.session_state.pop(pend, None)
+    return False
+
+
+def _aplicar_pendientes_ejes_antes_widgets(df: pd.DataFrame) -> None:
+    """Aplica ejes diferidos ANTES de instanciar los selectbox."""
+    columnas_df = df.columns.tolist()
+    pend_x = st.session_state.pop("_lri_pending_man_eje_x", None)
+    if pend_x is not None and pend_x in columnas_df:
+        st.session_state["lri_man_eje_x"] = pend_x
+    pend_y = st.session_state.pop("_lri_pending_man_eje_y", None)
+    if pend_y is not None and pend_y in columnas_df:
+        st.session_state["lri_man_eje_y"] = pend_y
+    pend_y2 = st.session_state.pop("_lri_pending_man_eje_y2", None)
+    if pend_y2 is not None and (
+        pend_y2 == METRICA_ADICIONAL_NINGUNA or pend_y2 in columnas_df
+    ):
+        st.session_state["lri_man_eje_y2"] = pend_y2
+    pend_y3 = st.session_state.pop("_lri_pending_man_eje_y3", None)
+    if pend_y3 is not None and (
+        pend_y3 == METRICA_ADICIONAL_NINGUNA or pend_y3 in columnas_df
+    ):
+        st.session_state["lri_man_eje_y3"] = pend_y3
+
+
+def _migrar_toggle_explorador_excel_legacy() -> None:
+    """Unifica el toggle beta antiguo con Explorador Excel (antes de instanciar el widget)."""
+    if st.session_state.pop("lri_explorador_excel_interactivo", False):
+        st.session_state["lri_mostrar_excel_completo"] = True
+
+
+def _sincronizar_revision_perfil() -> None:
+    """Tras un deploy, evita que la sesión del navegador conserve hojas/ejes obsoletos."""
+    if st.session_state.get("lri_profile_revision") == LRI_PROFILE_REVISION:
+        return
+    st.session_state["lri_profile_revision"] = LRI_PROFILE_REVISION
+    st.session_state.pop("lri_df_datos", None)
+    st.session_state.pop("lri_error_carga", None)
+    st.session_state.pop("lri_upload_id", None)
+    st.session_state.pop("lri_excel_bytes", None)
+    st.session_state.pop("lri_excel_contenido_id", None)
+    st.session_state.pop("lri_excel_hojas", None)
+    st.session_state.pop("lri_excel_hoja_activa", None)
+    _resetear_estado_tras_nuevo_archivo()
+
+
+def _sembrar_ejes_default_si_corresponde(df: pd.DataFrame) -> None:
+    if st.session_state.get("lri_default_seeded", False):
+        return
+    columnas_df = df.columns.tolist()
+    cols_texto = df.select_dtypes(include=["object", "category"]).columns.tolist()
+    default_x = _resolver_columna_existente(df, "categoria", "categoría")
+    if default_x is None:
+        default_x = _resolver_columna_existente(df, "subcategoria", "subcategoría")
+    if default_x is None:
+        default_x = cols_texto[0] if cols_texto else (columnas_df[0] if columnas_df else None)
+    default_y = _resolver_eje_y_default(df)
+    if default_x in columnas_df:
+        _asignar_eje_sesion("lri_man_eje_x", default_x)
+    if default_y is not None:
+        _asignar_eje_sesion("lri_man_eje_y", default_y)
+    st.session_state["lri_man_operacion"] = "Suma"
+    st.session_state["lri_man_operacion_y"] = "Suma"
+    st.session_state["lri_man_operacion_y2"] = "Suma"
+    st.session_state["lri_man_operacion_y3"] = "Suma"
+    st.session_state["lri_man_eje_y2"] = METRICA_ADICIONAL_NINGUNA
+    st.session_state["lri_man_eje_y3"] = METRICA_ADICIONAL_NINGUNA
+    st.session_state["lri_man_top_n"] = 0
+    st.session_state["lri_default_seeded"] = True
+
+
+def _ajustar_ejes_a_dataframe(df: pd.DataFrame) -> None:
+    """Asegura ejes X/Y válidos para el DataFrame actual (solo antes de los widgets)."""
+    columnas_df = df.columns.tolist()
+    cols_texto = df.select_dtypes(include=["object", "category"]).columns.tolist()
+    eje_x_actual = st.session_state.get("lri_man_eje_x")
+    if eje_x_actual is None or eje_x_actual not in columnas_df:
+        nuevo_x = cols_texto[0] if cols_texto else (columnas_df[0] if columnas_df else None)
+        _asignar_eje_sesion("lri_man_eje_x", nuevo_x)
+    if not _eje_y_valido(df, st.session_state.get("lri_man_eje_y")):
+        _asignar_eje_sesion("lri_man_eje_y", _resolver_eje_y_default(df))
+
+
+def _es_hoja_excluida_perfil(nombre: str) -> bool:
+    """Hojas de configuración (p. ej. Parámetros de Inventario Pro) no aplican a Profile Pro."""
+    key = _norm_texto(nombre)
+    return any(
+        t in key
+        for t in (
+            "parametro",
+            "parameter",
+            "config",
+            "configuracion",
+            "readme",
+            "instruc",
+            "leenda",
+            "nota",
+            "plantilla",
+            "template",
+        )
+    )
+
+
+def _filtrar_hojas_perfil(hojas: Iterable[str]) -> list[str]:
+    return [h for h in hojas if not _es_hoja_excluida_perfil(h)]
+
+
+def _ajuste_puntuacion_nombre_hoja(nombre: str) -> float:
+    key = _norm_texto(nombre)
+    if _es_hoja_excluida_perfil(nombre):
+        return -100.0
+    if any(t in key for t in ("actual", "dato", "data", "producto", "inventario", "venta", "catalogo")):
+        return 20.0
+    return 0.0
+
+
+def _puntuacion_hoja_datos(df: pd.DataFrame) -> float:
+    df_n = _normalizar_nombres_columnas_df(df)
+    cols = [c for c in df_n.columns if not _es_columna_descartable(c)]
+    if len(cols) < 2 or len(df_n) < 2:
+        return 0.0
+    cols_num = _columnas_numericas_usables(df_n)
+    cols_txt = [
+        c
+        for c in df_n.select_dtypes(include=["object", "category"]).columns.tolist()
+        if c in cols
+    ]
+    score = len(df_n) * 0.1 + len(cols_num) * 5.0 + len(cols_txt) * 2.0
+    if not cols_num:
+        score *= 0.05
+    return score
+
+
+def _elegir_hoja_datos_automatica(xl: pd.ExcelFile, hojas_datos: Optional[list[str]] = None) -> str:
+    candidatas = hojas_datos if hojas_datos is not None else _filtrar_hojas_perfil(xl.sheet_names)
+    if not candidatas:
+        return xl.sheet_names[0]
+    mejor_hoja = candidatas[0]
+    mejor_score = -1.0
+    for nombre in candidatas:
+        try:
+            df_raw = pd.read_excel(xl, sheet_name=nombre)
+            score = _puntuacion_hoja_datos(df_raw) + _ajuste_puntuacion_nombre_hoja(nombre)
+            if score > mejor_score:
+                mejor_score = score
+                mejor_hoja = nombre
+        except Exception:
+            continue
+    return mejor_hoja
+
+
+def _contenido_id_excel(file_bytes: bytes) -> str:
+    """Huella del archivo: cambia al subir otro Excel o guardar cambios en disco."""
+    return hashlib.md5(file_bytes, usedforsecurity=False).hexdigest()
+
+
+def _parsear_bytes_excel_a_dataframe(
+    file_bytes: bytes,
+    sheet_name: Optional[str] = None,
+) -> Tuple[Optional[pd.DataFrame], Optional[str], list[str], Optional[str], dict[str, int]]:
+    meta_vacio: dict[str, Any] = {
+        "filas_antes": 0,
+        "filas_omitidas": 0,
+        "filas_omitidas_detalle": [],
+    }
+    try:
+        xl = pd.ExcelFile(io.BytesIO(file_bytes), engine="openpyxl")
+        hojas = _filtrar_hojas_perfil(xl.sheet_names)
+        if not hojas:
+            return (
+                None,
+                "El archivo solo contiene hojas de configuración (p. ej. Parámetros). "
+                "Profile Pro necesita una hoja con datos de productos.",
+                [],
+                None,
+                meta_vacio,
+            )
+        hoja_activa = sheet_name if sheet_name in hojas else None
+        if hoja_activa is None:
+            hoja_activa = _elegir_hoja_datos_automatica(xl, hojas)
+        df_read = pd.read_excel(xl, sheet_name=hoja_activa)
+        df_norm = _normalizar_nombres_columnas_df(df_read)
+        df_clean, meta_limpieza = _filtrar_filas_resumen_excel_con_meta(df_norm)
+        return df_clean, None, hojas, hoja_activa, meta_limpieza
+    except Exception as e:
+        if _es_error_archivo_abierto(e):
+            return None, MSG_ARCHIVO_EXCEL_ABIERTO, [], None, meta_vacio
+        return None, str(e), [], None, meta_vacio
+
+
+@st.cache_data(show_spinner=False)
+def _cargar_dataframe_excel_cached(
+    contenido_id: str,
+    hoja_solicitada: str,
+    file_bytes: bytes,
+) -> Tuple[Optional[pd.DataFrame], Optional[str], list[str], Optional[str], dict[str, int]]:
+    """
+    Cache de lectura Excel. Se invalida sola cuando cambia el archivo (contenido_id)
+    o la hoja solicitada (hoja_solicitada vacía = auto-selección).
+    """
+    del contenido_id
+    sheet_name = hoja_solicitada or None
+    return _parsear_bytes_excel_a_dataframe(file_bytes, sheet_name=sheet_name)
+
+
+def _cargar_dataframe_excel(
+    file_bytes: bytes,
+    sheet_name: Optional[str] = None,
+) -> Tuple[Optional[pd.DataFrame], Optional[str], list[str], Optional[str], dict[str, int]]:
+    contenido_id = _contenido_id_excel(file_bytes)
+    hoja_key = sheet_name or ""
+    return _cargar_dataframe_excel_cached(contenido_id, hoja_key, file_bytes)
+
+
+def _etiqueta_filtros_drill() -> str:
+    partes: list[str] = []
+    cat = st.session_state.get("drill_down_categoria")
+    sub = st.session_state.get("drill_down_subcategoria")
+    if cat:
+        partes.append(f"categoría {cat}")
+    if sub:
+        partes.append(f"subcategoría {sub}")
+    return " · ".join(partes)
+
+
+def _aplicar_filtros_drill_df(
+    df: pd.DataFrame,
+    *,
+    drill_down_categoria: Optional[str] = None,
+    drill_down_subcategoria: Optional[str] = None,
+) -> pd.DataFrame:
+    """Filtra por categoría y/o subcategoría (comparación strip; Excel suele traer espacios)."""
+    out = df
+    cat = drill_down_categoria
+    if cat is None:
+        cat = st.session_state.get("drill_down_categoria")
+    sub = drill_down_subcategoria
+    if sub is None:
+        sub = st.session_state.get("drill_down_subcategoria")
+    if cat and "categoria" in out.columns:
+        out = out[out["categoria"].astype(str).str.strip() == str(cat).strip()]
+    if sub and "subcategoria" in out.columns:
+        out = out[out["subcategoria"].astype(str).str.strip() == str(sub).strip()]
+    return out
+
+
+@st.cache_data(show_spinner="Calculando perfilado…")
+def _procesar_agrupacion_perfil_cached(
+    contenido_id: str,
+    drill_down: str,
+    drill_down_sub: str,
+    eje_x: str,
+    eje_y: str,
+    operacion: str,
+    top_n: int,
+    set_pareto: str,
+    orden_ascendente: bool,
+    file_bytes: bytes,
+    hoja: str,
+) -> pd.DataFrame | str:
+    del contenido_id
+    df, err, _, _, _ = _parsear_bytes_excel_a_dataframe(file_bytes, sheet_name=hoja or None)
+    if err or df is None:
+        return "ERROR_NO_COMPUTABLE"
+    return procesar_agrupacion_perfil(
+        df,
+        eje_x,
+        eje_y,
+        operacion,
+        top_n,
+        set_pareto,
+        drill_down_categoria=drill_down or None,
+        drill_down_subcategoria=drill_down_sub or None,
+        orden_ascendente=orden_ascendente,
+    )
+
+
+def _procesar_agrupacion_con_cache(
+    df: pd.DataFrame,
+    eje_x: str,
+    eje_y: str,
+    operacion: str,
+    top_n: int,
+    set_pareto: str,
+    drill_down_categoria: Optional[str] = None,
+    drill_down_subcategoria: Optional[str] = None,
+    orden_ascendente: Optional[bool] = None,
+) -> pd.DataFrame | str:
+    if orden_ascendente is None:
+        orden_ascendente = bool(st.session_state.get("lri_man_orden_ascendente", False))
+    file_bytes = _obtener_bytes_excel_activos()
+    if not file_bytes:
+        return procesar_agrupacion_perfil(
+            df,
+            eje_x,
+            eje_y,
+            operacion,
+            top_n,
+            set_pareto,
+            drill_down_categoria=drill_down_categoria,
+            drill_down_subcategoria=drill_down_subcategoria,
+            orden_ascendente=orden_ascendente,
+        )
+    contenido_id = st.session_state.get("lri_excel_contenido_id") or _contenido_id_excel(file_bytes)
+    hoja = st.session_state.get("lri_excel_hoja_activa") or ""
+    drill = drill_down_categoria
+    if drill is None:
+        drill = st.session_state.get("drill_down_categoria")
+    drill_sub = drill_down_subcategoria
+    if drill_sub is None:
+        drill_sub = st.session_state.get("drill_down_subcategoria")
+    return _procesar_agrupacion_perfil_cached(
+        contenido_id,
+        str(drill or ""),
+        str(drill_sub or ""),
+        eje_x,
+        eje_y,
+        operacion,
+        top_n,
+        set_pareto,
+        bool(orden_ascendente),
+        file_bytes,
+        hoja,
+    )
+
+
+@st.cache_data(show_spinner=False)
+def _html_explorador_excel_cached(
+    contenido_id: str,
+    drill_json: str,
+    hoja: str,
+    font_px: int,
+    altura_px: int,
+    pantalla_completa: bool,
+    file_bytes: bytes,
+    html_rev: str = "hscroll-revert-v2",
+) -> str:
+    del contenido_id, html_rev
+    df, err, _, _, _ = _parsear_bytes_excel_a_dataframe(file_bytes, sheet_name=hoja or None)
+    if err or df is None:
+        return "<p>Sin datos</p>"
+    filtros = json.loads(drill_json) if drill_json else {}
+    filtros = _sanitizar_filtros_drill_across_excel(df, filtros)
+    df_vista = _aplicar_filtros_drill_across_excel(df, filtros)
+    return _documento_html_excel_interactivo(
+        df_vista, font_px, altura_px, pantalla_completa=pantalla_completa
+    )
+
+
+@st.cache_data(show_spinner=False)
+def _bytes_excel_perfilado_cached(meta_json: str, df_csv: str) -> bytes:
+    df_datos = pd.read_csv(io.StringIO(df_csv))
+    meta = json.loads(meta_json)
+    return _bytes_excel_perfilado(df_datos, meta)
+
+
+def _aplicar_resultado_carga_a_sesion(
+    df: Optional[pd.DataFrame],
+    err: Optional[str],
+    hojas: list[str],
+    hoja_activa: Optional[str],
+    *,
+    file_bytes: Optional[bytes] = None,
+    reset_ejes: bool = False,
+    limpiar_bytes_subida: bool = False,
+    meta_limpieza: Optional[dict[str, Any]] = None,
+) -> None:
+    st.session_state["lri_df_datos"] = df
+    st.session_state["lri_error_carga"] = err
+    st.session_state["lri_excel_hojas"] = hojas
+    st.session_state["lri_excel_hoja_activa"] = hoja_activa
+    if limpiar_bytes_subida:
+        st.session_state.pop("lri_excel_bytes", None)
+        st.session_state.pop("lri_excel_contenido_id", None)
+    elif file_bytes is not None:
+        st.session_state["lri_excel_bytes"] = file_bytes
+        st.session_state["lri_excel_contenido_id"] = _contenido_id_excel(file_bytes)
+    if reset_ejes:
+        _resetear_estado_tras_nuevo_archivo()
+    if df is not None:
+        meta = meta_limpieza or {}
+        st.session_state["lri_auditoria_datos"] = _construir_auditoria_datos(
+            df,
+            filas_antes=int(meta.get("filas_antes", len(df))),
+            filas_omitidas=int(meta.get("filas_omitidas", 0)),
+            filas_omitidas_detalle=list(meta.get("filas_omitidas_detalle") or []),
+        )
+    else:
+        st.session_state.pop("lri_auditoria_datos", None)
+
+
+def _obtener_bytes_excel_activos() -> Optional[bytes]:
+    subidos = st.session_state.get("lri_excel_bytes")
+    if subidos:
+        return subidos
+    if os.path.isfile(ARCHIVO_EXCEL_PATH):
+        try:
+            return _leer_bytes_archivo_excel(ARCHIVO_EXCEL_PATH)
+        except Exception:
+            return None
+    return None
 
 
 def _es_error_archivo_abierto(exc: BaseException) -> bool:
@@ -286,67 +1376,35 @@ def _leer_bytes_archivo_excel(path: str) -> bytes:
     raise PermissionError(MSG_ARCHIVO_EXCEL_ABIERTO) from None
 
 
-def _es_celda_encabezado(val: object) -> bool:
-    if pd.isna(val):
-        return False
-    s = str(val).strip()
-    return bool(s) and not s.lower().startswith("unnamed")
-
-
-def _detectar_fila_encabezado_excel(file_bytes: bytes, max_filas: int = 15) -> int:
-    """Encuentra la fila de títulos cuando Excel trae filas vacías arriba (p. ej. info_canet)."""
-    vista = pd.read_excel(
-        io.BytesIO(file_bytes), engine="openpyxl", header=None, nrows=max_filas
-    )
-    mejor_i, mejor_n = 0, 0
-    for i in range(len(vista)):
-        n = sum(_es_celda_encabezado(v) for v in vista.iloc[i])
-        if n > mejor_n:
-            mejor_n, mejor_i = n, i
-    return mejor_i if mejor_n >= 3 else 0
-
-
-def _columnas_sin_encabezado_real(df: pd.DataFrame) -> bool:
-    if df.empty:
-        return True
-    cols = [str(c).strip() for c in df.columns]
-    return bool(cols) and all(
-        not c or c.lower().startswith("unnamed") for c in cols
-    )
-
-
-def _dataframe_desde_bytes_excel(file_bytes: bytes) -> pd.DataFrame:
-    df = pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl")
-    if _columnas_sin_encabezado_real(df):
-        fila_hdr = _detectar_fila_encabezado_excel(file_bytes)
-        df = pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl", header=fila_hdr)
-    df.columns = [str(c).strip() for c in df.columns]
-    return df.dropna(how="all").reset_index(drop=True)
-
-
-def cargar_datos() -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+def cargar_datos(
+    sheet_name: Optional[str] = None,
+) -> Tuple[Optional[pd.DataFrame], Optional[str], list[str], Optional[str], dict[str, int]]:
+    meta_vacio: dict[str, Any] = {
+        "filas_antes": 0,
+        "filas_omitidas": 0,
+        "filas_omitidas_detalle": [],
+    }
     if not os.path.isfile(ARCHIVO_EXCEL_PATH):
-        return None, f"No se encontró el archivo '{os.path.basename(ARCHIVO_EXCEL_PATH)}' en el directorio."
+        msg = f"No se encontró el archivo '{os.path.basename(ARCHIVO_EXCEL_PATH)}' en el directorio."
+        return None, msg, [], None, meta_vacio
     try:
         file_bytes = _leer_bytes_archivo_excel(ARCHIVO_EXCEL_PATH)
-        df_read = _dataframe_desde_bytes_excel(file_bytes)
-        return _normalizar_nombres_columnas_df(df_read), None
+        return _cargar_dataframe_excel(file_bytes, sheet_name=sheet_name)
     except (PermissionError, OSError) as e:
         if _es_error_archivo_abierto(e):
-            return None, MSG_ARCHIVO_EXCEL_ABIERTO
-        return None, str(e)
+            return None, MSG_ARCHIVO_EXCEL_ABIERTO, [], None, meta_vacio
+        return None, str(e), [], None, meta_vacio
     except Exception as e:
         if _es_error_archivo_abierto(e):
-            return None, MSG_ARCHIVO_EXCEL_ABIERTO
-        return None, str(e)
+            return None, MSG_ARCHIVO_EXCEL_ABIERTO, [], None, meta_vacio
+        return None, str(e), [], None, meta_vacio
 
 
-def cargar_datos_desde_upload(file_bytes: bytes) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
-    try:
-        df_read = _dataframe_desde_bytes_excel(file_bytes)
-        return _normalizar_nombres_columnas_df(df_read), None
-    except Exception as e:
-        return None, str(e)
+def cargar_datos_desde_upload(
+    file_bytes: bytes,
+    sheet_name: Optional[str] = None,
+) -> Tuple[Optional[pd.DataFrame], Optional[str], list[str], Optional[str], dict[str, int]]:
+    return _cargar_dataframe_excel(file_bytes, sheet_name=sheet_name)
 
 
 # ==============================================================================
@@ -411,6 +1469,11 @@ def generar_diccionario_semantico_dinamico(df: pd.DataFrame) -> dict:
             sinonimos_detectados.extend(["ordenes", "pedidos", "solicitudes", "compras", "demanda", "picking", "pickinglist", "listadepicking"])
         
         # PILAR: Almacenaje, Volumetría y Transporte
+        elif _columna_es_cubicaje_o_volumen(col):
+            sinonimos_detectados.extend(
+                ["cubicaje", "cubicajedelinventario", "volumen", "volumetria", "metros3", "m3"]
+            )
+
         elif "bulto" in col_norm or "caja" in col_norm or "pack" in col_norm or "tarima" in col_norm or "flete" in col_norm:
             sinonimos_detectados.extend(["bultos", "cajas", "paquetes", "volumen", "cantidad", "bultosvendidos", "tarimas", "pallets", "fletes", "transporte"])
         
@@ -427,12 +1490,28 @@ def generar_diccionario_semantico_dinamico(df: pd.DataFrame) -> dict:
             sinonimos_detectados.extend(["servicio", "customerservice", "niveldeservicio", "otif", "fillrate", "cumplimiento", "entregas"])
             
         # PILAR: Financiero Comercial Logístico (Costos / Ventas / Utilidades)
-        elif "venta" in col_norm or "costo" in col_norm or "ingreso" in col_norm or "utili" in col_norm or "marge" in col_norm:
+        elif (
+            "venta" in col_norm
+            or "costo" in col_norm
+            or "ingreso" in col_norm
+            or "utili" in col_norm
+            or "marge" in col_norm
+            or "margen" in col_norm
+            or "precio" in col_norm
+        ):
             if "inventario" not in col_norm:
-                sinonimos_detectados.extend(
-                    ["ventas", "ingresos", "facturacion", "costo", "utilidad", "margen",
-                     "costologistico", "margendeutilidad", "margendeutilidadventas", "ventastotales"]
-                )
+                if "venta" in col_norm:
+                    sinonimos_detectados.extend(
+                        ["ventas", "ingresos", "facturacion", "ventastotales"]
+                    )
+                if "costo" in col_norm:
+                    sinonimos_detectados.extend(["costo", "costologistico"])
+                if "precio" in col_norm:
+                    sinonimos_detectados.extend(["precio", "preciounitario"])
+                if any(k in col_norm for k in ("utili", "marge", "margen")):
+                    sinonimos_detectados.extend(
+                        ["utilidad", "margen", "margendeutilidad", "margendeutilidadventas"]
+                    )
             elif "mantener" in col_norm:
                 sinonimos_detectados.extend(["costomantenerinventario", "costodeinventario", "mantenerinventario"])
         
@@ -440,13 +1519,28 @@ def generar_diccionario_semantico_dinamico(df: pd.DataFrame) -> dict:
             sinonimos_detectados.extend(["unidades", "piezas", "cantidades", "unidadesvendidas"])
 
         # Columnas mixtas (p. ej. inventario promedio bultos): sinónimos de inventario
-        if "inventario" in col_norm or "stock" in col_norm:
+        if _columna_es_cubicaje_o_volumen(col):
+            pass
+        elif "inventario" in col_norm or "stock" in col_norm:
             sinonimos_detectados.extend(
                 ["inventario", "stock", "existencias", "inventariopromedio", "inventariofinal"]
             )
-            if "valor" in col_norm or "promedio" in col_norm:
+            if "valor" in col_norm and "inventario" in col_norm and "promedio" in col_norm:
                 sinonimos_detectados.extend(
-                    ["montoinventario", "valorinventario", "montodeinventario", "importeinventario"]
+                    [
+                        "valorinventario",
+                        "valordinventario",
+                        "inventariovalor",
+                        "inventariopromedioendolares",
+                        "inventarioendolares",
+                        "montoinventario",
+                        "valordelinventario",
+                    ]
+                )
+                sinonimos_detectados.extend(["dolares", "dolar", "usd"])
+            elif "valor" in col_norm or "promedio" in col_norm:
+                sinonimos_detectados.extend(
+                    ["montoinventario", "valorinventario", "importeinventario"]
                 )
         if "promedio" in col_norm and "inventario" in col_norm:
             sinonimos_detectados.extend(["inventariopromedio", "promedioinventario", "inventariopromediobultos"])
@@ -466,6 +1560,12 @@ def _resolver_columna_existente(df: pd.DataFrame, *candidatos: str) -> Optional[
     return None
 
 
+def _columna_es_cubicaje_o_volumen(nombre: str) -> bool:
+    """Métricas de volumetría; no confundir con stock/inventario promedio."""
+    n = _norm_texto(nombre)
+    return any(k in n for k in ("cubicaje", "cubic", "volumen", "m3", "metros3"))
+
+
 def _comando_solicita_inventario(cmd_limpio: str) -> bool:
     """True si el dictado trata de inventario/stock (prioridad sobre ventas)."""
     return any(
@@ -475,6 +1575,8 @@ def _comando_solicita_inventario(cmd_limpio: str) -> bool:
             "inventariopromedio",
             "inventariofinal",
             "inventariotransito",
+            "valorinventario",
+            "valordinventario",
             "stock",
             "existencias",
             "mesesdeinventario",
@@ -482,19 +1584,232 @@ def _comando_solicita_inventario(cmd_limpio: str) -> bool:
     )
 
 
+def _comando_pide_valor_inventario_voz(cmd_limpio: str) -> bool:
+    """Inventario promedio en dólares / valor monetario (no unidades)."""
+    if not _comando_solicita_inventario(cmd_limpio):
+        return False
+    if any(k in cmd_limpio for k in ("dolar", "dolares", "usd")):
+        return True
+    if any(k in cmd_limpio for k in ("valorinventario", "valordinventario", "inventariovalor")):
+        return True
+    if "valorinventariopromedio" in cmd_limpio:
+        return True
+    if any(k in cmd_limpio for k in ("monto", "importe", "dinero")):
+        return "mantener" not in cmd_limpio
+    # «valor» solo si no pidió unidades/bultos explícitamente
+    if "valor" in cmd_limpio and not any(
+        k in cmd_limpio for k in ("unidad", "unidades", "bulto", "empaque", "pieza")
+    ):
+        return "mantener" not in cmd_limpio
+    return False
+
+
+def _comando_pide_inventario_promedio_unidades_voz(cmd_limpio: str) -> bool:
+    return any(
+        k in cmd_limpio
+        for k in ("unidad", "unidades", "bulto", "bultos", "empaque", "empaques", "pieza", "piezas")
+    )
+
+
+def _columna_es_inventario_promedio_monetario(col: str) -> bool:
+    n = _norm_texto(col)
+    if "$" in col and ("inventario" in n or "stock" in n):
+        return True
+    if any(k in n for k in ("dolar", "dolares", "usd")) and (
+        "inventario" in n or "stock" in n
+    ):
+        return True
+    return "valor" in n and "inventario" in n and "promedio" in n
+
+
+def _columna_es_inventario_promedio_unidades(col: str) -> bool:
+    if _columna_es_inventario_promedio_monetario(col):
+        return False
+    n = _norm_texto(col)
+    if "inventario" not in n and "stock" not in n:
+        return False
+    if "promedio" not in n and "prom" not in n:
+        return False
+    return any(k in n for k in ("unidad", "unidades", "bulto", "bultos", "empaque", "empaques"))
+
+
+def _columna_inventario_promedio_dolares(df: pd.DataFrame) -> Optional[str]:
+    """Columna con signo $ o nombre monetario de inventario promedio."""
+    hit = _columna_valor_inventario_promedio(df)
+    if hit:
+        return hit
+    for col in df.columns:
+        if _columna_es_inventario_promedio_monetario(col):
+            return col
+    return None
+
+
+def _columna_inventario_promedio_unidades(df: pd.DataFrame) -> Optional[str]:
+    """Inventario promedio físico (unidades, bultos, empaques)."""
+    hit = _resolver_columna_existente(
+        df,
+        "inventario promedio en unidades",
+        "inventario promedio unidades",
+        "inventario promedio bultos",
+        "inventario promedio bultos ",
+        "inventario promedio empaques",
+    )
+    if hit:
+        return hit
+    for col in _columnas_inventario_promedio_en_df(df):
+        if _columna_es_inventario_promedio_unidades(col):
+            return col
+    return None
+
+
+def _columna_valor_inventario_promedio(df: pd.DataFrame) -> Optional[str]:
+    return _resolver_columna_existente(
+        df,
+        "valor inventario promedio",
+        "valor inventario promedio ",
+        "inventario promedio en dolares",
+        "inventario promedio dolares",
+        "inventario promedio $",
+    )
+
+
+def _columnas_inventario_promedio_en_df(df: pd.DataFrame) -> list[str]:
+    """Columnas de stock promedio (excluye cubicaje/volumen y tránsito)."""
+    out: list[str] = []
+    for col in df.columns:
+        if _es_columna_descartable(col) or not pd.api.types.is_numeric_dtype(df[col]):
+            continue
+        n = _norm_texto(col)
+        if _columna_es_cubicaje_o_volumen(col):
+            continue
+        if "inventario" not in n and "stock" not in n:
+            continue
+        if any(k in n for k in ("transito", "transit", "camino", "flotante")):
+            continue
+        if "promedio" in n or "prom" in n:
+            out.append(col)
+    return out
+
+
+def _resolver_columna_inventario_promedio_voz(cmd_limpio: str, df: pd.DataFrame) -> Optional[str]:
+    """
+    «inventario promedio en dólares» → columna con $ / monto.
+    «inventario promedio» (sin dólares) → unidades / bultos / empaques.
+    Nunca cubicaje del inventario.
+    """
+    if _comando_pide_valor_inventario_voz(cmd_limpio):
+        return _columna_inventario_promedio_dolares(df)
+
+    if _comando_pide_inventario_promedio_unidades_voz(cmd_limpio):
+        return _columna_inventario_promedio_unidades(df)
+
+    # Dictado genérico «inventario promedio»: priorizar unidades, no monto.
+    hit = _columna_inventario_promedio_unidades(df)
+    if hit:
+        return hit
+
+    candidatas = [
+        c
+        for c in _columnas_inventario_promedio_en_df(df)
+        if not _columna_es_inventario_promedio_monetario(c)
+    ]
+    return candidatas[0] if candidatas else None
+
+
 def _comando_solicita_ventas(cmd_limpio: str) -> bool:
     """True si pidió ventas. «inventario» contiene «venta» como subcadena: no confundir."""
     if _comando_solicita_inventario(cmd_limpio):
         return False
+    if _comando_solicita_margen(cmd_limpio):
+        return False
     return any(tok in cmd_limpio for tok in ("ventas", "ventastotales", "facturacion", "ingresos", "venta"))
 
 
+def _comando_solicita_margen(cmd_limpio: str) -> bool:
+    """True si el dictado pide margen / utilidad bruta (no precio)."""
+    return any(
+        k in cmd_limpio
+        for k in (
+            "margen",
+            "margbrut",
+            "margutil",
+            "utilidadbruta",
+            "utilbruta",
+            "margenbruto",
+            "margenutilidad",
+        )
+    )
+
+
+def _comando_solicita_precio(cmd_limpio: str) -> bool:
+    return "precio" in cmd_limpio and not _comando_solicita_margen(cmd_limpio)
+
+
+def _resolver_metrica_margen_voz(cmd_limpio: str, df: pd.DataFrame) -> Optional[str]:
+    """Prioriza columnas de margen cuando el dictado lo menciona explícitamente."""
+    if not _comando_solicita_margen(cmd_limpio):
+        return None
+    hit = _resolver_columna_existente(
+        df,
+        "margen bruto total",
+        "margen utilidad ventas",
+        "margen utilidad ",
+        "margen utilidad",
+        "margen de utilidad",
+        "% margen",
+    )
+    if hit:
+        return hit
+    for col in df.select_dtypes(include="number").columns:
+        col_n = _norm_texto(col)
+        if "margen" in col_n or ("utilidad" in col_n and "precio" not in col_n):
+            return col
+    return None
+
+
+def _resolver_metrica_precio_voz(cmd_limpio: str, df: pd.DataFrame) -> Optional[str]:
+    if not _comando_solicita_precio(cmd_limpio):
+        return None
+    return _resolver_columna_existente(
+        df,
+        "precio por producto",
+        "precio unitario bulto",
+        "precio unitario",
+        "precio",
+    )
+
+
 def _preprocesar_comando_voz(cmd_limpio: str) -> str:
-    """Corrige errores frecuentes del reconocimiento de voz (p. ej. 'su categoría' → subcategoría)."""
+    """Corrige errores frecuentes del reconocimiento de voz sin confundir categoría/subcategoría."""
     s = cmd_limpio
     s = s.replace("utilda", "utilidad").replace("utilida bruta", "utilidad bruta")
-    s = s.replace("sucategoria", "subcategoria")
-    s = s.replace("sucat", "subcat")
+    # "por su categoría" / "según su categoría" = dimensión CATEGORÍA (no sub).
+    # Antes "sucategoria"→"subcategoria" convertía mal estos pedidos.
+    for a, b in (
+        ("porsucategoria", "porcategoria"),
+        ("porsucategorias", "porcategorias"),
+        ("segunsucategoria", "seguncategoria"),
+        ("enasucategoria", "enlacategoria"),
+        ("lasucategoria", "lacategoria"),
+    ):
+        s = s.replace(a, b)
+    # STT residual: "su categoría" aislada ≈ "subcategoría" solo si no quedó ya como categoría.
+    if "porcategoria" not in s and "seguncategoria" not in s and "lacategoria" not in s:
+        s = s.replace("sucategoria", "subcategoria")
+        s = s.replace("sucat", "subcat")
+    s = re.sub(r"valor\s+del\s+inventario", "valor inventario promedio", s, flags=re.I)
+    s = re.sub(
+        r"inventario\s+promedio\s+en\s+(dolares?|usd)",
+        "valor inventario promedio",
+        s,
+        flags=re.I,
+    )
+    s = re.sub(
+        r"inventario\s+promedio\s+(en\s+)?(dolares?|usd)",
+        "valor inventario promedio",
+        s,
+        flags=re.I,
+    )
     if "porsub" in s and "subcategoria" not in s:
         s = s.replace("porsub", "porsubcategoria", 1)
     if "inventario" in s and ("promedio" in s or "promedi" in s) and "inventariopromedio" not in s:
@@ -523,6 +1838,23 @@ def _comando_menciona_subcategoria(cmd_limpio: str) -> bool:
 
 
 _SINONIMOS_CORTOS_EJE_X = frozenset({"pais", "sku", "pdv"})
+# Palabras de dimensión (eje X) que no deben resolver una métrica (eje Y) por sí solas.
+_SINONIMOS_DIMENSION_NO_METRICA = frozenset(
+    {
+        "producto",
+        "articulo",
+        "codigo",
+        "descripcion",
+        "categoria",
+        "subcategoria",
+        "proveedor",
+        "pais",
+        "sku",
+        "item",
+        "material",
+        "nombre",
+    }
+)
 
 
 def _coincide_sinonimo_en_comando(cmd_limpio: str, sinonimo: str) -> bool:
@@ -533,6 +1865,68 @@ def _coincide_sinonimo_en_comando(cmd_limpio: str, sinonimo: str) -> bool:
     return s in cmd_limpio
 
 
+def _sinonimo_valido_para_metrica_voz(col: str, sinonimo: str) -> bool:
+    """Evita que «producto» o «margen» genérico resuelvan la columna equivocada."""
+    sn = _norm_texto(sinonimo)
+    col_n = _norm_texto(col)
+    if sn in _SINONIMOS_DIMENSION_NO_METRICA and sn not in col_n:
+        return False
+    if sn == "margen" and not any(k in col_n for k in ("margen", "marge", "utilidad")):
+        return False
+    if sn in ("costo", "utilidad", "ventas") and sn not in col_n:
+        if sn == "utilidad" and "utilidad" not in col_n:
+            return False
+        if sn == "costo" and "costo" not in col_n:
+            return False
+        if sn == "ventas" and "venta" not in col_n:
+            return False
+    if sn in ("inventario", "inventariopromedio", "stock", "existencias", "inventariofinal"):
+        if _columna_es_cubicaje_o_volumen(col):
+            return False
+    return True
+
+
+def _puntuar_coincidencia_metrica_voz(cmd_limpio: str, col: str, sinonimo: str) -> Optional[tuple[int, int]]:
+    """Mayor puntaje = mejor match. None si no aplica."""
+    if not _sinonimo_valido_para_metrica_voz(col, sinonimo):
+        return None
+    if not _coincide_sinonimo_en_comando(cmd_limpio, sinonimo):
+        return None
+    sn = _norm_texto(sinonimo)
+    col_n = _norm_texto(col)
+    score = len(sn)
+    if col_n in cmd_limpio:
+        score += 120
+    if _comando_solicita_margen(cmd_limpio):
+        if any(k in col_n for k in ("margen", "utilidad")) and "precio" not in col_n:
+            score += 80
+        if "precio" in col_n:
+            score -= 100
+    if _comando_solicita_precio(cmd_limpio) and "precio" in col_n:
+        score += 60
+    if _comando_pide_valor_inventario_voz(cmd_limpio):
+        if any(k in col_n for k in ("valorinventario", "valordinventario")) and "precio" not in col_n:
+            score += 70
+        if "valor" in col_n and "inventario" in col_n and "promedio" in col_n:
+            score += 90
+    if _comando_solicita_inventario(cmd_limpio) and (
+        "promedio" in cmd_limpio or "promedi" in cmd_limpio or "inventariopromedio" in cmd_limpio
+    ):
+        if _columna_es_cubicaje_o_volumen(col):
+            return None
+        if _comando_pide_valor_inventario_voz(cmd_limpio):
+            if _columna_es_inventario_promedio_monetario(col):
+                score += 150
+            elif _columna_es_inventario_promedio_unidades(col):
+                score -= 120
+        else:
+            if _columna_es_inventario_promedio_unidades(col):
+                score += 150
+            elif _columna_es_inventario_promedio_monetario(col):
+                score -= 120
+    return (score, 1 if col_n in cmd_limpio else 0)
+
+
 def _resolver_dimension_eje_x_voz(cmd_limpio: str, df: pd.DataFrame) -> Optional[str]:
     """Resuelve dimensión del eje X con patrones explícitos 'por …'."""
     if any(
@@ -540,11 +1934,16 @@ def _resolver_dimension_eje_x_voz(cmd_limpio: str, df: pd.DataFrame) -> Optional
         for k in ("porproducto", "porarticulo", "poritem", "porsku", "pordescripcion", "porcodigo")
     ):
         return _resolver_columna_existente(df, "descripcion", "codigo")
+    # Prioridad: subcategoría > categoría (evitar que 'categoria' coincida dentro de 'subcategoria').
     if _comando_menciona_subcategoria(cmd_limpio):
         return _resolver_columna_existente(df, "subcategoria")
-    if "porcategoria" in cmd_limpio or (
-        "categoria" in cmd_limpio and not _comando_menciona_subcategoria(cmd_limpio)
-    ):
+    cmd_sin_sub = (
+        cmd_limpio.replace("subcategoria", "")
+        .replace("subcategorias", "")
+        .replace("subcateg", "")
+        .replace("porsubcategoria", "")
+    )
+    if "porcategoria" in cmd_limpio or "categoria" in cmd_sin_sub:
         return _resolver_columna_existente(df, "categoria")
     if "porpais" in cmd_limpio or (
         "pais" in cmd_limpio and any(p in cmd_limpio for p in ("por", "pais", "region", "nacion"))
@@ -559,16 +1958,15 @@ def _resolver_metrica_inventario_voz(cmd_limpio: str, df: pd.DataFrame) -> Optio
     """Inventario promedio / final / tránsito / valor según el dictado."""
     if not _comando_solicita_inventario(cmd_limpio):
         return None
-    if any(k in cmd_limpio for k in ("monto", "valor", "importe", "dinero")) and "mantener" not in cmd_limpio:
-        return _resolver_columna_existente(
-            df,
-            "valor inventario promedio",
-            "valor inventario transito",
-            "costo mantener inventario",
-        )
+    if _comando_pide_valor_inventario_voz(cmd_limpio):
+        hit = _columna_valor_inventario_promedio(df)
+        if hit:
+            return hit
+        return _resolver_columna_existente(df, "valor inventario transito")
     if "promedio" in cmd_limpio or "promedi" in cmd_limpio or "inventariopromedio" in cmd_limpio:
-        if any(k in cmd_limpio for k in ("monto", "valor", "importe", "dinero")):
-            return _resolver_columna_existente(df, "valor inventario promedio")
+        hit = _resolver_columna_inventario_promedio_voz(cmd_limpio, df)
+        if hit:
+            return hit
         return _resolver_columna_existente(
             df,
             "inventario promedio bultos",
@@ -717,6 +2115,8 @@ def _resolver_metrica_fragmento_voz(
         for sinonimo in sinonimos:
             sn = _norm_texto(sinonimo)
             if len(sn) >= 4 and (sn in frag or frag in sn):
+                if not _sinonimo_valido_para_metrica_voz(col_real, sinonimo):
+                    continue
                 coincidencias.append((col_real, len(sn), sn == frag))
     if coincidencias:
         coincidencias.sort(key=lambda x: (x[1], x[2]), reverse=True)
@@ -738,22 +2138,76 @@ def _resolver_metrica_ventas_voz(cmd_limpio: str, df: pd.DataFrame) -> Optional[
 
 
 def aplicar_config_perfil_en_sesion(config: dict) -> None:
-    """Aplica perfil (voz o botón rápido) sin pisar widgets ya instanciados."""
+    """Aplica perfil (voz/ChatGPT) pisando el manual; diferido si los widgets ya existen."""
+    config = analisis_chatgpt_profile.completar_config_reemplazo_perfil(config)
     st.session_state["lri_aplicar_voz_pendiente"] = config
+    st.session_state["prf2_origen_perfil"] = "chatgpt"
     for clave, valor in config.items():
-        st.session_state[clave] = valor
+        if clave in ("lri_man_eje_x", "lri_man_eje_y", "lri_man_eje_y2", "lri_man_eje_y3"):
+            if _widgets_ejes_ya_instanciados():
+                st.session_state[_clave_pending_eje(clave)] = valor
+            else:
+                st.session_state[clave] = valor
+                st.session_state[_clave_pending_eje(clave)] = valor
+        else:
+            st.session_state[clave] = valor
     forzar_sincronizacion_espejo()
+
+
+def aplicar_config_voz_pendiente() -> bool:
+    """Aplica la configuración de voz antes de dibujar widgets (evita que los pisen)."""
+    pendiente = st.session_state.pop("lri_aplicar_voz_pendiente", None)
+    if not pendiente:
+        return False
+    pendiente = analisis_chatgpt_profile.completar_config_reemplazo_perfil(pendiente)
+    st.session_state["prf2_origen_perfil"] = "chatgpt"
+    for clave, valor in pendiente.items():
+        st.session_state[clave] = valor
+        if clave in ("lri_man_eje_x", "lri_man_eje_y", "lri_man_eje_y2", "lri_man_eje_y3"):
+            # Fuerza el valor en el selectbox del próximo render.
+            st.session_state[_clave_pending_eje(clave)] = valor
+    return True
 
 
 def procesar_comando_voz_estructurado(comando_texto: str, df: pd.DataFrame) -> dict:
     """Interpreta el dictado y devuelve la configuración a aplicar en session_state."""
     cmd_voz = _preprocesar_comando_voz(_normalizar_comando_voz(comando_texto))
     cmd_limpio = _norm_texto(cmd_voz)
-    config = {"comando_voz_detectado": comando_texto}
+    config = {
+        "comando_voz_detectado": comando_texto,
+        "prf2_vista_abc_articulos": False,
+        "lri_man_orden_ascendente": False,
+    }
+
+    orden_voz = analisis_chatgpt_profile.pide_orden_ascendente(comando_texto)
+    if orden_voz is not None:
+        config["lri_man_orden_ascendente"] = bool(orden_voz)
+
+    # Vista especial ABC (artículos A/B/C) — misma heurística que ChatGPT lab.
+    if analisis_chatgpt_profile.pide_vista_abc_articulos(comando_texto) and "clase" in df.columns:
+        eje_x = _resolver_columna_existente(df, "descripcion", "codigo")
+        eje_y = _resolver_columna_existente(
+            df, "valor inventario promedio", "ventas totales"
+        )
+        if eje_x is None and "descripcion" in df.columns:
+            eje_x = "descripcion"
+        if eje_y is None:
+            nums = df.select_dtypes(include=["number"]).columns.tolist()
+            eje_y = nums[0] if nums else None
+        if eje_x:
+            config["lri_man_eje_x"] = eje_x
+        if eje_y:
+            config["lri_man_eje_y"] = eje_y
+            config["lri_man_operacion"] = "Suma"
+            config["lri_man_operacion_y"] = "Suma"
+        config["lri_man_top_n"] = 0
+        config["prf2_vista_abc_articulos"] = True
+        return config
 
     # 1. DETECCIÓN MATEMÁTICA DE LA OPERACIÓN
     if any(kw in cmd_limpio for kw in ["prom", "avera", "media", "error", "desvia"]):
         config["lri_man_operacion"] = "Promedio"
+        config["lri_man_operacion_y"] = "Promedio"
     elif any(
         kw in cmd_limpio
         for kw in [
@@ -762,6 +2216,7 @@ def procesar_comando_voz_estructurado(comando_texto: str, df: pd.DataFrame) -> d
         ]
     ) or _comando_solicita_ventas(cmd_limpio):
         config["lri_man_operacion"] = "Suma"
+        config["lri_man_operacion_y"] = "Suma"
 
     # 2. GENERACIÓN DEL MAPA SEMÁNTICO DINÁMICO
     diccionario = generar_diccionario_semantico_dinamico(df)
@@ -778,6 +2233,7 @@ def procesar_comando_voz_estructurado(comando_texto: str, df: pd.DataFrame) -> d
             if metrica_a and metrica_b and metrica_a != metrica_b:
                 config["lri_man_eje_y"] = metrica_a
                 config["lri_man_eje_y2"] = metrica_b
+                config["lri_man_eje_y3"] = METRICA_ADICIONAL_NINGUNA
                 if columna_seleccionada_x:
                     config["lri_man_eje_x"] = columna_seleccionada_x
                 elif _comando_menciona_subcategoria(cmd_limpio):
@@ -795,6 +2251,10 @@ def procesar_comando_voz_estructurado(comando_texto: str, df: pd.DataFrame) -> d
 
     columna_seleccionada_y = _resolver_metrica_inventario_voz(cmd_limpio, df)
     if not columna_seleccionada_y:
+        columna_seleccionada_y = _resolver_metrica_margen_voz(cmd_limpio, df)
+    if not columna_seleccionada_y:
+        columna_seleccionada_y = _resolver_metrica_precio_voz(cmd_limpio, df)
+    if not columna_seleccionada_y:
         columna_seleccionada_y = _resolver_metrica_ventas_voz(cmd_limpio, df)
 
     # 3. ESCANEO DEL EJE Y (solo si no se pidió ventas de forma explícita)
@@ -802,11 +2262,9 @@ def procesar_comando_voz_estructurado(comando_texto: str, df: pd.DataFrame) -> d
         coincidencias_y = []
         for col_real, sinonimos in diccionario["eje_y"].items():
             for sinonimo in sinonimos:
-                sinonimos_norm = _norm_texto(sinonimo)
-                if _coincide_sinonimo_en_comando(cmd_limpio, sinonimos_norm):
-                    coincidencias_y.append(
-                        (col_real, len(sinonimos_norm), _norm_texto(col_real) in cmd_limpio)
-                    )
+                puntaje = _puntuar_coincidencia_metrica_voz(cmd_limpio, col_real, sinonimo)
+                if puntaje is not None:
+                    coincidencias_y.append((col_real, puntaje[0], puntaje[1]))
 
         if coincidencias_y:
             coincidencias_y.sort(key=lambda x: (x[1], x[2]), reverse=True)
@@ -818,6 +2276,7 @@ def procesar_comando_voz_estructurado(comando_texto: str, df: pd.DataFrame) -> d
     if columna_seleccionada_y:
         config["lri_man_eje_y"] = columna_seleccionada_y
         config["lri_man_eje_y2"] = METRICA_ADICIONAL_NINGUNA
+        config["lri_man_eje_y3"] = METRICA_ADICIONAL_NINGUNA
 
     # 4. CONTEXTO DE CONVERGENCIA PARA DRILL-DOWN LOGÍSTICO
     if any(kw in cmd_limpio for kw in ["articulo", "producto", "item", "sku", "codigo"]):
@@ -847,6 +2306,21 @@ def procesar_comando_voz_estructurado(comando_texto: str, df: pd.DataFrame) -> d
     if columna_seleccionada_x:
         config["lri_man_eje_x"] = columna_seleccionada_x
 
+    # 6. Filtro por valor nombrado (categoría o subcategoría; match más largo).
+    fcat, fsub = analisis_chatgpt_profile._resolver_filtros_segmento(comando_texto, df)
+    config["drill_down_categoria"] = fcat
+    config["drill_down_subcategoria"] = fsub
+    if fcat or fsub:
+        if any(
+            kw in cmd_limpio
+            for kw in ("articulo", "producto", "item", "sku", "codigo", "descripcion", "cadauno", "decada")
+        ) or not any(kw in cmd_limpio for kw in ("porcategoria", "porsubcategoria", "porcateg", "porsub")):
+            desc = _resolver_columna_existente(df, "descripcion", "codigo")
+            if desc:
+                config["lri_man_eje_x"] = desc
+            if "lri_man_top_n" not in config:
+                config["lri_man_top_n"] = 0
+
     return config
 
 
@@ -861,7 +2335,7 @@ def aplicar_config_voz_pendiente() -> bool:
 
 
 def procesar_grabacion_voz_sidebar(df: pd.DataFrame, audio_bytes: bytes) -> None:
-    """Transcribe el audio y aplica el perfilado (mismo flujo que antes con mic_recorder)."""
+    """Transcribe la voz y ChatGPT aplica el perfil (laboratorio / solo audio)."""
     audio_hash = hashlib.md5(audio_bytes, usedforsecurity=False).hexdigest()
     if audio_hash == st.session_state.get("lri_last_audio_hash"):
         return
@@ -872,16 +2346,11 @@ def procesar_grabacion_voz_sidebar(df: pd.DataFrame, audio_bytes: bytes) -> None
             r.adjust_for_ambient_noise(source, duration=0.2)
             audio_data = r.record(source)
         texto_dictado = r.recognize_google(audio_data, language="es-CR")
-        config_voz = procesar_comando_voz_estructurado(texto_dictado, df)
-        aplicar_config_perfil_en_sesion(config_voz)
-        eje_x = config_voz.get("lri_man_eje_x", st.session_state.get("lri_man_eje_x"))
-        eje_y = config_voz.get("lri_man_eje_y", st.session_state.get("lri_man_eje_y"))
-        st.sidebar.success(
-            f"Comando aplicado: **{eje_y}** por **{eje_x}**."
-            if eje_x and eje_y
-            else "Comando analizado aplicado con éxito."
+        analisis_chatgpt_profile.aplicar_pedido_por_voz(
+            texto_dictado,
+            df,
+            aplicar_config=aplicar_config_perfil_en_sesion,
         )
-        st.rerun()
     except sr.UnknownValueError:
         st.sidebar.error("No se entendió la instrucción de voz.")
     except sr.RequestError:
@@ -930,9 +2399,9 @@ def _render_control_voz_sidebar(df: pd.DataFrame) -> None:
             dedent(
                 """\
                 <div style="color:#ffffff;line-height:1.25;">
-                  <div style="font-size:1.02rem;font-weight:700;margin:0;">🎙️ Control por Voz Activo</div>
+                  <div style="font-size:1.02rem;font-weight:700;margin:0;">🎙️ Control por Voz · ChatGPT</div>
                   <div style="font-size:0.78rem;font-weight:400;color:#e2e8f0;margin-top:2px;">
-                    Darle un clic para hablar
+                    Clic para hablar el perfil que desea
                   </div>
                 </div>
                 """
@@ -955,11 +2424,21 @@ def _render_control_voz_sidebar(df: pd.DataFrame) -> None:
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-    if audio_bytes:
+    # Siempre se muestra el mic; durante narración solo se ignora el audio (no se oculta).
+    if audio_bytes and not analisis_chatgpt_profile.mics_bloqueados():
         procesar_grabacion_voz_sidebar(df, audio_bytes)
+    elif audio_bytes and analisis_chatgpt_profile.mics_bloqueados():
+        audio_hash = hashlib.md5(audio_bytes, usedforsecurity=False).hexdigest()
+        st.session_state["lri_last_audio_hash"] = audio_hash
 
-    if st.session_state.get("comando_voz_detectado"):
-        st.info(f'Instrucción: *"{st.session_state["comando_voz_detectado"]}"*')
+
+def _sincronizar_operaciones_metricas() -> None:
+    """Migra el cálculo global legacy y mantiene lri_man_operacion alineado al eje Y principal."""
+    legacy = st.session_state.get("lri_man_operacion", "Suma")
+    for key in ("lri_man_operacion_y", "lri_man_operacion_y2", "lri_man_operacion_y3"):
+        if key not in st.session_state or st.session_state[key] not in OPS_CALCULO:
+            st.session_state[key] = legacy if legacy in OPS_CALCULO else "Suma"
+    st.session_state["lri_man_operacion"] = st.session_state.get("lri_man_operacion_y", "Suma")
 
 
 def forzar_sincronizacion_espejo():
@@ -993,7 +2472,7 @@ def _render_cabecera_app(subtitulo: Optional[str] = None) -> None:
         f"""<div class="lri-app-header">
   {img_html}
   <div class="lri-app-brand">
-    <span class="lri-app-title">LRI Analytics <span class="lri-app-pro">Pro</span></span>
+    <span class="lri-app-title">Profile <span class="lri-app-pro">Pro</span></span>
     {sub}
   </div>
 </div>""",
@@ -1009,7 +2488,13 @@ def _columna_ventas_totales(df: pd.DataFrame) -> Optional[str]:
 
 
 def _columna_margen_bruto(df: pd.DataFrame) -> Optional[str]:
-    return _resolver_columna_existente(df, "margen bruto total")
+    """Utilidad / margen bruto absoluto en dinero (no %)."""
+    return _resolver_columna_existente(
+        df,
+        "margen bruto total",
+        "utilidad bruta",
+        "margen bruto",
+    )
 
 
 def _columna_margen_utilidad_ratio(df: pd.DataFrame) -> Optional[str]:
@@ -1020,7 +2505,6 @@ def _columna_margen_utilidad_ratio(df: pd.DataFrame) -> Optional[str]:
         "margen utilidad ventas",
         "margen de utilidad",
         "porcentaje utilidad bruta",
-        "utilidad bruta",
         "pct utilidad bruta",
     )
 
@@ -1039,9 +2523,28 @@ def _columna_costo_mantener_inventario(df: pd.DataFrame) -> Optional[str]:
 
 
 def _metrica_margen_sobre_ventas(df: pd.DataFrame, eje_y: str) -> bool:
-    mb = _columna_margen_bruto(df)
+    """Solo columnas de margen % (no utilidad bruta en dinero)."""
     mu = _columna_margen_utilidad_ratio(df)
-    return (mb is not None and eje_y == mb) or (mu is not None and eje_y == mu)
+    return mu is not None and eje_y == mu
+
+
+def _es_utilidad_bruta_monetaria(eje_y: str) -> bool:
+    """Utilidad bruta / margen bruto absoluto en dinero (no %)."""
+    raw = str(eje_y).strip().lower()
+    n = _norm_texto(eje_y)
+    if any(p in n for p in ("utilidadbruta", "margenbrutototal", "utilidadbrutatotal")):
+        return True
+    if n == "margenbruto":
+        return True
+    if "margenbruto" in n and "utilidad" not in n and "%" not in raw and "pct" not in n:
+        return True
+    return False
+
+
+def _metrica_eje_y_en_miles(eje_y: str) -> bool:
+    """Ya no se divide el margen bruto entre 1.000: se muestra el monto completo."""
+    del eje_y
+    return False
 
 
 def _metrica_costo_mantener_pct(df: pd.DataFrame, eje_y: str) -> bool:
@@ -1064,7 +2567,11 @@ def _metrica_costo_mantener_pct(df: pd.DataFrame, eje_y: str) -> bool:
 
 
 def _nombre_eje_y_es_porcentual(eje_y: str) -> bool:
-    """Margen/utilidad/tasa/porcentaje en el nombre de columna → presentación %."""
+    """Margen de utilidad / margen % — no utilidad bruta en dinero ni conteos logísticos."""
+    if _columna_es_conteo_logistico(eje_y):
+        return False
+    if _es_utilidad_bruta_monetaria(eje_y):
+        return False
     raw = str(eje_y).strip().lower()
     if "%" in raw or "pct" in raw or "porcent" in raw or "percent" in raw:
         return True
@@ -1072,28 +2579,18 @@ def _nombre_eje_y_es_porcentual(eje_y: str) -> bool:
     patrones = (
         "margenutilidad",
         "margendautilidad",
-        "margenbruto",
-        "utilidadbruta",
-        "utilidadneta",
-        "pctutilidad",
+        "margenutilidadventas",
         "porcentajeutilidad",
+        "pctutilidad",
         "margenbrutopct",
         "margensobreventas",
         "margenventas",
-        "costomantenerinventario",
-        "mantenerinventario",
-        "costoinventario",
-        "tasacosto",
-        "tasamantenimiento",
-        "tasamantener",
-        "tasadecosto",
-        "tasacostoinventario",
     )
     if any(p in n for p in patrones):
         return True
-    if "margen" in n and ("pct" in n or "porcent" in n or "ratio" in n or "tasa" in n or "util" in n):
+    if "margen" in n and "utilidad" in n:
         return True
-    if "utilidad" in n:
+    if "margen" in n and ("pct" in n or "porcent" in n or "ratio" in n or "tasa" in n):
         return True
     if "tasa" in n and any(k in n for k in ("costo", "manten", "invent", "margen", "util")):
         return True
@@ -1101,14 +2598,17 @@ def _nombre_eje_y_es_porcentual(eje_y: str) -> bool:
 
 
 def _metrica_eje_y_en_porcentaje(df: pd.DataFrame, eje_y: str) -> bool:
+    if _columna_es_conteo_logistico(eje_y):
+        return False
+    if _es_utilidad_bruta_monetaria(eje_y):
+        return False
     if _metrica_margen_sobre_ventas(df, eje_y) or _metrica_costo_mantener_pct(df, eje_y):
         return True
     if _nombre_eje_y_es_porcentual(eje_y):
         return True
-    mb = _columna_margen_bruto(df)
     mu = _columna_margen_utilidad_ratio(df)
     cm = _columna_costo_mantener_inventario(df)
-    return eje_y in {c for c in (mb, mu, cm) if c}
+    return eje_y in {c for c in (mu, cm) if c}
 
 
 def _porcentaje_en_escala_0_100(serie: pd.Series) -> bool:
@@ -1119,65 +2619,202 @@ def _porcentaje_en_escala_0_100(serie: pd.Series) -> bool:
     return float(v.abs().max()) > 1.5
 
 
+def _serie_ratio_0_1(serie: pd.Series) -> pd.Series:
+    """Normaliza porcentajes 0–100 o fracciones 0–1 a ratio 0–1."""
+    v = pd.to_numeric(serie, errors="coerce")
+    finitos = v.dropna()
+    if finitos.empty:
+        return v
+    if float(finitos.abs().max()) > 1.5:
+        return v / 100.0
+    return v
+
+
+def _valor_a_porcentaje_entero(val: float) -> int:
+    """Convierte ratio 0–1 o valor 0–100 a entero de visualización."""
+    v = float(val)
+    if not np.isfinite(v):
+        return 0
+    if abs(v) <= 1.5:
+        return int(round(v * 100))
+    return int(round(v))
+
+
 def _info_presentacion_porcentaje_eje_y(
     df: pd.DataFrame,
     eje_y: str,
     df_valores: Optional[pd.DataFrame] = None,
 ) -> Tuple[bool, bool]:
     """(es_porcentaje, escala_0_100) para KPI, tabla, gráfico y export."""
+    pct, escala, _ = _info_presentacion_formato_eje_y(df, eje_y, df_valores)
+    return pct, escala
+
+
+def _info_presentacion_formato_eje_y(
+    df: pd.DataFrame,
+    eje_y: str,
+    df_valores: Optional[pd.DataFrame] = None,
+) -> Tuple[bool, bool, bool]:
+    """(es_porcentaje, escala_0_100, en_miles) para KPI, tabla, gráfico y export."""
+    y_miles = _metrica_eje_y_en_miles(eje_y)
+    if _columna_es_conteo_logistico(eje_y):
+        return False, False, y_miles
     es_pct = _metrica_eje_y_en_porcentaje(df, eje_y)
     if not es_pct:
-        return False, False
+        return False, False, y_miles
     fuente = df_valores if df_valores is not None and eje_y in df_valores.columns else df
     if eje_y not in fuente.columns:
-        return es_pct, False
-    return es_pct, _porcentaje_en_escala_0_100(fuente[eje_y])
+        return es_pct, False, False
+    if _metrica_margen_sobre_ventas(df, eje_y):
+        return es_pct, False, False
+    return es_pct, _porcentaje_en_escala_0_100(fuente[eje_y]), False
 
 
-def _formatear_valor_porcentaje(val: float, escala_0_100: bool) -> str:
+def _es_margen_utilidad_porcentaje(eje_y: str, df: Optional[pd.DataFrame] = None) -> bool:
+    """Margen de utilidad % (enteros); no utilidad bruta $ ni tasa de costo inventario."""
+    if _es_utilidad_bruta_monetaria(eje_y):
+        return False
+    if df is not None and _metrica_margen_sobre_ventas(df, eje_y):
+        return True
+    if _metrica_costo_mantener_pct(df if df is not None else pd.DataFrame(), eje_y):
+        return False
+    n = _norm_texto(eje_y)
+    if "margen" in n and "utilidad" in n:
+        return True
+    return any(
+        p in n
+        for p in (
+            "margenutilidad",
+            "margendautilidad",
+            "margenutilidadventas",
+            "porcentajeutilidad",
+        )
+    )
+
+
+def _sufijo_tipo_metrica_ui(df: pd.DataFrame, col: str) -> str:
+    """Clasifica la métrica para el selector: $ | % | ratio | #."""
+    if not col or col == METRICA_ADICIONAL_NINGUNA:
+        return ""
+    if col not in df.columns:
+        return ""
+    if _columna_parece_dimension_eje_y(col) or _columna_es_atributo_dimension(df, col):
+        return ""
+    if _metrica_eje_y_en_porcentaje(df, col) or _columna_es_metrica_porcentaje(col, df):
+        return "%"
+    if _columna_es_metrica_ratio_inventario(col):
+        return "ratio"
+    if _es_utilidad_bruta_monetaria(col):
+        return "$"
+    n = _norm_texto(col)
+    if any(
+        p in n
+        for p in (
+            "venta",
+            "costo",
+            "valor",
+            "precio",
+            "dolar",
+            "ingreso",
+            "margenbruto",
+            "utilidadbruta",
+        )
+    ):
+        return "$"
+    if _columna_es_metrica_aditiva_suma(col, df) or pd.api.types.is_numeric_dtype(df[col]):
+        return "#"
+    return ""
+
+
+def _etiqueta_metrica_selector_ui(df: pd.DataFrame, col: str) -> str:
+    """Texto visible en selectores del eje Y; el valor interno sigue siendo el nombre de columna."""
+    if not col or col == METRICA_ADICIONAL_NINGUNA:
+        return str(col) if col is not None else ""
+    suf = _sufijo_tipo_metrica_ui(df, col)
+    if not suf:
+        return str(col)
+    return f"{col}  [{suf}]"
+
+
+def _formatear_valor_porcentaje(
+    val: float, escala_0_100: bool, *, eje_y: str = ""
+) -> str:
+    if eje_y and _es_margen_utilidad_porcentaje(eje_y):
+        return f"{_valor_a_porcentaje_entero(val)}%"
     if escala_0_100:
         return f"{val:.2f}%"
     return f"{val:.2%}"
 
 
-def _fmt_pandas_columna_porcentaje(escala_0_100: bool) -> str:
+def _formatear_valor_miles(val: float) -> str:
+    """Miles con coma separadora; sin decimales ni símbolo de moneda."""
+    return f"{int(round(float(val) / 1000.0)):,}"
+
+
+def _fmt_pandas_columna_porcentaje(escala_0_100: bool, eje_y: str = ""):
+    if eje_y and _es_margen_utilidad_porcentaje(eje_y):
+
+        def _fmt_entero(v: object) -> str:
+            if pd.isna(v):
+                return ""
+            return f"{_valor_a_porcentaje_entero(float(v))}%"
+
+        return _fmt_entero
     return "{:.2f}%" if escala_0_100 else "{:.2%}"
 
 
+def _fmt_pandas_columna_miles(_val: object) -> str:
+    if pd.isna(_val):
+        return ""
+    return _formatear_valor_miles(float(_val))
+
+
 def _ratio_margen_por_fila(df: pd.DataFrame, eje_y: str) -> pd.Series:
-    """Ratio 0–1 margen sobre ventas a nivel fila (margen bruto absoluto o columna ya en ratio)."""
-    vt = _columna_ventas_totales(df)
-    mb = _columna_margen_bruto(df)
+    """Ratio 0–1 margen % a nivel fila."""
     mu = _columna_margen_utilidad_ratio(df)
-    if vt is None or vt not in df.columns:
-        return pd.Series(np.nan, index=df.index)
-    v = df[vt].replace(0, np.nan)
-    if mb is not None and eje_y == mb:
-        return df[eje_y] / v
     if mu is not None and eje_y == mu:
         return df[eje_y]
     return pd.Series(np.nan, index=df.index)
 
 
-def calcular_metricas_encabezado(
-    df_filtrado: pd.DataFrame, eje_y: str, operacion: str
-) -> Tuple[str, str]:
+def _resolver_total_metrica_perfil(
+    df_filtrado: pd.DataFrame,
+    eje_y: str,
+    operacion: str,
+    df_resumen: Optional[pd.DataFrame] = None,
+) -> Tuple[str, float, str]:
+    """Etiqueta, valor numérico y texto formateado del total/promedio de una métrica."""
+    if _columna_es_metrica_aditiva_suma(eje_y, df_filtrado):
+        if (
+            operacion == "Suma"
+            and df_resumen is not None
+            and eje_y in df_resumen.columns
+            and len(df_resumen) > 0
+        ):
+            val_total = _suma_numerica_columna(df_resumen, eje_y)
+        else:
+            val_total = _suma_numerica_columna(df_filtrado, eje_y)
+        label = f"Total {eje_y}"
+        if _metrica_eje_y_en_miles(eje_y):
+            val_formateado = _formatear_valor_miles(val_total)
+        elif abs(val_total - round(val_total)) < 1e-6:
+            val_formateado = f"{val_total:,.0f}"
+        else:
+            val_formateado = f"{val_total:,.2f}"
+        return label, val_total, val_formateado
+
     if _metrica_margen_sobre_ventas(df_filtrado, eje_y):
-        ratios = _ratio_margen_por_fila(df_filtrado, eje_y).dropna()
+        ratios = _serie_ratio_0_1(_ratio_margen_por_fila(df_filtrado, eje_y)).dropna()
         if ratios.empty:
             val_total = 0.0
         elif operacion == "Suma":
             vt = _columna_ventas_totales(df_filtrado)
-            mb = _columna_margen_bruto(df_filtrado)
             mu = _columna_margen_utilidad_ratio(df_filtrado)
             if vt is None:
                 val_total = 0.0
-            elif mb is not None and eje_y == mb:
-                num = df_filtrado[eje_y].sum()
-                den = df_filtrado[vt].sum()
-                val_total = float(num / den) if den else 0.0
             elif mu is not None and eje_y == mu:
-                num = (df_filtrado[eje_y] * df_filtrado[vt]).sum()
+                ratio_norm = _serie_ratio_0_1(df_filtrado[eje_y])
+                num = (ratio_norm * df_filtrado[vt]).sum()
                 den = df_filtrado[vt].sum()
                 val_total = float(num / den) if den else 0.0
             else:
@@ -1187,17 +2824,17 @@ def calcular_metricas_encabezado(
         label = (
             f"{'Total' if operacion == 'Suma' else 'Promedio'} {eje_y} (% sobre ventas)"
         )
-        val_formateado = _formatear_valor_porcentaje(val_total, False)
-        return label, val_formateado
+        val_formateado = _formatear_valor_porcentaje(val_total, False, eje_y=eje_y)
+        return label, val_total, val_formateado
 
     if _metrica_costo_mantener_pct(df_filtrado, eje_y):
-        s = df_filtrado[eje_y].dropna()
+        s = pd.to_numeric(df_filtrado[eje_y], errors="coerce").dropna()
         val_total = float(s.mean()) if len(s) else 0.0
         label = f"Tasa media {eje_y}"
         val_formateado = _formatear_valor_porcentaje(
-            val_total, _porcentaje_en_escala_0_100(s)
+            val_total, _porcentaje_en_escala_0_100(s), eje_y=eje_y
         )
-        return label, val_formateado
+        return label, val_total, val_formateado
 
     if _nombre_eje_y_es_porcentual(eje_y) and eje_y in df_filtrado.columns:
         s = pd.to_numeric(df_filtrado[eje_y], errors="coerce").dropna()
@@ -1208,17 +2845,49 @@ def calcular_metricas_encabezado(
         else:
             val_total = float(s.mean()) if len(s) else 0.0
             label = f"Promedio {eje_y}"
-        return label, _formatear_valor_porcentaje(val_total, escala)
+        return label, val_total, _formatear_valor_porcentaje(val_total, escala, eje_y=eje_y)
+
+    if _columna_es_metrica_ratio_inventario(eje_y):
+        val_total = float(_valor_ratio_inventario_ponderado(df_filtrado, eje_y))
+        n = _norm_texto(eje_y)
+        if "meses" in n:
+            label = f"Meses inventario ponderados ({eje_y})"
+        else:
+            label = f"Rotación ponderada ({eje_y})"
+        val_formateado = f"{val_total:,.2f}"
+        return label, val_total, val_formateado
 
     if operacion == "Suma":
-        val_total = df_filtrado[eje_y].sum() if eje_y in df_filtrado.columns else 0
+        if eje_y in df_filtrado.columns:
+            val_total = float(pd.to_numeric(df_filtrado[eje_y], errors="coerce").sum())
+        else:
+            val_total = 0.0
         label = f"Total {eje_y}"
-        val_formateado = f"{val_total:,.0f}"
+        if _metrica_eje_y_en_miles(eje_y):
+            val_formateado = _formatear_valor_miles(val_total)
+        else:
+            val_formateado = f"{val_total:,.0f}"
     else:
-        val_total = df_filtrado[eje_y].mean() if eje_y in df_filtrado.columns else 0
+        if eje_y in df_filtrado.columns:
+            val_total = float(pd.to_numeric(df_filtrado[eje_y], errors="coerce").mean())
+        else:
+            val_total = 0.0
         label = f"Promedio {eje_y}"
-        val_formateado = f"{val_total:,.2f}"
+        if _metrica_eje_y_en_miles(eje_y):
+            val_formateado = _formatear_valor_miles(val_total)
+        elif _metrica_eje_y_en_porcentaje(df_filtrado, eje_y):
+            escala = _porcentaje_en_escala_0_100(df_filtrado[eje_y])
+            val_formateado = _formatear_valor_porcentaje(val_total, escala, eje_y=eje_y)
+        else:
+            val_formateado = f"{val_total:,.2f}"
 
+    return label, val_total, val_formateado
+
+
+def calcular_metricas_encabezado(
+    df_filtrado: pd.DataFrame, eje_y: str, operacion: str
+) -> Tuple[str, str]:
+    label, _, val_formateado = _resolver_total_metrica_perfil(df_filtrado, eje_y, operacion)
     return label, val_formateado
 
 
@@ -1232,16 +2901,60 @@ def _extremos_eje_y_perfilado(df_resumen: pd.DataFrame, eje_y: str) -> Tuple[flo
     return float(s.max()), float(s.min())
 
 
-def _formatear_valor_kpi_eje_y(val: float, y_pct: bool, escala_0_100: bool = False) -> str:
+def _formatear_valor_kpi_eje_y(
+    val: float,
+    y_pct: bool,
+    escala_0_100: bool = False,
+    y_miles: bool = False,
+    eje_y: str = "",
+) -> str:
     if y_pct:
-        return _formatear_valor_porcentaje(val, escala_0_100)
+        return _formatear_valor_porcentaje(val, escala_0_100, eje_y=eje_y)
+    if y_miles:
+        return _formatear_valor_miles(val)
     if abs(val) < 100:
         return f"{val:,.2f}"
     return f"{val:,.0f}"
 
 
+def _top_n_efectivo_para_dimension(
+    df: pd.DataFrame, eje_x: Optional[str], top_n: int
+) -> tuple[int, Optional[str]]:
+    """Evita recortar dimensiones chicas (categoría/clase) por un Top N pegajoso.
+
+    Returns (top_n_efectivo, aviso_o_None).
+    """
+    try:
+        top_i = int(top_n)
+    except (TypeError, ValueError):
+        return 0, None
+    if top_i <= 0 or not eje_x or eje_x not in df.columns:
+        return max(0, top_i), None
+    nx = _norm_texto(eje_x)
+    # Categoría / clase: casi siempre se quieren TODAS las barras.
+    dims_completas = ("categoria", "clase", "abc", "segmento")
+    if any(nx == d or nx.startswith(d) for d in dims_completas):
+        nuniq = int(df[eje_x].nunique(dropna=True))
+        if nuniq > 0 and top_i < nuniq:
+            return 0, (
+                f"Top N={top_i} se ignoró en **{eje_x}** para mostrar las "
+                f"**{nuniq}** barras (evita quedarse con recortes de un gráfico anterior)."
+            )
+    return top_i, None
+
+
+def _metrica_pareto_menor_es_mejor(col: str) -> bool:
+    """True si la métrica debe clasificarse con Pareto invertido (poco = verde, mucho = rojo)."""
+    key = _norm_texto(col)
+    for patron in _PARETO_METRICAS_MENOR_ES_MEJOR:
+        p = _norm_texto(patron)
+        if key == p or key.startswith(p):
+            return True
+    return False
+
+
 def _resolver_fracciones_pareto_por_item(set_seleccionado: str) -> Optional[Tuple[float, float, float]]:
-    """Fracciones (top, medio, cola) del número de filas del eje X, ordenadas por métrica descendente."""
+    """Fracciones (top, medio, cola) del número de filas del eje X, ordenadas por métrica."""
     if "Desactivado" in set_seleccionado:
         return None
     for clave, fracciones in PRESETS_PARETO.items():
@@ -1332,6 +3045,28 @@ def _altura_scroll_tabla_metricas(
     return int(max(_ALTURA_MIN_TABLA_SCROLL, altura_graf - overhead))
 
 
+def _materializar_metricas_extra_en_df(
+    out: pd.DataFrame,
+    metricas_extras_data: Optional[list[dict[str, Any]]],
+    eje_y: str,
+) -> list[str]:
+    """Inserta columnas de métricas adicionales y devuelve su orden (sin duplicar eje Y)."""
+    extras: list[str] = []
+    for m in metricas_extras_data or []:
+        col_m = str(m.get("columna") or "").strip()
+        if not col_m or col_m == eje_y or col_m in extras:
+            continue
+        hit = col_m if col_m in out.columns else _resolver_columna_existente(out, col_m)
+        if not hit or hit == eje_y or hit in extras:
+            continue
+        vals = m.get("valores")
+        if vals is not None:
+            out[hit] = np.asarray(vals, dtype=float)
+        if hit in out.columns:
+            extras.append(hit)
+    return extras
+
+
 def _preparar_tabla_metricas_detalle(
     df_resumen: pd.DataFrame,
     df_origen: pd.DataFrame,
@@ -1340,6 +3075,8 @@ def _preparar_tabla_metricas_detalle(
     viewport_h: int = 1080,
     tabla_font_size: int = 14,
     eje_y2: Optional[str] = None,
+    metricas_extra: Optional[list[str]] = None,
+    metricas_extras_data: Optional[list[dict[str, Any]]] = None,
     ver_completo_pantalla: bool = False,
 ) -> Tuple[pd.DataFrame, list, str, int]:
     """
@@ -1347,12 +3084,23 @@ def _preparar_tabla_metricas_detalle(
     Devuelve (df, columnas, clase CSS, altura scroll sugerida).
     """
     out = df_resumen.copy()
-    columnas = [eje_x, eje_y]
-    if eje_y2 and eje_y2 in out.columns and eje_y2 != eje_y:
-        columnas.append(eje_y2)
-    clase_css = "lri-tabla-col-2col"
-    if eje_y2 and eje_y2 in columnas:
-        clase_css = "lri-tabla-col-3col-dual"
+    extras = _materializar_metricas_extra_en_df(out, metricas_extras_data, eje_y)
+
+    for m in metricas_extra or []:
+        col_m = str(m or "").strip()
+        if not col_m or col_m == eje_y or col_m in extras:
+            continue
+        hit = col_m if col_m in out.columns else _resolver_columna_existente(out, col_m)
+        if hit and hit != eje_y and hit not in extras:
+            extras.append(hit)
+
+    if eje_y2:
+        y2 = str(eje_y2).strip()
+        hit_y2 = y2 if y2 in out.columns else _resolver_columna_existente(out, y2)
+        if hit_y2 and hit_y2 != eje_y and hit_y2 not in extras:
+            extras.insert(0, hit_y2)
+
+    columnas = [eje_x, eje_y] + [m for m in extras if m != eje_y]
     n_filas = len(out)
 
     if _eje_x_es_codigo_producto(eje_x):
@@ -1371,12 +3119,20 @@ def _preparar_tabla_metricas_detalle(
                 "producto",
                 out[eje_x].astype(str).map(mapa_prod).fillna("—"),
             )
-            columnas = [eje_x, "producto", eje_y]
-            if eje_y2 and eje_y2 in out.columns and eje_y2 != eje_y:
-                columnas.append(eje_y2)
-                clase_css = "lri-tabla-col-4col"
-            else:
-                clase_css = "lri-tabla-col-3col"
+            columnas = [eje_x, "producto", eje_y] + [m for m in extras if m != eje_y]
+
+    n_metricas = len(columnas) - 1 - (1 if "producto" in columnas else 0)
+    tiene_prod = "producto" in columnas
+    if n_metricas >= 3:
+        clase_css = (
+            "lri-tabla-col-multimetrica-prod" if tiene_prod else "lri-tabla-col-multimetrica"
+        )
+    elif n_metricas >= 2:
+        clase_css = "lri-tabla-col-4col" if tiene_prod else "lri-tabla-col-3col-dual"
+    elif tiene_prod:
+        clase_css = "lri-tabla-col-3col"
+    else:
+        clase_css = "lri-tabla-col-2col"
 
     out = out[columnas].copy()
     xs_graf = out[eje_x].astype(str).tolist() if eje_x in out.columns else []
@@ -1393,11 +3149,109 @@ def _preparar_tabla_metricas_detalle(
     return out, columnas, clase_css, altura_scroll
 
 
+_ESTILO_FILA_TOTAL_TABLA = (
+    "background-color:#1a2030 !important;color:#fbbf24 !important;"
+    "font-weight:800 !important;letter-spacing:0.03em;"
+    "position:sticky !important;bottom:0 !important;z-index:20 !important;"
+    "box-shadow:0 -2px 0 #333333;background-clip:padding-box !important;"
+)
+
+
+def _valor_agregado_columna_tabla_perfil(
+    col: str,
+    df_tabla: pd.DataFrame,
+    df_origen: pd.DataFrame,
+    operacion: str,
+    df_resumen: Optional[pd.DataFrame] = None,
+) -> object:
+    """Total de pie de tabla para una columna (suma o promedio según operación)."""
+    if col not in df_tabla.columns:
+        return ""
+    if operacion == "Suma" and _columna_es_metrica_aditiva_suma(col, df_origen):
+        if df_resumen is not None and col in df_resumen.columns and len(df_resumen) > 0:
+            return _suma_numerica_columna(df_resumen, col)
+        return _suma_numerica_columna(df_tabla, col)
+    if operacion == "Suma":
+        if _columna_es_metrica_ratio_inventario(col):
+            return float(_valor_ratio_inventario_ponderado(df_origen, col))
+        if (
+            _metrica_margen_sobre_ventas(df_origen, col)
+            or _metrica_costo_mantener_pct(df_origen, col)
+            or (_nombre_eje_y_es_porcentual(col) and not _metrica_eje_y_en_miles(col))
+        ):
+            _, val, _ = _resolver_total_metrica_perfil(df_origen, col, "Promedio")
+            return val
+        serie = pd.to_numeric(df_tabla[col], errors="coerce")
+        return float(serie.sum()) if len(serie) else 0.0
+    _, val, _ = _resolver_total_metrica_perfil(df_origen, col, "Promedio")
+    if _columna_es_metrica_ratio_inventario(col) or _metrica_margen_sobre_ventas(df_origen, col):
+        return val
+    serie = pd.to_numeric(df_tabla[col], errors="coerce")
+    return float(serie.mean()) if len(serie) else 0.0
+
+
+def _fila_total_tabla_perfilado(
+    df_tabla: pd.DataFrame,
+    df_origen: pd.DataFrame,
+    columnas: list[str],
+    eje_x: str,
+    operaciones_por_col: dict[str, str],
+    totales_fuente: Optional[dict[str, float]] = None,
+    df_resumen: Optional[pd.DataFrame] = None,
+) -> dict[str, object]:
+    fila: dict[str, object] = {}
+    for col in columnas:
+        if col == eje_x:
+            fila[col] = "TOTAL"
+        elif col == "producto":
+            fila[col] = ""
+        elif totales_fuente and col in totales_fuente:
+            fila[col] = totales_fuente[col]
+        else:
+            op = operaciones_por_col.get(col, "Suma")
+            fila[col] = _valor_agregado_columna_tabla_perfil(
+                col, df_tabla, df_origen, op, df_resumen=df_resumen
+            )
+    return fila
+
+
+def _tabla_perfilado_con_fila_total(
+    df_tabla: pd.DataFrame,
+    df_origen: pd.DataFrame,
+    columnas: list[str],
+    eje_x: str,
+    operaciones_por_col: dict[str, str],
+    df_resumen: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
+    totales_fuente: dict[str, float] = {}
+    for col, op in operaciones_por_col.items():
+        if col not in columnas:
+            continue
+        _, val, _ = _resolver_total_metrica_perfil(
+            df_origen, col, op, df_resumen=df_resumen
+        )
+        totales_fuente[col] = val
+    fila = _fila_total_tabla_perfilado(
+        df_tabla,
+        df_origen,
+        columnas,
+        eje_x,
+        operaciones_por_col,
+        totales_fuente=totales_fuente,
+        df_resumen=df_resumen,
+    )
+    return pd.concat([df_tabla, pd.DataFrame([fila])], ignore_index=True)
+
+
 # Anchos fijos de columnas (px); el slider solo cambia el tamaño de letra en celdas.
 _ANCHOS_TABLA_3COL = (72, 248, 102)
 _ANCHOS_TABLA_2COL = (158, 102)
 _ANCHOS_TABLA_3COL_DUAL = (128, 96, 96)  # dimensión + 2 métricas
 _ANCHOS_TABLA_4COL = (68, 200, 92, 92)  # código + producto + 2 métricas
+# Dimensión + hasta 3 métricas (máx. 4 columnas en tabla de perfilado).
+_ANCHOS_TABLA_4COL_METRICAS = (108, 96, 96, 112)
+_ANCHOS_TABLA_5COL_PROD = (68, 120, 88, 88, 108)  # código + producto + 3 métricas
+_ANCHO_MIN_TABLA_MULTIMETRICA = 520
 _FS_TITULO_PANEL_TABLA = 15  # fijo; no sigue al slider de texto de tabla
 
 
@@ -1409,39 +3263,61 @@ _SEPARACION_TABLA_GRAFICO_PX = 12
 
 
 def _pesos_columnas_pareto(dims_tabla: dict[str, Any]) -> Tuple[float, float, float, int]:
-    """Tabla fija; gráfico ocupa el espacio central; resumen ABC un poco más ancho."""
-    w_tabla = float(dims_tabla["ancho_tabla"] + 64)
-    w_resumen = float(_ANCHO_MAX_RESUMEN_PARETO + 40)
-    ancho_util = max(900, REF_VIEWPORT_W - _ANCHO_SIDEBAR_APROX)
-    ancho_graf = int(
-        max(_ANCHO_GRAFICO_PARETO_PX, ancho_util - w_tabla - w_resumen - _SEPARACION_TABLA_GRAFICO_PX)
-    )
-    w_grafico = float(ancho_graf)
-    return w_tabla, w_grafico, w_resumen, ancho_graf
+    """Tabla con espacio para hasta 4 columnas; gráfico y resumen ABC al resto."""
+    n = int(dims_tabla.get("n_cols", 2))
+    if n >= 5:
+        w_tabla, w_graf, w_resumen = 0.44, 0.42, 0.14
+    elif n >= 4:
+        w_tabla, w_graf, w_resumen = 0.42, 0.44, 0.14
+    elif n >= 3:
+        w_tabla, w_graf, w_resumen = 0.38, 0.48, 0.14
+    else:
+        w_tabla, w_graf, w_resumen = 0.28, 0.58, 0.14
+    return w_tabla, w_graf, w_resumen, 0
 
 
 def _proporcion_tabla_vs_grafico(n_cols_tabla: int, pareto_activo: bool) -> Tuple[float, float]:
-    """Sin Pareto: más peso a la columna tabla; gráfico sigue con ancho fijo en fig_ranking_barras."""
-    if n_cols_tabla >= 4:
-        return 0.92, 2.05
+    """Sin Pareto: peso mínimo en tabla (ancho real lo fija CSS); gráfico pegado al cuadro."""
     if n_cols_tabla >= 3:
-        return 0.78, 2.28
-    return 0.82, 2.22
+        return 0.32, 0.68
+    return 0.58, 3.12
 
 
-def _dims_tabla_metricas(clase: str, tabla_font_size: int) -> dict[str, Any]:
+def _ajustar_anchos_tabla_a_columnas(anchos: list[int], n_cols_real: int) -> list[int]:
+    """Alinea reglas CSS con columnas renderizadas (evita última columna sin ancho)."""
+    if n_cols_real <= 0:
+        return anchos
+    if n_cols_real == len(anchos):
+        return anchos
+    if n_cols_real < len(anchos):
+        return anchos[:n_cols_real]
+    ancho_metrica = anchos[-1] if anchos else 88
+    return anchos + [ancho_metrica] * (n_cols_real - len(anchos))
+
+
+def _dims_tabla_metricas(
+    clase: str, tabla_font_size: int, n_cols_real: Optional[int] = None
+) -> dict[str, Any]:
     """Anchos fijos; fs_celda compacta para ver más filas (ABC Pareto usa base_font_size)."""
     fs = max(10, min(28, tabla_font_size))
     fs_celda = max(10, fs)
     pad_v, pad_h = 1, 3
     if clase == "lri-tabla-col-4col":
         anchos = list(_ANCHOS_TABLA_4COL)
+    elif clase in ("lri-tabla-col-multimetrica", "lri-tabla-col-multimetrica-prod"):
+        anchos = (
+            list(_ANCHOS_TABLA_4COL_METRICAS)
+            if clase == "lri-tabla-col-multimetrica"
+            else list(_ANCHOS_TABLA_5COL_PROD)
+        )
     elif clase == "lri-tabla-col-3col-dual":
         anchos = list(_ANCHOS_TABLA_3COL_DUAL)
     elif clase == "lri-tabla-col-3col":
         anchos = list(_ANCHOS_TABLA_3COL)
     else:
         anchos = list(_ANCHOS_TABLA_2COL)
+    if n_cols_real is not None:
+        anchos = _ajustar_anchos_tabla_a_columnas(anchos, n_cols_real)
     ancho_tabla = sum(anchos) + len(anchos) * pad_h * 2 + 16
     return {
         "fs": fs,
@@ -1451,8 +3327,11 @@ def _dims_tabla_metricas(clase: str, tabla_font_size: int) -> dict[str, Any]:
         "anchos_cols": anchos,
         "ancho_tabla": ancho_tabla,
         "n_cols": len(anchos),
-        "col_producto_idx": 1 if clase in ("lri-tabla-col-3col", "lri-tabla-col-4col") else None,
-        "tiene_dos_metricas": clase in ("lri-tabla-col-3col-dual", "lri-tabla-col-4col"),
+        "col_producto_idx": 1
+        if clase in ("lri-tabla-col-3col", "lri-tabla-col-4col", "lri-tabla-col-multimetrica-prod")
+        else None,
+        "tiene_dos_metricas": clase
+        in ("lri-tabla-col-3col-dual", "lri-tabla-col-4col", "lri-tabla-col-multimetrica", "lri-tabla-col-multimetrica-prod"),
     }
 
 
@@ -1476,7 +3355,12 @@ def _aplicar_estilo_celdas_html(
     estilos_por_celda: Optional[list[list[str]]] = None,
 ) -> str:
     """Font-size inline en th/td (Streamlit ignora CSS externo al quitar el <style> de pandas)."""
-    estilo_th = f"font-size:{fs}px;color:#ffffff;text-align:left;"
+    estilo_th = (
+        f"font-size:{fs}px;color:#ffffff;text-align:left;"
+        "position:sticky;top:0;z-index:25;"
+        "background-color:#000000;background-clip:padding-box;"
+        "box-shadow:0 2px 0 #333333;"
+    )
     estilo_td = f"font-size:{fs}px;color:#f8fafc;text-align:center;"
 
     html = re.sub(
@@ -1541,21 +3425,77 @@ def _aplicar_estilo_celdas_html(
     return html[: tbody_m.start()] + cuerpo + html[tbody_m.end() :]
 
 
+def _anotar_indices_columna_html(html: str) -> str:
+    """Añade clases col0, col1… a th/td para que apliquen los anchos CSS."""
+
+    def _anotar_fila(match: re.Match[str]) -> str:
+        apertura, cuerpo, cierre = match.group(1), match.group(2), match.group(3)
+        celdas = re.findall(r"<t[hd][^>]*>.*?</t[hd]>", cuerpo, flags=re.S | re.I)
+        nuevas: list[str] = []
+        for i, celda in enumerate(celdas):
+            if re.search(r'\bclass="', celda, flags=re.I):
+                celda = re.sub(r'class="', f'class="col{i} ', celda, count=1, flags=re.I)
+            else:
+                celda = re.sub(r"<t([hd])", rf'<t\1 class="col{i}"', celda, count=1, flags=re.I)
+            nuevas.append(celda)
+        return apertura + "".join(nuevas) + cierre
+
+    return re.sub(r"(<tr[^>]*>)(.*?)(</tr>)", _anotar_fila, html, flags=re.S | re.I)
+
+
+def _tabla_usa_layout_fluido(pareto_activo: bool, dims: dict[str, Any]) -> bool:
+    """3+ columnas: ancho fijo en px para que quepan hasta 4 columnas sin recorte."""
+    n = int(dims.get("n_cols", 2))
+    if n >= 3:
+        return False
+    if not pareto_activo:
+        return True
+    return bool(dims.get("tiene_dos_metricas"))
+
+
+def _ancho_panel_tabla_metricas(dims: dict[str, Any]) -> int:
+    """Ancho del panel (borde + scroll) acorde a columnas visibles."""
+    n_cols = int(dims.get("n_cols", len(dims.get("anchos_cols", []))))
+    base = int(dims["ancho_tabla"]) + 14
+    if n_cols >= 3:
+        return max(base, _ANCHO_MIN_TABLA_MULTIMETRICA)
+    return base
+
+
 def _css_tabla_metricas(dims: dict[str, Any], fluido: bool = False) -> str:
-    # Fluido: la tabla llena el ancho del contenedor (mismo ancho que el botón
-    # «Guardar en Excel», que usa use_container_width) y las columnas conservan
-    # su proporción actual mediante porcentajes. Fijo: anchos en px (modo Pareto).
+    # 3-4 columnas: tabla en px fijos (sin comprimir la última columna).
     ancho_total_px = sum(dims["anchos_cols"])
-    ancho_tabla_css = "100%" if fluido else f"{dims['ancho_tabla']}px"
+    n_cols = int(dims.get("n_cols", len(dims["anchos_cols"])))
+    ancho_fijo = _ancho_panel_tabla_metricas(dims) - 14
+    ancho_tabla_css = "100%" if fluido else f"{ancho_fijo}px"
     reglas = [
         ".lri-tabla-wrap table.lri-perfil-table {",
         f"table-layout: fixed !important;",
         f"width: {ancho_tabla_css} !important;",
+        f"min-width: {ancho_fijo}px !important;",
         f"border-collapse: collapse !important;",
         "background-color: #131722 !important;",
         "}",
+        ".lri-tabla-wrap .lri-html-table-scroll-container {",
+        "overflow-x: auto !important;",
+        "overflow-y: auto !important;",
+        "overscroll-behavior: contain;",
+        "-webkit-overflow-scrolling: touch;",
+        "width: 100% !important;",
+        f"min-width: {ancho_fijo}px !important;",
+        "}",
+        ".lri-tabla-wrap table.lri-perfil-table thead th {",
+        "position: sticky !important;",
+        "top: 0 !important;",
+        "z-index: 25 !important;",
+        "background-color: #000000 !important;",
+        "color: #ffffff !important;",
+        "background-clip: padding-box !important;",
+        "box-shadow: 0 2px 0 #333333;",
+        "}",
         ".lri-tabla-wrap table.lri-perfil-table th {",
-        "background-color: #1e293b !important;",
+        "background-color: #000000 !important;",
+        "color: #ffffff !important;",
         "font-weight: 600 !important;",
         "text-align: left !important;",
         f"padding: {dims['pad_v']}px {dims['pad_h']}px !important;",
@@ -1567,8 +3507,24 @@ def _css_tabla_metricas(dims: dict[str, Any], fluido: bool = False) -> str:
         f"padding: {dims['pad_v']}px {dims['pad_h']}px !important;",
         "line-height: 1.12 !important;",
         "}",
+        ".lri-tabla-wrap table.lri-perfil-table tbody tr:last-child td {",
+        "background-color: #1a2030 !important;",
+        "color: #fbbf24 !important;",
+        "font-weight: 800 !important;",
+        "position: sticky !important;",
+        "bottom: 0 !important;",
+        "z-index: 20 !important;",
+        "box-shadow: 0 -2px 0 #333333;",
+        "background-clip: padding-box !important;",
+        "}",
     ]
     for i, w in enumerate(dims["anchos_cols"]):
+        nth = i + 1
+        sel_col = (
+            f".lri-tabla-wrap table.lri-perfil-table .col{i}, "
+            f".lri-tabla-wrap table.lri-perfil-table th:nth-child({nth}), "
+            f".lri-tabla-wrap table.lri-perfil-table td:nth-child({nth})"
+        )
         if fluido and ancho_total_px > 0:
             pct = round(w / ancho_total_px * 100, 4)
             regla_ancho = f"width: {pct}% !important;"
@@ -1576,36 +3532,75 @@ def _css_tabla_metricas(dims: dict[str, Any], fluido: bool = False) -> str:
             regla_ancho = (
                 f"width: {w}px !important; min-width: {w}px !important; max-width: {w}px !important;"
             )
+        overflow_celda = (
+            "overflow: visible !important; text-overflow: clip !important;"
+            if n_cols >= 3 and i > 0
+            else "overflow: hidden !important; text-overflow: ellipsis !important;"
+        )
         reglas.append(
-            f".lri-tabla-wrap table.lri-perfil-table .col{i} {{"
+            f"{sel_col} {{"
             f"{regla_ancho}"
-            "overflow: hidden !important; text-overflow: ellipsis !important;"
-            "}"
+            f"{overflow_celda}"
+            "}}"
         )
         if dims.get("col_producto_idx") == i:
             reglas.append(
-                f".lri-tabla-wrap table.lri-perfil-table .col{i} {{"
+                f"{sel_col} {{"
                 "white-space: normal !important; word-break: break-word !important;"
-                "}"
+                "}}"
             )
-        elif dims.get("tiene_dos_metricas") and i >= dims["n_cols"] - 2:
+        elif dims.get("tiene_dos_metricas") and i >= max(1, dims["n_cols"] - 3):
             reglas.append(
-                f".lri-tabla-wrap table.lri-perfil-table td.col{i} {{"
+                f".lri-tabla-wrap table.lri-perfil-table th.col{i}, "
+                f".lri-tabla-wrap table.lri-perfil-table th:nth-child({nth}) {{"
+                "white-space: normal !important; word-break: break-word !important;"
+                "line-height: 1.15 !important; vertical-align: bottom !important;"
+                "}}"
+            )
+            reglas.append(
+                f".lri-tabla-wrap table.lri-perfil-table td.col{i}, "
+                f".lri-tabla-wrap table.lri-perfil-table td:nth-child({nth}) {{"
                 "text-align: center !important; font-weight: 600 !important; white-space: nowrap !important;"
-                "}"
+                "}}"
             )
         elif i == dims["n_cols"] - 1:
             reglas.append(
-                f".lri-tabla-wrap table.lri-perfil-table td.col{i} {{"
+                f".lri-tabla-wrap table.lri-perfil-table th.col{i}, "
+                f".lri-tabla-wrap table.lri-perfil-table th:nth-child({nth}) {{"
+                "white-space: normal !important; word-break: break-word !important;"
+                "line-height: 1.15 !important;"
+                "}}"
+            )
+            reglas.append(
+                f".lri-tabla-wrap table.lri-perfil-table td.col{i}, "
+                f".lri-tabla-wrap table.lri-perfil-table td:nth-child({nth}) {{"
                 "text-align: center !important; font-weight: 600 !important; white-space: nowrap !important;"
-                "}"
+                "}}"
             )
         else:
             reglas.append(
-                f".lri-tabla-wrap table.lri-perfil-table .col{i} {{"
+                f"{sel_col} {{"
                 "white-space: nowrap !important;"
-                "}"
+                "}}"
             )
+    if not fluido:
+        reglas.append(
+            f".lri-tabla-wrap table.lri-perfil-table {{"
+            f"min-width: {ancho_fijo}px !important;"
+            "}}"
+        )
+    if n_cols >= 3:
+        reglas.extend(
+            [
+                ".lri-tabla-wrap.lri-tabla-col-multimetrica .lri-tabla-col,",
+                ".lri-tabla-wrap.lri-tabla-col-3col-dual .lri-tabla-col,",
+                ".lri-tabla-wrap.lri-tabla-col-4col .lri-tabla-col,",
+                ".lri-tabla-wrap.lri-tabla-col-multimetrica-prod .lri-tabla-col {",
+                f"min-width: {ancho_fijo + 14}px !important;",
+                "max-width: 100% !important;",
+                "}",
+            ]
+        )
     return "<style>" + "\n".join(reglas) + "</style>"
 
 
@@ -1629,24 +3624,31 @@ def _html_tabla_metricas_panel(
     tabla_html = _extraer_tabla_html_pandas(
         styler.to_html(index=False, border=0, classes="lri-perfil-table")
     )
+    tabla_html = _anotar_indices_columna_html(tabla_html)
     tabla_html = _aplicar_estilo_celdas_html(
         tabla_html,
         dims["fs_celda"],
         estilos_por_fila=estilos_por_fila,
         estilos_por_celda=estilos_por_celda,
     )
-    ancho = dims["ancho_tabla"]
+    ancho_panel = _ancho_panel_tabla_metricas(dims)
+    ancho_fijo = ancho_panel - 14
     css = _css_tabla_metricas(dims, fluido=fluido)
-    # En modo fluido el panel ocupa el 100% del contenedor (igual que el botón
-    # «Guardar en Excel»); en fijo conserva el ancho en px (modo Pareto).
-    ancho_panel_css = "100%" if fluido else f"{ancho + 14}px"
+    if fluido:
+        ancho_panel_css = "100%"
+        panel_extra = ""
+    else:
+        ancho_panel_css = f"{ancho_panel}px"
+        panel_extra = (
+            f"min-width:{ancho_panel}px;width:{ancho_panel}px;max-width:none;"
+        )
     return dedent(
         f"""\
 {css}
 <div class="lri-tabla-wrap {clase_tabla}">
-<div class="lri-tabla-col" style="padding:5px;border:1px solid #2d3142;border-radius:8px;background:#131722;width:{ancho_panel_css};box-sizing:border-box;">
+<div class="lri-tabla-col" style="padding:5px;border:1px solid #2d3142;border-radius:8px;background:#131722;width:{ancho_panel_css};{panel_extra}box-sizing:border-box;">
 <div class="lri-tabla-title" style="font-size:{_FS_TITULO_PANEL_TABLA}px;font-weight:600;color:#f8fafc;padding:0.4rem 0.55rem;border-bottom:1px solid #2d3142;background:#161b26;margin-bottom:6px;">{titulo_tabla}</div>
-<div class="lri-html-table-scroll-container" style="height:{altura_scroll}px;min-height:{altura_scroll}px;max-height:{altura_scroll}px;overflow-y:auto;overflow-x:auto;">
+<div class="lri-html-table-scroll-container" style="height:{altura_scroll}px;min-height:{altura_scroll}px;max-height:{altura_scroll}px;overflow-y:auto;overflow-x:auto;-webkit-overflow-scrolling:touch;">
 {tabla_html}
 </div>
 </div>
@@ -1738,6 +3740,7 @@ def _mostrar_resumen_pareto_ejecutivo(
     base_font_size: int,
     y_en_porcentaje: bool,
     y_escala_0_100: bool = False,
+    y_miles: bool = False,
 ) -> None:
     """Resumen lateral Pareto: tipografía grande y bloques destacados (solo div/p; sin tablas HTML)."""
     try:
@@ -1749,11 +3752,14 @@ def _mostrar_resumen_pareto_ejecutivo(
         n1, n2, n3 = _tamanos_segmentos_pareto(n, f1, f2, f3)
         unidad = _etiqueta_unidad_eje_x(eje_x)
         p1, p2, p3, total = _participacion_tramos_pareto(df_resumen, eje_y, n1, n2, n3)
-        fmt_val = (
-            (lambda x: _formatear_valor_porcentaje(x, y_escala_0_100))
-            if y_en_porcentaje
-            else (lambda x: f"{x:,.2f}" if abs(x) < 100 else f"{x:,.0f}")
-        )
+        if y_en_porcentaje:
+            fmt_val = lambda x: _formatear_valor_porcentaje(
+                x, y_escala_0_100, eje_y=eje_y
+            )
+        elif y_miles:
+            fmt_val = _formatear_valor_miles
+        else:
+            fmt_val = lambda x: f"{x:,.2f}" if abs(x) < 100 else f"{x:,.0f}"
 
         fs_titulo = max(17, base_font_size + 5)
         fs_ref = max(16, base_font_size + 4)
@@ -1819,16 +3825,24 @@ def aplicar_logica_colores_pareto(
     col_val: str,
     set_seleccionado: str,
     col_peso: Optional[str] = None,
+    menor_es_mejor: Optional[bool] = None,
 ) -> pd.DataFrame:
     fracciones = _resolver_fracciones_pareto_por_item(set_seleccionado)
     if fracciones is None or df_agrup.empty:
         df_agrup["color_pareto"] = None
         return df_agrup
 
+    if menor_es_mejor is None:
+        menor_es_mejor = _metrica_pareto_menor_es_mejor(col_val)
+
     f1, f2, f3 = fracciones
     peso_col = col_peso if col_peso and col_peso in df_agrup.columns else col_val
 
-    df_agrup = df_agrup.sort_values(by=col_val, ascending=False, na_position="last").reset_index(drop=True)
+    df_agrup = df_agrup.sort_values(
+        by=col_val,
+        ascending=bool(menor_es_mejor),
+        na_position="last",
+    ).reset_index(drop=True)
     n = len(df_agrup)
     n1, n2, n3 = _tamanos_segmentos_pareto(n, f1, f2, f3)
 
@@ -1859,14 +3873,19 @@ def _mapa_colores_pareto_metrica(
     eje_x: str,
     eje_y: str,
     set_pareto: str,
+    menor_es_mejor: Optional[bool] = None,
 ) -> dict[str, str]:
     """ABC por métrica: cada categoría recibe su banda según el ranking de esa columna."""
     if df_valores.empty or eje_x not in df_valores.columns or eje_y not in df_valores.columns:
         return {}
     if _resolver_fracciones_pareto_por_item(set_pareto) is None:
         return {}
+    if menor_es_mejor is None:
+        menor_es_mejor = _metrica_pareto_menor_es_mejor(eje_y)
     tmp = df_valores[[eje_x, eje_y]].copy()
-    coloreado = aplicar_logica_colores_pareto(tmp, eje_y, set_pareto)
+    coloreado = aplicar_logica_colores_pareto(
+        tmp, eje_y, set_pareto, menor_es_mejor=menor_es_mejor
+    )
     return (
         coloreado.assign(_kx=coloreado[eje_x].astype(str))
         .set_index("_kx")["color_pareto"]
@@ -1883,6 +3902,52 @@ def _estilo_texto_pareto_tabla(color: Optional[str], fs_celda: str) -> str:
     return mapa.get(color, fs_celda)
 
 
+def _matriz_estilos_tabla_pareto_multimetrica(
+    df_resumen: pd.DataFrame,
+    eje_x: str,
+    eje_y_principal: str,
+    metricas_extras: list[dict[str, Any]],
+    columnas_visibles: list[str],
+    set_pareto: str,
+    fs_celda: str,
+) -> list[list[str]]:
+    """Estilos por celda: dimensión neutra; cada métrica con su propio ABC."""
+    cats = df_resumen[eje_x].astype(str).tolist()
+    mapa_principal = (
+        df_resumen.assign(_kx=df_resumen[eje_x].astype(str))
+        .set_index("_kx")["color_pareto"]
+        .to_dict()
+    )
+    mapas: dict[str, dict[str, Optional[str]]] = {eje_y_principal: mapa_principal}
+    for m in metricas_extras:
+        col = m["columna"]
+        df_m = df_resumen[[eje_x]].copy()
+        df_m[col] = m["valores"]
+        mapas[col] = _mapa_colores_pareto_metrica(df_m, eje_x, col, set_pareto)
+
+    cols_metricas = [eje_y_principal] + [m["columna"] for m in metricas_extras]
+    indices = {
+        col: columnas_visibles.index(col)
+        for col in cols_metricas
+        if col in columnas_visibles
+    }
+
+    estilo_dim = f"{fs_celda}color:#f8fafc;text-align:center;"
+    matriz: list[list[str]] = []
+    for cat in cats:
+        fila = [estilo_dim] * len(columnas_visibles)
+        for col in cols_metricas:
+            idx = indices.get(col)
+            if idx is None:
+                continue
+            color = mapas[col].get(cat)
+            if color is None and col != eje_y_principal:
+                color = COLOR_PARETO_COLA
+            fila[idx] = _estilo_texto_pareto_tabla(color, fs_celda)
+        matriz.append(fila)
+    return matriz
+
+
 def _matriz_estilos_tabla_pareto_dual(
     df_resumen: pd.DataFrame,
     eje_x: str,
@@ -1893,26 +3958,16 @@ def _matriz_estilos_tabla_pareto_dual(
     set_pareto: str,
     fs_celda: str,
 ) -> list[list[str]]:
-    """Estilos por celda: dimensión neutra; cada métrica con su propio ABC."""
-    cats = df_resumen[eje_x].astype(str).tolist()
-    mapa_y1 = df_resumen.assign(_kx=df_resumen[eje_x].astype(str)).set_index("_kx")[
-        "color_pareto"
-    ].to_dict()
-    df_y2 = df_resumen[[eje_x]].copy()
-    df_y2[eje_y2] = ys_y2
-    mapa_y2 = _mapa_colores_pareto_metrica(df_y2, eje_x, eje_y2, set_pareto)
-    idx_y1 = columnas_visibles.index(eje_y1)
-    idx_y2 = columnas_visibles.index(eje_y2)
-    estilo_dim = f"{fs_celda}color:#f8fafc;text-align:center;"
-    matriz: list[list[str]] = []
-    for cat in cats:
-        fila = [estilo_dim] * len(columnas_visibles)
-        fila[idx_y1] = _estilo_texto_pareto_tabla(mapa_y1.get(cat), fs_celda)
-        fila[idx_y2] = _estilo_texto_pareto_tabla(
-            mapa_y2.get(cat, COLOR_PARETO_COLA), fs_celda
-        )
-        matriz.append(fila)
-    return matriz
+    """Compatibilidad: delega en la matriz multi-métrica."""
+    return _matriz_estilos_tabla_pareto_multimetrica(
+        df_resumen,
+        eje_x,
+        eje_y1,
+        [{"columna": eje_y2, "valores": ys_y2}],
+        columnas_visibles,
+        set_pareto,
+        fs_celda,
+    )
 
 
 MSG_PERFIL_NO_COMPUTABLE = "No es computable ese perfilado"
@@ -1971,7 +4026,25 @@ def _evaluar_perfilado_computable(
     No válido: misma columna o cruce atributo × atributo (categoría/subcategoría/código/etc.).
     """
     if eje_x not in df.columns or eje_y not in df.columns:
-        return False, "Las columnas seleccionadas no están en el conjunto de datos."
+        partes: list[str] = []
+        if eje_x is None:
+            partes.append("eje X sin asignar")
+        elif eje_x not in df.columns:
+            partes.append(f"eje X «{eje_x}»")
+        if eje_y is None:
+            partes.append("eje Y sin columna numérica en esta hoja")
+        elif eje_y not in df.columns:
+            partes.append(f"eje Y «{eje_y}»")
+        muestra = ", ".join(str(c) for c in list(df.columns)[:10])
+        if len(df.columns) > 10:
+            muestra += f" … (+{len(df.columns) - 10} más)"
+        hoja = st.session_state.get("lri_excel_hoja_activa")
+        prefijo_hoja = f"Hoja «{hoja}»: " if hoja else ""
+        return False, (
+            f"{prefijo_hoja}{' y '.join(partes)} no están en los datos cargados. "
+            f"Revise la hoja del Excel o elija columnas en el panel lateral. "
+            f"Columnas detectadas: {muestra or '(ninguna)'}."
+        )
     if eje_x == eje_y:
         return False, "El eje X y el eje Y no pueden ser la misma columna."
     ok_texto, aviso_texto = _validar_dimension_como_texto(df, eje_x)
@@ -1990,27 +4063,36 @@ def _evaluar_perfilado_computable(
     return True, None
 
 
-def procesar_agrupacion_perfil(df: pd.DataFrame, eje_x: str, eje_y: str, operacion: str, top_n: int, set_pareto: str) -> pd.DataFrame:
+def procesar_agrupacion_perfil(
+    df: pd.DataFrame,
+    eje_x: str,
+    eje_y: str,
+    operacion: str,
+    top_n: int,
+    set_pareto: str,
+    drill_down_categoria: Optional[str] = None,
+    drill_down_subcategoria: Optional[str] = None,
+    orden_ascendente: Optional[bool] = None,
+) -> pd.DataFrame:
     computable, _ = _evaluar_perfilado_computable(df, eje_x, eje_y, operacion)
     if not computable:
         return "ERROR_NO_COMPUTABLE"
-    df_filtrado = df.copy()
-
-    if st.session_state["drill_down_categoria"] and "categoria" in df_filtrado.columns:
-        df_filtrado = df_filtrado[df_filtrado["categoria"] == st.session_state["drill_down_categoria"]]
+    df_filtrado = _aplicar_filtros_drill_df(
+        df,
+        drill_down_categoria=drill_down_categoria,
+        drill_down_subcategoria=drill_down_subcategoria,
+    )
 
     dict_ops = {"Suma": "sum", "Promedio": "mean"}
     pareto_peso: Optional[str] = None
 
     vt = _columna_ventas_totales(df_filtrado)
-    mb = _columna_margen_bruto(df_filtrado)
     mu = _columna_margen_utilidad_ratio(df_filtrado)
 
     if _metrica_margen_sobre_ventas(df_filtrado, eje_y) and vt is not None and vt in df_filtrado.columns:
         t = df_filtrado[[eje_x, eje_y, vt]].copy()
-        if mb is not None and eje_y == mb:
-            t["__num"] = t[eje_y]
-        elif mu is not None and eje_y == mu:
+        if mu is not None and eje_y == mu:
+            t[eje_y] = _serie_ratio_0_1(t[eje_y])
             t["__num"] = t[eje_y] * t[vt]
         else:
             t["__num"] = np.nan
@@ -2040,21 +4122,45 @@ def procesar_agrupacion_perfil(df: pd.DataFrame, eje_x: str, eje_y: str, operaci
             pareto_peso = "__pareto_peso__"
         else:
             df_agrup = t.groupby(eje_x, as_index=False).agg({eje_y: "mean"})
+    elif _columna_es_metrica_ratio_inventario(eje_y):
+        df_agrup = _agrupar_ratio_inventario_ponderado(df_filtrado, eje_x, eje_y)
     else:
         df_agrup = df_filtrado.groupby(eje_x)[eje_y].agg(dict_ops[operacion]).reset_index()
 
-    df_agrup = df_agrup.sort_values(by=eje_y, ascending=False)
+    df_agrup = df_agrup.sort_values(
+        by=eje_y,
+        ascending=_metrica_pareto_menor_es_mejor(eje_y),
+    )
     df_agrup[eje_x] = df_agrup[eje_x].astype(str)
 
+    invertir = _metrica_pareto_menor_es_mejor(eje_y)
     if pareto_peso:
-        df_agrup = aplicar_logica_colores_pareto(df_agrup, eje_y, set_pareto, col_peso=pareto_peso)
+        df_agrup = aplicar_logica_colores_pareto(
+            df_agrup, eje_y, set_pareto, col_peso=pareto_peso, menor_es_mejor=invertir
+        )
         df_agrup = df_agrup.drop(columns=["__pareto_peso__"], errors="ignore")
     else:
-        df_agrup = aplicar_logica_colores_pareto(df_agrup, eje_y, set_pareto)
+        df_agrup = aplicar_logica_colores_pareto(
+            df_agrup, eje_y, set_pareto, menor_es_mejor=invertir
+        )
+
+    # Orden de presentación: el flag del usuario/ChatGPT manda.
+    # (Pareto «menor es mejor» solo colorea; no invierte en silencio el eje.)
+    # orden_ascendente=True  → menor → mayor
+    # orden_ascendente=False → mayor → menor
+    if orden_ascendente is None:
+        try:
+            orden_ascendente = bool(st.session_state.get("lri_man_orden_ascendente", False))
+        except Exception:
+            orden_ascendente = False
+    ascending_final = bool(orden_ascendente)
+    df_agrup = df_agrup.sort_values(
+        by=eje_y, ascending=ascending_final, na_position="last"
+    ).reset_index(drop=True)
 
     if top_n > 0:
-        return df_agrup.head(top_n)
-    return df_agrup
+        return df_agrup.head(top_n).reset_index(drop=True)
+    return df_agrup.reset_index(drop=True)
 
 
 # --- Exportación de resultados del perfilado (Capa 3) ---
@@ -2105,11 +4211,17 @@ def _preparar_df_exportacion_perfil(
     eje_y: str,
     operacion: str,
     pareto_activo: bool,
-    eje_y2: Optional[str] = None,
+    metricas_extra: Optional[list[str]] = None,
+    metricas_extras_data: Optional[list[dict[str, Any]]] = None,
 ) -> pd.DataFrame:
     """Misma información que la tabla en pantalla, lista para Excel."""
     df_tabla, _, _, _ = _preparar_tabla_metricas_detalle(
-        df_resumen, df_origen, eje_x, eje_y, eje_y2=eje_y2
+        df_resumen,
+        df_origen,
+        eje_x,
+        eje_y,
+        metricas_extra=metricas_extra,
+        metricas_extras_data=metricas_extras_data,
     )
     export = df_tabla.copy()
     if pareto_activo and "color_pareto" in df_resumen.columns:
@@ -2120,21 +4232,74 @@ def _preparar_df_exportacion_perfil(
         export["pct_participacion"] = (
             pd.to_numeric(df_resumen["porcentaje"], errors="coerce") * 100.0
         ).round(2)
-    export.insert(0, "operacion", operacion)
+    export.insert(0, "operacion_metrica_principal", operacion)
     y_pct, y_escala = _info_presentacion_porcentaje_eje_y(df_origen, eje_y, export)
+    y_miles = _metrica_eje_y_en_miles(eje_y)
     if y_pct and eje_y in export.columns:
         vals = pd.to_numeric(export[eje_y], errors="coerce")
         export[eje_y] = vals.map(
-            lambda x: _formatear_valor_porcentaje(float(x), y_escala) if pd.notna(x) else ""
+            lambda x: _formatear_valor_porcentaje(float(x), y_escala, eje_y=eje_y)
+            if pd.notna(x)
+            else ""
         )
-    if eje_y2 and eje_y2 in export.columns:
-        y2_pct, y2_escala = _info_presentacion_porcentaje_eje_y(df_origen, eje_y2, export)
-        if y2_pct:
-            vals2 = pd.to_numeric(export[eje_y2], errors="coerce")
-            export[eje_y2] = vals2.map(
-                lambda x: _formatear_valor_porcentaje(float(x), y2_escala) if pd.notna(x) else ""
+    elif y_miles and eje_y in export.columns:
+        vals = pd.to_numeric(export[eje_y], errors="coerce")
+        export[eje_y] = vals.map(
+            lambda x: _formatear_valor_miles(float(x)) if pd.notna(x) else ""
+        )
+    for col in metricas_extra or []:
+        if col not in export.columns:
+            continue
+        col_pct, col_escala = _info_presentacion_porcentaje_eje_y(df_origen, col, export)
+        col_miles = _metrica_eje_y_en_miles(col)
+        if col_pct:
+            vals_col = pd.to_numeric(export[col], errors="coerce")
+            export[col] = vals_col.map(
+                lambda x, esc=col_escala, c=col: _formatear_valor_porcentaje(
+                    float(x), esc, eje_y=c
+                )
+                if pd.notna(x)
+                else ""
             )
-    return export
+        elif col_miles:
+            vals_col = pd.to_numeric(export[col], errors="coerce")
+            export[col] = vals_col.map(
+                lambda x: _formatear_valor_miles(float(x)) if pd.notna(x) else ""
+            )
+
+    operaciones_por_col = {eje_y: operacion}
+    for m in metricas_extras_data or []:
+        operaciones_por_col[str(m.get("columna", ""))] = str(m.get("operacion", "Suma"))
+
+    fila_total: dict[str, object] = {}
+    for col in export.columns:
+        if col == eje_x:
+            fila_total[col] = "TOTAL"
+        elif col in ("producto", "operacion_metrica_principal", "banda_pareto", "pct_participacion"):
+            fila_total[col] = ""
+        elif col in operaciones_por_col:
+            _, val, fmt = _resolver_total_metrica_perfil(
+                df_origen, col, operaciones_por_col[col], df_resumen=df_resumen
+            )
+            if col == eje_y and y_pct:
+                fila_total[col] = _formatear_valor_porcentaje(val, y_escala, eje_y=eje_y)
+            elif col == eje_y and y_miles:
+                fila_total[col] = _formatear_valor_miles(val)
+            elif col in (metricas_extra or []):
+                col_pct, col_escala = _info_presentacion_porcentaje_eje_y(df_origen, col, export)
+                col_miles = _metrica_eje_y_en_miles(col)
+                if col_pct:
+                    fila_total[col] = _formatear_valor_porcentaje(val, col_escala, eje_y=col)
+                elif col_miles:
+                    fila_total[col] = _formatear_valor_miles(val)
+                else:
+                    fila_total[col] = fmt
+            else:
+                fila_total[col] = fmt if y_pct or y_miles else val
+        else:
+            fila_total[col] = ""
+
+    return pd.concat([export, pd.DataFrame([fila_total])], ignore_index=True)
 
 
 def _meta_exportacion_perfil(
@@ -2144,19 +4309,22 @@ def _meta_exportacion_perfil(
     set_pareto: str,
     drill_categoria: Optional[str],
     n_filas: int,
-    eje_y2: Optional[str] = None,
+    metricas_extra: Optional[list[dict[str, Any]]] = None,
+    drill_subcategoria: Optional[str] = None,
 ) -> dict[str, Any]:
     meta = {
         "fecha_exportacion": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "eje_x": eje_x,
         "eje_y": eje_y,
-        "operacion": operacion,
+        "operacion_metrica_principal": operacion,
         "pareto": set_pareto,
         "drill_down_categoria": drill_categoria or "Ver todas",
+        "drill_down_subcategoria": drill_subcategoria or "Ver todas",
         "filas_exportadas": n_filas,
     }
-    if eje_y2:
-        meta["eje_y_adicional"] = eje_y2
+    for i, m in enumerate(metricas_extra or [], start=2):
+        meta[f"metrica_adicional_{i}"] = m["columna"]
+        meta[f"operacion_metrica_adicional_{i}"] = m["operacion"]
     return meta
 
 
@@ -2188,9 +4356,95 @@ def altura_grafico_adaptativa(n: int, viewport_h: int) -> int:
 UMBRAL_GIRO_ETIQUETAS_BARRA = 30
 
 
-def _fs_etiquetas_valor_barras(base_font_size: int) -> int:
-    """Tamaño del valor sobre cada barra; escala con el slider del gráfico."""
-    return max(13, base_font_size + 5)
+def _fs_etiquetas_valor_barras(
+    base_font_size: int,
+    *,
+    multimetrica: bool = False,
+    etiqueta_font_size: Optional[int] = None,
+) -> int:
+    """Tamaño del valor sobre cada barra; control independiente vía slider de interfaz."""
+    if etiqueta_font_size is not None and etiqueta_font_size > 0:
+        return max(8, min(28, int(etiqueta_font_size)))
+    fs = max(13, base_font_size + 5)
+    if multimetrica:
+        return max(12, min(fs, 15))
+    return fs
+
+
+def _textfont_etiqueta_barras(fs: int, color: str) -> dict[str, Any]:
+    """Fuente uniforme para etiquetas de valor (todas las series del gráfico)."""
+    return dict(size=fs, color=color, family="Arial, sans-serif")
+
+
+def _texttemplates_valores_barras(
+    series: list[tuple[np.ndarray, bool, bool, bool, str]],
+) -> list[str]:
+    """Plantillas de texto; formato numérico compartido entre métricas no-% del mismo gráfico."""
+    arrays_num = [
+        ys
+        for ys, es_pct, y_miles, _, _ in series
+        if not es_pct and not y_miles and len(ys) > 0
+    ]
+    mx_global = 0.0
+    if arrays_num:
+        mx_global = max(float(np.nanmax(np.abs(a))) for a in arrays_num)
+    fmt_num = "%{text:,.2f}" if mx_global < 100 else "%{text:,.0f}"
+    out: list[str] = []
+    for _, es_pct, y_miles, escala_0_100, col in series:
+        if es_pct:
+            if col and _es_margen_utilidad_porcentaje(col):
+                out.append("%{text}")
+            else:
+                out.append("%{text}" if escala_0_100 else "%{text:.2%}")
+        elif y_miles:
+            out.append("%{text}")
+        else:
+            out.append(fmt_num)
+    return out
+
+
+def _texto_y_etiquetas_barras(
+    ys: np.ndarray,
+    *,
+    es_pct: bool,
+    escala_0_100: bool,
+    y_miles: bool,
+    eje_y: str = "",
+) -> tuple[list[str], str]:
+    if y_miles:
+        return [_formatear_valor_miles(float(v)) for v in ys], "%{text}"
+    if es_pct:
+        if eje_y and _es_margen_utilidad_porcentaje(eje_y):
+            return [f"{_valor_a_porcentaje_entero(float(v))}%" for v in ys], "%{text}"
+        if escala_0_100:
+            return [f"{float(v):.2f}%" for v in ys], "%{text}"
+        return [str(float(v)) for v in ys], "%{text:.2%}"
+    mx = float(np.nanmax(np.abs(ys))) if len(ys) else 0.0
+    template = "%{text:,.2f}" if mx < 100 else "%{text:,.0f}"
+    return [str(float(v)) for v in ys], template
+
+
+def _valores_y_grafico(ys: np.ndarray, y_miles: bool) -> np.ndarray:
+    if y_miles:
+        return ys.astype(float) / 1000.0
+    return ys
+
+
+def _texttemplate_valores_barras(
+    ys: np.ndarray,
+    es_pct: bool,
+    escala_0_100: bool = False,
+    y_miles: bool = False,
+    eje_y: str = "",
+) -> str:
+    _, template = _texto_y_etiquetas_barras(
+        ys,
+        es_pct=es_pct,
+        escala_0_100=escala_0_100,
+        y_miles=y_miles,
+        eje_y=eje_y,
+    )
+    return template
 
 
 def _angulo_etiquetas_valor_barras(n_barras: int) -> int:
@@ -2279,14 +4533,125 @@ def _bargap_por_n(n: int, *, dual: bool = False) -> tuple[float, float]:
 
 
 def _angulo_etiquetas_x_grafico(n: int, eje_x: str = "", max_label_len: int = 0) -> int:
+    """Ángulo del eje X: vertical (-90°) cuando hay muchas/etiquetas largas (legibilidad)."""
     tipo = _tipo_dimension_catalogo(eje_x)
-    if tipo in ("descripcion", "codigo") and (n > 8 or max_label_len > 14):
-        return -90 if n > 18 or max_label_len > 28 else -45
-    if n > 35:
+    # Descripciones/códigos: siempre vertical si hay más de unas pocas o son largas.
+    # Evita -45° (chocan entre sí y se leen peor).
+    if tipo in ("descripcion", "codigo"):
+        if n > 4 or max_label_len > 10:
+            return -90
+        return 0
+    if n > 10 or max_label_len > 16:
         return -90
-    if n > 12:
-        return -45
     return 0
+
+
+def _chars_wrap_etiqueta_x(n: int, eje_x: str = "", max_label_len: int = 0) -> int:
+    """
+    Ancho (caracteres) para wrap automático del eje X.
+    0 = no envolver (usar etiqueta completa + ángulo vertical).
+
+    Con etiquetas a -90° el wrap agresivo recorta mal (p. ej. dos harinas → misma
+    etiqueta) y Plotly apila barras. Preferimos texto completo vertical.
+    """
+    tipo = _tipo_dimension_catalogo(eje_x)
+    # Descripción/código en vertical: sin wrap (categoría X = texto único original).
+    if tipo in ("descripcion", "codigo"):
+        return 0
+    umbral = 12 if tipo == "subcategoria" else 16
+    if max_label_len <= umbral and tipo != "subcategoria":
+        return 0
+    if tipo == "subcategoria":
+        if max_label_len <= umbral and n <= 4:
+            return 0
+        if n <= 8:
+            return 16
+        if n <= 14:
+            return 13
+        if n <= 22:
+            return 11
+        return 9
+    if tipo == "otro":
+        if max_label_len <= 16:
+            return 0
+        if n <= 10:
+            return 16
+        if n <= 20:
+            return 12
+        return 10
+    if tipo == "categoria" and max_label_len > 14:
+        return 14 if n <= 12 else 11
+    return 0
+
+
+def _envolver_etiqueta_eje_x(texto: str, ancho: int, *, max_lineas: int = 3) -> str:
+    """Parte etiquetas largas en varias líneas (<br>) para el eje X de Plotly."""
+    s = str(texto).strip()
+    if ancho <= 0 or len(s) <= ancho:
+        return s
+    lineas = wrap(s, width=ancho, break_long_words=True, break_on_hyphens=True)
+    if not lineas:
+        return s
+    if len(lineas) > max_lineas:
+        lineas = lineas[:max_lineas]
+        ultima = lineas[-1]
+        if len(ultima) >= ancho:
+            lineas[-1] = ultima[: max(1, ancho - 1)] + "…"
+        elif not ultima.endswith("…"):
+            lineas[-1] = ultima + "…"
+    # Plotly renderiza saltos de línea en ticks con <br>, no con \n.
+    return "<br>".join(lineas)
+
+
+def _hacer_unicas_etiquetas_categoria_x(
+    originales: list[str], envueltas: list[str]
+) -> list[str]:
+    """Evita que dos categorías distintas colapsen a la misma etiqueta (Plotly las apila)."""
+    vistos: dict[str, int] = {}
+    out: list[str] = []
+    for orig, env in zip(originales, envueltas):
+        base = env if env else str(orig)
+        if base not in vistos:
+            vistos[base] = 1
+            out.append(base)
+            continue
+        vistos[base] += 1
+        cola = str(orig).strip()
+        sufijo = cola[-20:] if len(cola) > 20 else cola
+        candidato = f"{base}<br>· {sufijo}"
+        n = 2
+        while candidato in vistos:
+            candidato = f"{base}<br>· {sufijo}\u200b{n}"
+            n += 1
+        vistos[candidato] = 1
+        out.append(candidato)
+    return out
+
+
+def _etiquetas_x_grafico_con_wrap(
+    etiquetas: list[str],
+    *,
+    n: int,
+    eje_x: str,
+    max_label_len: int,
+) -> tuple[list[str], int, int, bool]:
+    """
+    Devuelve (etiquetas_para_eje, angulo, n_lineas_max, uso_wrap).
+    Las etiquetas con wrap se usan como valores X (Plotly ignora <br> solo en ticktext).
+    Siempre garantiza unicidad para no apilar barras.
+    """
+    ang = _angulo_etiquetas_x_grafico(n, eje_x, max_label_len)
+    ancho = _chars_wrap_etiqueta_x(n, eje_x, max_label_len)
+    if ancho <= 0:
+        # Texto completo + ángulo (p. ej. -90°): categorías = originales únicos.
+        return list(etiquetas), ang, 1, False
+    ticktext = [_envolver_etiqueta_eje_x(t, ancho) for t in etiquetas]
+    ticktext = _hacer_unicas_etiquetas_categoria_x(etiquetas, ticktext)
+    n_lineas = max((t.count("<br>") + 1 for t in ticktext), default=1)
+    # Con wrap también preferir vertical si hay muchas barras.
+    if n > 10:
+        ang = -90
+    return ticktext, ang, n_lineas, True
 
 
 def _altura_grafico_scroll_horizontal(n: int, viewport_h: int) -> int:
@@ -2297,20 +4662,38 @@ def _altura_grafico_scroll_horizontal(n: int, viewport_h: int) -> int:
     return int(max(520, min(920, usable * 0.88)))
 
 
-def _margen_inferior_grafico(n: int, eje_x: str = "", max_label_len: int = 0) -> int:
-    ang = _angulo_etiquetas_x_grafico(n, eje_x, max_label_len)
-    extra = min(80, max(0, max_label_len - 12) * 2)
-    if ang == -90:
-        return 140 + extra
-    if ang == -45:
+def _margen_inferior_grafico(
+    n: int,
+    eje_x: str = "",
+    max_label_len: int = 0,
+    *,
+    angulo_x: Optional[int] = None,
+    n_lineas_etiqueta: int = 1,
+    uso_wrap: bool = False,
+) -> int:
+    ang = (
+        int(angulo_x)
+        if angulo_x is not None
+        else _angulo_etiquetas_x_grafico(n, eje_x, max_label_len)
+    )
+    if uso_wrap:
+        base = 48 + int(n_lineas_etiqueta) * 22 + (18 if ang <= -80 else (14 if ang < 0 else 0))
+        if ang <= -80:
+            # Vertical + wrap: hace falta más margen inferior.
+            return max(150, base + min(100, max_label_len))
+        return max(110, base)
+    # Etiquetas verticales completas (descripciones largas): margen según longitud.
+    extra = min(160, max(0, max_label_len - 8) * 3)
+    if ang <= -80:
+        return max(160, 130 + extra)
+    if ang <= -40:
         return 110 + extra // 2
     return 72 + extra // 3
 
 
 def _ver_grafico_completo_en_pantalla(eje_x: str) -> bool:
     """True si el usuario pidió ver todo el gráfico en pantalla (sin scroll)."""
-    if not _eje_x_es_codigo_o_descripcion(eje_x):
-        return False
+    del eje_x
     return bool(st.session_state.get("lri_grafico_scroll_completo", False))
 
 
@@ -2320,11 +4703,9 @@ def _scroll_grafico_activo(
     """¿Usar gráfico extendido con scroll horizontal? False = todo visible en pantalla."""
     if n < 2:
         return False
+    if ver_completo_pantalla:
+        return False
     tipo = _tipo_dimension_catalogo(eje_x)
-    if tipo in ("codigo", "descripcion"):
-        if ver_completo_pantalla:
-            return False
-        return n > _umbral_scroll_dimension(tipo)
     if tipo == "otro":
         return n > 8
     return n > _umbral_scroll_dimension(tipo)
@@ -2337,6 +4718,252 @@ def _usar_scroll_horizontal_grafico(
     return _scroll_grafico_activo(n, eje_x, ver_completo_pantalla=ver_completo_pantalla)
 
 
+def _items_nomenclatura_pareto(set_pareto: str = "") -> list[tuple[str, str]]:
+    """Etiqueta + color para la leyenda Pareto (inicio del gráfico)."""
+    a, b, c = _etiquetas_tramos_pareto(set_pareto) if set_pareto else ("Top", "Medio", "Cola")
+    return [
+        (f"{a} · verde", COLOR_PARETO_TOP),
+        (f"{b} · amarillo", COLOR_PARETO_MEDIO),
+        (f"{c} · rojo", COLOR_PARETO_COLA),
+    ]
+
+
+def _items_nomenclatura_multimetrica(
+    col_principal: str,
+    operacion_principal: str,
+    metricas_extras: Optional[list[dict[str, Any]]] = None,
+) -> list[tuple[str, str]]:
+    items: list[tuple[str, str]] = [
+        (
+            _etiqueta_metrica_grafico(col_principal, operacion_principal, False, False),
+            _COLORES_BARRAS_MULTIMETRICA[0],
+        )
+    ]
+    for i, m in enumerate(metricas_extras or [], start=1):
+        color = _COLORES_BARRAS_MULTIMETRICA[min(i, len(_COLORES_BARRAS_MULTIMETRICA) - 1)]
+        items.append(
+            (
+                _etiqueta_metrica_grafico(
+                    m.get("columna", ""),
+                    m.get("operacion", "Suma"),
+                    bool(m.get("y_pct")),
+                    bool(m.get("y_tasa_mant")),
+                ),
+                color,
+            )
+        )
+    return items
+
+
+def _html_nomenclatura_colores(items: list[tuple[str, str]]) -> str:
+    """Barra de nomenclatura fija al inicio (no viaja al final del scroll horizontal)."""
+    if not items:
+        return ""
+    chips = []
+    for nombre, color in items:
+        chips.append(
+            "<span style='display:inline-flex;align-items:center;gap:7px;"
+            "margin:0 16px 0 0;white-space:nowrap;'>"
+            f"<span style='width:12px;height:12px;border-radius:3px;background:{color};"
+            "box-shadow:0 0 0 1px rgba(255,255,255,0.15);flex-shrink:0;'></span>"
+            f"<span style='color:#e2e8f0;font-size:0.92rem;font-weight:600;'>"
+            f"{html.escape(str(nombre))}</span></span>"
+        )
+    return (
+        "<div class='lri-nomenclatura-colores' style='"
+        "display:flex;flex-wrap:wrap;align-items:center;gap:4px 0;"
+        "padding:8px 10px;margin:0 0 8px 0;"
+        "border:1px solid #1e3a5f;border-radius:8px;background:#0f1419;'>"
+        "<span style='color:#94a3b8;font-size:0.78rem;text-transform:uppercase;"
+        "letter-spacing:0.04em;margin-right:10px;font-weight:700;'>Colores</span>"
+        + "".join(chips)
+        + "</div>"
+    )
+
+
+def _layout_leyenda_inicio_grafico(base_font_size: int) -> dict[str, Any]:
+    """Leyenda Plotly anclada al inicio (izquierda / arriba), no al final del gráfico ancho."""
+    return dict(
+        orientation="h",
+        yanchor="bottom",
+        y=1.02,
+        xanchor="left",
+        x=0.0,
+        font=dict(color="#e2e8f0", size=max(11, base_font_size - 1)),
+        bgcolor="rgba(15,20,25,0.75)",
+        bordercolor="rgba(30,58,95,0.8)",
+        borderwidth=1,
+    )
+
+
+def _orden_clase_abc(valor: Any) -> int:
+    s = str(valor).strip().upper()
+    preferido = {"A": 0, "B": 1, "C": 2, "C-": 3, "C−": 3}
+    if s in preferido:
+        return preferido[s]
+    return 50 + (ord(s[0]) if s else 99)
+
+
+def _mapa_x_clases(clases: list[str]) -> dict[str, float]:
+    ordenadas = sorted(clases, key=_orden_clase_abc)
+    return {c: float(i + 1) for i, c in enumerate(ordenadas)}
+
+
+def fig_scatter_abc_articulos(
+    df: pd.DataFrame,
+    metrica_y: str,
+    *,
+    viewport_h: int = REF_VIEWPORT_H,
+    base_font_size: int = 14,
+) -> go.Figure:
+    """Scatter: eje X = clase ABC, un punto por artículo, etiqueta = código."""
+    d = df.copy()
+    d["_clase"] = d["clase"].astype(str).str.strip()
+    d = d[d["_clase"].ne("") & d["_clase"].str.lower().ne("nan")].copy()
+    if metrica_y not in d.columns:
+        raise ValueError(f"Falta métrica {metrica_y}")
+    d[metrica_y] = pd.to_numeric(d[metrica_y], errors="coerce")
+    d = d.dropna(subset=[metrica_y])
+
+    clases = sorted(d["_clase"].unique().tolist(), key=_orden_clase_abc)
+    mapa_x = _mapa_x_clases(clases)
+    colores = {
+        "A": "#22c55e",
+        "B": "#eab308",
+        "C": "#f97316",
+        "C-": "#ef4444",
+        "C−": "#ef4444",
+    }
+    rng = np.random.default_rng(42)
+    mostrar_texto = len(d) <= 120
+    col_codigo = "codigo" if "codigo" in d.columns else None
+    col_desc = "descripcion" if "descripcion" in d.columns else None
+
+    fig = go.Figure()
+    for clase in clases:
+        g = d[d["_clase"] == clase]
+        if g.empty:
+            continue
+        x0 = mapa_x[clase]
+        jitter = rng.uniform(-0.18, 0.18, size=len(g))
+        xs = x0 + jitter
+        ys = g[metrica_y].astype(float).to_numpy()
+        if col_codigo:
+            textos = g[col_codigo].astype(str).tolist()
+        elif col_desc:
+            textos = [str(t)[:18] for t in g[col_desc].tolist()]
+        else:
+            textos = [str(i) for i in g.index.tolist()]
+        hovers = []
+        for i, (_, row) in enumerate(g.iterrows()):
+            partes = [f"Clase: {clase}"]
+            if col_codigo:
+                partes.append(f"Código: {row[col_codigo]}")
+            if col_desc:
+                partes.append(f"Descripción: {row[col_desc]}")
+            partes.append(f"{metrica_y}: {ys[i]:,.2f}")
+            hovers.append("<br>".join(partes))
+        fig.add_trace(
+            go.Scatter(
+                x=xs,
+                y=ys,
+                mode="markers+text" if mostrar_texto else "markers",
+                name=f"Clase {clase}",
+                text=textos if mostrar_texto else None,
+                textposition="top center",
+                textfont=dict(size=max(9, base_font_size - 6), color="#cbd5e1"),
+                marker=dict(
+                    size=10,
+                    color=colores.get(clase.upper() if clase.upper() in colores else clase, "#38bdf8"),
+                    line=dict(width=0.5, color="#0f172a"),
+                    opacity=0.9,
+                ),
+                hovertext=hovers,
+                hoverinfo="text",
+            )
+        )
+
+    altura = max(420, min(720, int(viewport_h * 0.55)))
+    fig.update_layout(
+        height=altura,
+        margin=dict(l=60, r=24, t=48, b=56),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="#0f1419",
+        font=dict(size=base_font_size, color="#e2e8f0"),
+        title=dict(
+            text=f"Artículos por clase ABC · Y = {metrica_y}",
+            font=dict(size=base_font_size + 2),
+        ),
+        xaxis=dict(
+            title="Clase ABC",
+            tickmode="array",
+            tickvals=[mapa_x[c] for c in clases],
+            ticktext=clases,
+            range=[0.4, len(clases) + 0.6],
+            gridcolor="#1e293b",
+            zeroline=False,
+        ),
+        yaxis=dict(title=metrica_y, gridcolor="#1e293b", zeroline=False),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+        hovermode="closest",
+    )
+    return fig
+
+
+def _render_vista_abc_articulos(
+    df: pd.DataFrame,
+    metrica_y: str,
+    *,
+    viewport_h: int,
+    base_font_size: int,
+) -> None:
+    """Vista especial: scatter A/B/C + tabla de artículos (sin alterar el perfilado estándar)."""
+    st.caption(
+        "Vista especial ABC: cada punto es un artículo. "
+        "Para volver al perfilado de barras, cambie un selector o pida otro cruce."
+    )
+    d = df.copy()
+    d["_clase"] = d["clase"].astype(str).str.strip()
+    d = d[d["_clase"].ne("") & d["_clase"].str.lower().ne("nan")]
+    conteos = d["_clase"].value_counts()
+    clases_ord = sorted(conteos.index.tolist(), key=_orden_clase_abc)
+    cols_kpi = st.columns(len(clases_ord) + 1)
+    for i, clase in enumerate(clases_ord):
+        with cols_kpi[i]:
+            st.markdown(
+                f"<div class='kpi-card'><div class='kpi-title'>Clase {html.escape(str(clase))}</div>"
+                f"<div class='kpi-value'>{int(conteos[clase])}</div></div>",
+                unsafe_allow_html=True,
+            )
+    with cols_kpi[-1]:
+        st.markdown(
+            f"<div class='kpi-card'><div class='kpi-title'>Total artículos</div>"
+            f"<div class='kpi-value'>{len(d)}</div></div>",
+            unsafe_allow_html=True,
+        )
+
+    try:
+        fig = fig_scatter_abc_articulos(
+            d, metrica_y, viewport_h=viewport_h, base_font_size=base_font_size
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    except Exception as exc:  # noqa: BLE001
+        st.warning(f"No se pudo armar el scatter ABC ({exc}). Se muestra la tabla.")
+
+    cols_tabla = [c for c in ("clase", "codigo", "descripcion", metrica_y) if c in d.columns]
+    if not cols_tabla:
+        cols_tabla = list(d.columns)[:6]
+    df_tab = d[cols_tabla].copy()
+    if "clase" in df_tab.columns:
+        df_tab["_ord"] = df_tab["clase"].map(_orden_clase_abc)
+        sort_cols = ["_ord"]
+        if "codigo" in df_tab.columns:
+            sort_cols.append("codigo")
+        df_tab = df_tab.sort_values(sort_cols).drop(columns=["_ord"])
+    st.markdown("#### Artículos por clase ABC")
+    st.dataframe(df_tab, use_container_width=True, hide_index=True, height=420)
+
+
 def _mostrar_grafico_barras(
     fig: go.Figure,
     n_barras: int,
@@ -2345,8 +4972,14 @@ def _mostrar_grafico_barras(
     eje_x: str = "",
     max_label_len: int = 0,
     ver_completo_pantalla: bool = False,
+    nomenclatura: Optional[list[tuple[str, str]]] = None,
 ) -> None:
-    """Render: scroll extendido o gráfico completo ajustado al ancho visible."""
+    """Render: scroll extendido o gráfico completo; nomenclatura siempre al inicio."""
+    if nomenclatura:
+        # Nomenclatura fuera del scroll: siempre visible al inicio (no al final del gráfico ancho).
+        st.markdown(_html_nomenclatura_colores(nomenclatura), unsafe_allow_html=True)
+        fig.update_layout(showlegend=False)
+
     scroll_activo = _scroll_grafico_activo(
         n_barras, eje_x, ver_completo_pantalla=ver_completo_pantalla
     )
@@ -2369,7 +5002,6 @@ def _mostrar_grafico_barras(
         include_plotlyjs="cdn",
         config={"displayModeBar": True, "responsive": False, "scrollZoom": False},
     )
-    # Un solo bloque HTML: Streamlit no anida st.plotly_chart dentro de st.markdown.
     wrapped = f"""
     <div class="lri-grafico-scroll-h" style="
         overflow-x:auto;overflow-y:hidden;width:100%;max-width:100%;
@@ -2388,7 +5020,7 @@ def _mostrar_grafico_barras(
       }}
     </style>
     """
-    components.html(wrapped, height=altura + 52, scrolling=False)
+    st.iframe(wrapped, height=altura + 52, width="stretch")
     unidad = _etiqueta_unidad_eje_x(eje_x) if eje_x else "ítems"
     st.caption(
         f"Gráfico extendido ({n_barras} {unidad}, {ancho:,} px) — "
@@ -2400,9 +5032,116 @@ def _metrica_adicional_activa(valor: Optional[str]) -> bool:
     return valor not in (None, "", METRICA_ADICIONAL_NINGUNA)
 
 
-def _opciones_metrica_adicional(df: pd.DataFrame, eje_y_principal: Optional[str]) -> list[str]:
+def _resolver_metrica_adicional_en_df(
+    df: pd.DataFrame, nombre: Optional[str]
+) -> Optional[str]:
+    """Nombre de columna en df para una métrica adicional (coincidencia flexible)."""
+    if not _metrica_adicional_activa(nombre):
+        return None
+    col = str(nombre).strip()
+    if col in df.columns:
+        return col
+    return _resolver_columna_existente(df, col)
+
+
+def _asegurar_metrica_adicional_en_opciones(
+    df: pd.DataFrame,
+    clave_sesion: str,
+    excluir: Optional[Iterable[str]] = None,
+) -> None:
+    """Conserva y2/y3 al cambiar Pareto u otros controles; no resetea si la columna existe."""
+    opciones = _opciones_metrica_adicional(df, excluir)
+    valor = st.session_state.get(clave_sesion)
+    if not _metrica_adicional_activa(valor):
+        return
+    if valor in opciones:
+        return
+    hit = _resolver_metrica_adicional_en_df(df, valor)
+    if hit and hit in opciones:
+        st.session_state[clave_sesion] = hit
+        return
+    st.session_state[clave_sesion] = METRICA_ADICIONAL_NINGUNA
+
+
+def _sincronizar_metricas_adicionales_sesion(df: pd.DataFrame) -> None:
+    """Valida métricas 2 y 3 contra el Excel activo antes de renderizar tabla/gráfico."""
+    _asegurar_metrica_adicional_en_opciones(
+        df, "lri_man_eje_y2", st.session_state.get("lri_man_eje_y")
+    )
+    _asegurar_metrica_adicional_en_opciones(
+        df,
+        "lri_man_eje_y3",
+        [
+            st.session_state.get("lri_man_eje_y"),
+            st.session_state.get("lri_man_eje_y2"),
+        ],
+    )
+
+
+def _leer_metrica_adicional_sesion(df: pd.DataFrame, clave_sesion: str) -> str:
+    hit = _resolver_metrica_adicional_en_df(df, st.session_state.get(clave_sesion))
+    return hit if hit else METRICA_ADICIONAL_NINGUNA
+
+
+def _opciones_metrica_adicional(
+    df: pd.DataFrame, excluir: Optional[Iterable[str]] = None
+) -> list[str]:
     cols = _columnas_numericas_usables(df)
-    return [METRICA_ADICIONAL_NINGUNA] + [c for c in cols if c != eje_y_principal]
+    bloqueados = {
+        c
+        for c in (excluir or [])
+        if c and c not in (None, METRICA_ADICIONAL_NINGUNA)
+    }
+    return [METRICA_ADICIONAL_NINGUNA] + [c for c in cols if c not in bloqueados]
+
+
+def _intentar_resolver_metrica_adicional(
+    df: pd.DataFrame,
+    eje_x: str,
+    col: str,
+    operacion: str,
+    top_n: int,
+    set_pareto: str,
+    df_resumen_base: pd.DataFrame,
+    eje_y_principal: str,
+    ys_principal: np.ndarray,
+    y_pct_principal: bool,
+    excluir: set[str],
+) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """Resuelve una métrica adicional con su propio Suma/Promedio."""
+    if not _metrica_adicional_activa(col):
+        return None, None
+    col_res = _resolver_metrica_adicional_en_df(df, col)
+    if not col_res:
+        return None, f"«{col}» no se encontró en el archivo cargado."
+    col = col_res
+    if col in excluir:
+        return None, f"«{col}» ya está seleccionada en otra métrica del eje Y."
+    computable, aviso = _evaluar_perfilado_computable(df, eje_x, col, operacion)
+    if not computable:
+        return None, aviso or f"«{col}» no es válida como métrica adicional."
+    # Agregar todas las categorías del eje X; el Top N solo aplica al perfil principal.
+    # Pareto solo en la métrica principal; las adicionales conservan su propio ranking.
+    df_resumen_m = _procesar_agrupacion_con_cache(
+        df, eje_x, col, operacion, 0, "Desactivado (Paleta Azul)"
+    )
+    if isinstance(df_resumen_m, str):
+        return None, f"«{col}» no admite «{operacion}»."
+    ys = _alinear_serie_metrica_secundaria(df_resumen_base, df_resumen_m, eje_x, col)
+    y_pct, y_escala = _info_presentacion_porcentaje_eje_y(df, col, df_resumen_m)
+    y_miles = _metrica_eje_y_en_miles(col)
+    y_tasa = _metrica_costo_mantener_pct(df, col)
+    en_eje_sec = _comparativo_usa_doble_eje_y(y_pct_principal, y_pct, ys_principal, ys)
+    return {
+        "columna": col,
+        "operacion": operacion,
+        "valores": ys,
+        "y_pct": y_pct,
+        "y_escala_0_100": y_escala,
+        "y_miles": y_miles,
+        "y_tasa_mant": y_tasa,
+        "en_eje_secundario": en_eje_sec,
+    }, None
 
 
 def _alinear_serie_metrica_secundaria(
@@ -2412,8 +5151,12 @@ def _alinear_serie_metrica_secundaria(
     col_sec: str,
 ) -> np.ndarray:
     orden = df_primario[eje_x].astype(str).tolist()
-    idx = df_secundario.set_index(df_secundario[eje_x].astype(str))
-    return idx.reindex(orden)[col_sec].astype(float).to_numpy()
+    sec = (
+        df_secundario.assign(_kx=df_secundario[eje_x].astype(str))
+        .drop_duplicates(subset=["_kx"], keep="first")
+        .set_index("_kx")
+    )
+    return pd.to_numeric(sec.reindex(orden)[col_sec], errors="coerce").to_numpy(dtype=float)
 
 
 def _serie_parece_fraccion_o_porcentaje(ys: np.ndarray) -> bool:
@@ -2460,23 +5203,43 @@ def _layout_eje_y_metrica(
     operacion: str,
     color: str,
     base_font_size: int,
+    y_miles: bool = False,
 ) -> dict[str, Any]:
     if es_pct:
         suf = "tasa %" if es_tasa_mant else "%"
         titulo = f"{nombre_columna} ({suf})"
+        pct_enteros = _es_margen_utilidad_porcentaje(nombre_columna)
         kw: dict[str, Any] = dict(
             title=dict(text=titulo, font=dict(size=base_font_size + 2, color=color)),
             tickfont=dict(size=base_font_size, color=color),
-            tickformat=".1%",
+            tickformat=".0%" if pct_enteros else (
+                ".2%" if not escala_0_100 else ".2f"
+            ),
         )
-        if escala_0_100:
+        if escala_0_100 and not pct_enteros:
             kw["ticksuffix"] = "%"
         return kw
+    if y_miles:
+        return dict(
+            title=dict(text=f"{nombre_columna} (miles)", font=dict(size=base_font_size + 2, color=color)),
+            tickfont=dict(size=base_font_size, color=color),
+            tickformat=",.0f",
+        )
     titulo = nombre_columna if operacion == "Suma" else f"{nombre_columna} ({operacion})"
     return dict(
         title=dict(text=titulo, font=dict(size=base_font_size + 2, color=color)),
         tickfont=dict(size=base_font_size, color=color),
     )
+
+
+def _etiqueta_metrica_grafico(
+    columna: str, operacion: str, es_pct: bool, es_tasa_mant: bool
+) -> str:
+    suf = ""
+    if es_pct:
+        suf = " (tasa %)" if es_tasa_mant else " (% sobre ventas)"
+    op_txt = "" if operacion == "Suma" else f" · {operacion}"
+    return f"{columna}{suf}{op_txt}"
 
 
 def fig_ranking_barras(
@@ -2489,38 +5252,39 @@ def fig_ranking_barras(
     y_en_porcentaje: bool = False,
     y_es_tasa_mantenimiento: bool = False,
     y_escala_0_100: bool = False,
-    mostrar_acumulado: bool = False,
+    y_miles: bool = False,
     ancho_fig_px: Optional[int] = None,
-    col_val_2: Optional[str] = None,
-    ys_secundarios: Optional[np.ndarray] = None,
-    y2_en_porcentaje: bool = False,
-    y2_es_tasa_mantenimiento: bool = False,
-    y2_escala_0_100: bool = False,
-    y2_en_eje_secundario: bool = False,
+    metricas_extras: Optional[list[dict[str, Any]]] = None,
     ver_completo_pantalla: bool = False,
+    etiqueta_barras_font_size: Optional[int] = None,
 ) -> go.Figure:
     n = len(df_resumen)
-    chart_col_px = max(260, int((REF_VIEWPORT_W - 96) * 0.66))
+    extras = [m for m in (metricas_extras or []) if m.get("valores") is not None]
+    multimetrica = len(extras) > 0
 
     if n == 0:
         fig = go.Figure()
-        fig.update_layout(height=400, width=chart_col_px, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#0f1419")
+        fig.update_layout(height=400, autosize=True, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#0f1419")
         return fig
 
     ys = df_resumen[col_val].astype(float).to_numpy()
+    ys_plot = _valores_y_grafico(ys, y_miles)
+    text_labels, texttemplate = _texto_y_etiquetas_barras(
+        ys,
+        es_pct=y_en_porcentaje,
+        escala_0_100=y_escala_0_100,
+        y_miles=y_miles,
+        eje_y=col_val,
+    )
     colores_barras = df_resumen["color_pareto"].tolist()
 
-    tiene_metrica_2 = (
-        col_val_2 is not None
-        and ys_secundarios is not None
-        and len(ys_secundarios) == len(ys)
-    )
-    ys2 = ys_secundarios if tiene_metrica_2 else None
-
-    if tiene_metrica_2:
-        marker_config = dict(color=COLOR_BARRA_COMPARATIVO_1, cornerradius=6)
-        titulo_adicional = ""
-        pareto_activo = False
+    if multimetrica:
+        if colores_barras and colores_barras[0] is not None:
+            marker_config = dict(color=colores_barras, cornerradius=6)
+            titulo_adicional = " (Pareto ABC en métrica principal)"
+        else:
+            marker_config = dict(color=_COLORES_BARRAS_MULTIMETRICA[0], cornerradius=6)
+            titulo_adicional = ""
     elif colores_barras[0] is None:
         marker_config = dict(
             color=ys,
@@ -2531,103 +5295,159 @@ def fig_ranking_barras(
             cornerradius=6,
         )
         titulo_adicional = ""
-        pareto_activo = False
     else:
         marker_config = dict(color=colores_barras, cornerradius=6)
-        titulo_adicional = " (Segmentación Pareto ABC"
-        if mostrar_acumulado:
-            titulo_adicional += " · curva acumulada"
-        titulo_adicional += ")"
-        pareto_activo = True
+        titulo_adicional = " (Segmentación Pareto ABC)"
 
-    sufijo_pct = ""
-    if y_en_porcentaje:
-        sufijo_pct = " (tasa %)" if y_es_tasa_mantenimiento else " (% sobre ventas)"
-    titulo_grafico = f"Análisis de {operacion}: {col_val}{sufijo_pct} por {col_cat}{titulo_adicional}"
-    if tiene_metrica_2:
-        sufijo_pct2 = ""
-        if y2_en_porcentaje:
-            sufijo_pct2 = " (tasa %)" if y2_es_tasa_mantenimiento else " (% sobre ventas)"
-        titulo_grafico = (
-            f"Comparativo {operacion}: {col_val}{sufijo_pct} · {col_val_2}{sufijo_pct2} por {col_cat}"
-            f"{titulo_adicional}"
-        )
-    if st.session_state["drill_down_categoria"]:
-        titulo_grafico += f" (Filtrado por: {st.session_state['drill_down_categoria']})"
-
-    if y_en_porcentaje:
-        texttemplate = "%{text:.2%}"
-        yaxis_title = "%"
-        yaxis_tickformat = ".1%"
+    if multimetrica:
+        partes = [_etiqueta_metrica_grafico(col_val, operacion, y_en_porcentaje, y_es_tasa_mantenimiento)]
+        for m in extras:
+            partes.append(
+                _etiqueta_metrica_grafico(
+                    m["columna"], m["operacion"], m["y_pct"], m["y_tasa_mant"]
+                )
+            )
+        titulo_grafico = f"Comparativo: {' · '.join(partes)} por {col_cat}{titulo_adicional}"
     else:
-        texttemplate = '%{text:,.2f}' if ys.max() < 100 else '%{text:,.0f}'
-        yaxis_title = operacion
-        yaxis_tickformat = None
+        sufijo_pct = ""
+        if y_en_porcentaje:
+            sufijo_pct = " (tasa %)" if y_es_tasa_mantenimiento else " (% sobre ventas)"
+        titulo_grafico = f"Análisis de {operacion}: {col_val}{sufijo_pct} por {col_cat}{titulo_adicional}"
+    etiqueta_filtro = _etiqueta_filtros_drill()
+    if etiqueta_filtro:
+        titulo_grafico += f" (Filtrado por: {etiqueta_filtro})"
 
-    if tiene_metrica_2 and y2_en_porcentaje:
-        texttemplate_y2 = "%{text:.2%}"
-    elif tiene_metrica_2:
-        texttemplate_y2 = (
-            '%{text:,.2f}' if float(np.nanmax(np.abs(ys2))) < 100 else '%{text:,.0f}'
+    templates: list[str] = []
+    if multimetrica:
+        series_texto = [(ys, y_en_porcentaje, y_miles, y_escala_0_100, col_val)]
+        for m in extras:
+            series_texto.append(
+                (
+                    m["valores"],
+                    m["y_pct"],
+                    m.get("y_miles", False),
+                    m.get("y_escala_0_100", False),
+                    m["columna"],
+                )
+            )
+        templates = _texttemplates_valores_barras(series_texto)
+        texttemplate = templates[0]
+
+    if y_en_porcentaje:
+        yaxis_kw = _layout_eje_y_metrica(
+            col_val,
+            True,
+            y_escala_0_100,
+            y_es_tasa_mantenimiento,
+            operacion,
+            "#e2e8f0",
+            base_font_size,
+        )
+    elif y_miles:
+        yaxis_kw = _layout_eje_y_metrica(
+            col_val,
+            False,
+            False,
+            False,
+            operacion,
+            "#e2e8f0",
+            base_font_size,
+            y_miles=True,
         )
     else:
-        texttemplate_y2 = None
+        yaxis_kw = dict(
+            tickfont=dict(size=base_font_size, color="#e2e8f0"),
+            title=dict(text=operacion, font=dict(size=base_font_size + 2, color="#ffffff")),
+        )
 
-    yaxis_kw = dict(
-        tickfont=dict(size=base_font_size, color="#e2e8f0"), 
-        title=dict(text=yaxis_title, font=dict(size=base_font_size + 2, color="#ffffff")),
+    fs_etiqueta_barra = _fs_etiquetas_valor_barras(
+        base_font_size,
+        multimetrica=multimetrica,
+        etiqueta_font_size=etiqueta_barras_font_size,
     )
-    if yaxis_tickformat is not None:
-        yaxis_kw["tickformat"] = yaxis_tickformat
-    if y_en_porcentaje and y_escala_0_100:
-        yaxis_kw["ticksuffix"] = "%"
-
-    fs_etiqueta_barra = _fs_etiquetas_valor_barras(base_font_size)
     angulo_etiqueta_barra = _angulo_etiquetas_valor_barras(n)
 
     xs_cat = df_resumen[col_cat].astype(str)
     max_label_len = int(xs_cat.str.len().max()) if len(xs_cat) else 0
     scroll_h = _scroll_grafico_activo(n, col_cat, ver_completo_pantalla=ver_completo_pantalla)
-    bargap, bargroupgap = _bargap_por_n(n, dual=tiene_metrica_2)
-    angulo_x = _angulo_etiquetas_x_grafico(n, col_cat, max_label_len)
-    margen_b = _margen_inferior_grafico(n, col_cat, max_label_len)
+    bargap, bargroupgap = _bargap_por_n(n, dual=multimetrica)
+    ticktext_x, angulo_x, n_lineas_x, uso_wrap_x = _etiquetas_x_grafico_con_wrap(
+        xs_cat.tolist(),
+        n=n,
+        eje_x=col_cat,
+        max_label_len=max_label_len,
+    )
+    # Con wrap: usar las etiquetas multilínea como categorías X (Plotly no aplica
+    # saltos de línea si solo van en ticktext de un eje category).
+    xs_plot = ticktext_x if uso_wrap_x else xs_cat.tolist()
+    margen_b = _margen_inferior_grafico(
+        n,
+        col_cat,
+        max_label_len,
+        angulo_x=angulo_x,
+        n_lineas_etiqueta=n_lineas_x,
+        uso_wrap=uso_wrap_x,
+    )
 
     barra1_kw: dict[str, Any] = dict(
-        x=xs_cat,
-        y=ys,
-        text=ys,
+        x=xs_plot,
+        y=ys_plot,
+        text=text_labels,
         texttemplate=texttemplate,
         textposition="outside",
         textangle=angulo_etiqueta_barra,
-        textfont=dict(size=fs_etiqueta_barra, color="#ffffff"),
+        textfont=_textfont_etiqueta_barras(fs_etiqueta_barra, _TEXTOS_BARRAS_MULTIMETRICA[0]),
         cliponaxis=False,
         marker=marker_config,
-        name=col_val,
+        name=_etiqueta_metrica_grafico(col_val, operacion, y_en_porcentaje, y_es_tasa_mantenimiento),
     )
-    if tiene_metrica_2:
-        # Plotly apila/superpone barras con doble eje si no se separan offsetgroup.
+    if multimetrica:
         barra1_kw["yaxis"] = "y"
         barra1_kw["offsetgroup"] = 1
     fig = go.Figure(go.Bar(**barra1_kw))
 
-    if tiene_metrica_2:
-        barra2_kw: dict[str, Any] = dict(
-            x=xs_cat,
-            y=ys2,
-            text=ys2,
-            texttemplate=texttemplate_y2,
-            textposition="outside",
-            textangle=angulo_etiqueta_barra,
-            textfont=dict(size=fs_etiqueta_barra, color="#fef9c3"),
-            cliponaxis=False,
-            marker=dict(color=COLOR_BARRA_COMPARATIVO_2, cornerradius=6),
-            name=col_val_2,
-            offsetgroup=2,
+    usa_eje_secundario = False
+    metrica_eje_sec: Optional[dict[str, Any]] = None
+    for i, m in enumerate(extras, start=2):
+        ys_m = m["valores"]
+        y_m_miles = bool(m.get("y_miles", False))
+        ys_m_plot = _valores_y_grafico(ys_m, y_m_miles)
+        text_m, tmpl_m = _texto_y_etiquetas_barras(
+            ys_m,
+            es_pct=m["y_pct"],
+            escala_0_100=m.get("y_escala_0_100", False),
+            y_miles=y_m_miles,
+            eje_y=m["columna"],
         )
-        barra2_kw["yaxis"] = "y2" if y2_en_eje_secundario else "y"
-        fig.add_trace(go.Bar(**barra2_kw))
+        if multimetrica:
+            tmpl_m = templates[i - 1]
+        color = _COLORES_BARRAS_MULTIMETRICA[min(i - 1, len(_COLORES_BARRAS_MULTIMETRICA) - 1)]
+        txt_color = _TEXTOS_BARRAS_MULTIMETRICA[min(i - 1, len(_TEXTOS_BARRAS_MULTIMETRICA) - 1)]
+        en_sec = bool(m.get("en_eje_secundario"))
+        if en_sec:
+            usa_eje_secundario = True
+            if metrica_eje_sec is None:
+                metrica_eje_sec = m
+        fig.add_trace(
+            go.Bar(
+                x=xs_plot,
+                y=ys_m_plot,
+                text=text_m,
+                texttemplate=tmpl_m,
+                textposition="outside",
+                textangle=angulo_etiqueta_barra,
+                textfont=_textfont_etiqueta_barras(fs_etiqueta_barra, txt_color),
+                cliponaxis=False,
+                marker=dict(color=color, cornerradius=6),
+                name=_etiqueta_metrica_grafico(
+                    m["columna"], m["operacion"], m["y_pct"], m["y_tasa_mant"]
+                ),
+                offsetgroup=i,
+                yaxis="y2" if en_sec else "y",
+            )
+        )
 
-    if tiene_metrica_2 and y2_en_eje_secundario:
+    if multimetrica and usa_eje_secundario:
         yaxis_kw = _layout_eje_y_metrica(
             col_val,
             y_en_porcentaje,
@@ -2636,6 +5456,7 @@ def fig_ranking_barras(
             operacion,
             COLOR_BARRA_COMPARATIVO_1,
             base_font_size,
+            y_miles=y_miles,
         )
 
     layout_kw: dict[str, Any] = dict(
@@ -2647,41 +5468,39 @@ def fig_ranking_barras(
         ),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="#0f1419",
-        showlegend=tiene_metrica_2,
-        barmode="group" if tiene_metrica_2 else "relative",
+        showlegend=multimetrica,
+        barmode="group" if multimetrica else "relative",
         bargap=bargap,
         bargroupgap=bargroupgap,
+        uniformtext=dict(minsize=fs_etiqueta_barra, mode="show"),
         margin=dict(l=52, r=28, t=max(76, 52 + fs_etiqueta_barra), b=margen_b),
         xaxis=dict(
             type="category",
             tickangle=angulo_x,
-            tickfont=dict(size=base_font_size, color="#e2e8f0"),
+            tickfont=dict(
+                size=max(10, base_font_size - (2 if uso_wrap_x else 0)),
+                color="#e2e8f0",
+            ),
             title=dict(text=col_cat, font=dict(size=base_font_size + 2, color="#ffffff")),
             categoryorder="array",
-            categoryarray=xs_cat.tolist(),
+            categoryarray=xs_plot,
+            automargin=True,
+            ticklabelposition="outside bottom",
         ),
         yaxis=yaxis_kw,
     )
-    if tiene_metrica_2:
-        layout_kw["legend"] = dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1,
-            font=dict(color="#e2e8f0", size=base_font_size - 1),
-            bgcolor="rgba(0,0,0,0)",
-        )
-        if y2_en_eje_secundario:
-            layout_kw["yaxis"] = yaxis_kw
+    if multimetrica:
+        layout_kw["legend"] = _layout_leyenda_inicio_grafico(base_font_size)
+        if usa_eje_secundario and metrica_eje_sec is not None:
             layout_kw["yaxis2"] = _layout_eje_y_metrica(
-                col_val_2,
-                y2_en_porcentaje,
-                y2_escala_0_100,
-                y2_es_tasa_mantenimiento,
-                operacion,
+                metrica_eje_sec["columna"],
+                metrica_eje_sec["y_pct"],
+                metrica_eje_sec["y_escala_0_100"],
+                metrica_eje_sec["y_tasa_mant"],
+                metrica_eje_sec["operacion"],
                 COLOR_BARRA_COMPARATIVO_2,
                 base_font_size,
+                y_miles=bool(metrica_eje_sec.get("y_miles", False)),
             )
             layout_kw["yaxis2"]["overlaying"] = "y"
             layout_kw["yaxis2"]["side"] = "right"
@@ -2689,55 +5508,21 @@ def fig_ranking_barras(
             layout_kw["margin"]["r"] = max(layout_kw["margin"]["r"], 88)
     ancho_scroll = _ancho_figura_barras(
         n,
-        dual=tiene_metrica_2,
+        dual=multimetrica,
         eje_x=col_cat,
-        max_label_len=max_label_len,
+        max_label_len=(
+            (_chars_wrap_etiqueta_x(n, col_cat, max_label_len) or max_label_len)
+            if uso_wrap_x
+            else max_label_len
+        ),
     )
     if scroll_h:
         layout_kw["width"] = ancho_scroll
         layout_kw["autosize"] = False
-    elif ancho_fig_px is not None:
+    elif ancho_fig_px is not None and ancho_fig_px > 0:
         layout_kw["width"] = ancho_fig_px
-    elif ver_completo_pantalla:
+    else:
         layout_kw["autosize"] = True
-    elif not pareto_activo:
-        layout_kw["width"] = chart_col_px
-
-    if pareto_activo and mostrar_acumulado and not tiene_metrica_2:
-        total_y = float(np.nansum(ys))
-        if total_y > 0:
-            cum_pct = np.cumsum(ys) / total_y
-            xs = df_resumen[col_cat].astype(str)
-            fig.add_trace(
-                go.Scatter(
-                    x=xs,
-                    y=cum_pct,
-                    name="% acumulado",
-                    mode="lines+markers",
-                    line=dict(color="#38bdf8", width=2.5),
-                    marker=dict(size=7, color="#38bdf8", line=dict(width=1, color="#0f172a")),
-                    yaxis="y2",
-                    hovertemplate="%{x}<br>Acumulado: %{y:.1%}<extra></extra>",
-                )
-            )
-            layout_kw["showlegend"] = True
-            layout_kw["legend"] = dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1,
-                font=dict(color="#e2e8f0", size=base_font_size - 1),
-                bgcolor="rgba(0,0,0,0)",
-            )
-            layout_kw["yaxis2"] = dict(
-                title=dict(text="% acumulado", font=dict(size=base_font_size + 2, color="#38bdf8")),
-                tickfont=dict(size=base_font_size, color="#38bdf8"),
-                overlaying="y",
-                side="right",
-                tickformat=".0%",
-                showgrid=False,
-            )
 
     fig.update_layout(**layout_kw)
     return fig
@@ -2751,126 +5536,1171 @@ def _mostrar_error_perfil_no_computable(aviso: Optional[str] = None) -> None:
         st.error(MSG_PERFIL_NO_COMPUTABLE)
 
 
+# --- Vista Excel completa: estilo Wall Street (cabecera negra, filas alternadas) ---
+_EXCEL_WS_HEADER_BG = "#000000"
+_EXCEL_WS_HEADER_FG = "#ffffff"
+_EXCEL_WS_FILAS: tuple[tuple[str, str], ...] = (
+    ("#0c4a6e", "#ffffff"),
+    ("#334155", "#ffffff"),
+)
+_EXCEL_WS_FONDO = "#05080f"
+_EXCEL_WS_BORDE = "#1e3a5f"
+_EXCEL_WS_TOTAL_BG = "#1a2030"
+_EXCEL_WS_TOTAL_FG = "#fbbf24"
+_EXCEL_FILAS_VISIBLES_SCROLL = 22
+_EXCEL_MAX_COLUMNAS_FIJAS = 4
+_EXCEL_PATRONES_COL_FIJA = (
+    "codigo",
+    "categoria",
+    "subcategoria",
+    "descripcion",
+    "producto",
+    "articulo",
+    "sku",
+    "nombre",
+    "item",
+    "pais",
+    "marca",
+    "linea",
+    "familia",
+    "grupo",
+    "tipo",
+    "clase",
+    "atributo",
+)
+
+
+def _formatear_celda_excel_ws(
+    val: object,
+    *,
+    es_total: bool = False,
+    columna: str = "",
+    df: Optional[pd.DataFrame] = None,
+) -> str:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return ""
+    if isinstance(val, str):
+        return val.strip()
+    if isinstance(val, (int, np.integer)):
+        return f"{int(val):,}"
+    if isinstance(val, (float, np.floating)):
+        v = float(val)
+        if columna and _columna_es_metrica_porcentaje(columna, df):
+            if _es_margen_utilidad_porcentaje(columna, df):
+                return f"{_valor_a_porcentaje_entero(v)}%"
+            if df is not None and columna in df.columns and _porcentaje_en_escala_0_100(df[columna]):
+                return f"{v:.2f}%"
+            return f"{v:.2%}"
+        if abs(v - round(v)) < 1e-9:
+            return f"{int(round(v)):,}"
+        if abs(v) >= 1000:
+            return f"{v:,.0f}"
+        return f"{v:,.2f}"
+    return str(val).strip()
+
+
+def _columna_excel_admite_suma(col: str, serie: pd.Series) -> bool:
+    """Suma en pie de tabla; excluye % y ratios (no son aditivos)."""
+    if not pd.api.types.is_numeric_dtype(serie):
+        return False
+    if _es_margen_utilidad_porcentaje(col):
+        return False
+    if _nombre_eje_y_es_porcentual(col):
+        return False
+    if _metrica_costo_mantener_pct(pd.DataFrame(), col):
+        return False
+    if _columna_es_metrica_ratio_inventario(col):
+        return False
+    return True
+
+
+def _totales_columnas_excel_ws(df: pd.DataFrame) -> dict[str, object]:
+    totales: dict[str, object] = {}
+    for i, col in enumerate(df.columns):
+        if i == 0:
+            totales[col] = "TOTAL"
+            continue
+        serie = df[col]
+        if _columna_es_metrica_ratio_inventario(col):
+            totales[col] = _valor_ratio_inventario_ponderado(df, col)
+        elif _columna_excel_admite_suma(col, serie):
+            totales[col] = pd.to_numeric(serie, errors="coerce").sum()
+        else:
+            totales[col] = ""
+    return totales
+
+
+def _indices_columnas_fijas_excel(columnas: list[str]) -> set[int]:
+    fijos: set[int] = set()
+    for i, col in enumerate(columnas):
+        if len(fijos) >= _EXCEL_MAX_COLUMNAS_FIJAS:
+            break
+        n = _norm_texto(col)
+        if any(p in n for p in _EXCEL_PATRONES_COL_FIJA):
+            fijos.add(i)
+    if not fijos and columnas:
+        fijos.add(0)
+    return fijos
+
+
+def _anchos_columnas_excel_ws(
+    columnas: list[str], font_px: int, *, pantalla_completa: bool = False
+) -> list[int]:
+    """Anchos por columna; en pantalla completa más compactos para ver más columnas."""
+    escala = 0.82 if pantalla_completa else 1.0
+    anchos: list[int] = []
+    for col in columnas:
+        titulo = len(str(col))
+        base = int((titulo * font_px * 0.55) + 24) * escala
+        n = _norm_texto(col)
+        if "codigo" in n or n == "sku":
+            anchos.append(int(max(88 if pantalla_completa else 100, min(base, 130 if pantalla_completa else 140))))
+        elif "descripcion" in n or "articulo" in n or "producto" in n:
+            anchos.append(int(max(140 if pantalla_completa else 160, min(base, 240 if pantalla_completa else 280))))
+        elif "categoria" in n or "subcategoria" in n:
+            anchos.append(int(max(88 if pantalla_completa else 100, min(base, 150 if pantalla_completa else 170))))
+        else:
+            anchos.append(int(max(64 if pantalla_completa else 76, min(base, 120 if pantalla_completa else 150))))
+    return anchos
+
+
+def _columnas_drill_across_excel(df: pd.DataFrame) -> list[str]:
+    """Dimensiones categóricas para drill across (cruce lateral de filtros)."""
+    preferidas = (
+        "categoria",
+        "subcategoria",
+        "proveedor",
+        "pais",
+        "marca",
+        "canal",
+        "region",
+        "linea",
+        "familia",
+        "grupo",
+        "tipo",
+        "clase",
+        "descripcion",
+        "producto",
+        "articulo",
+    )
+    out: list[str] = []
+    for patron in preferidas:
+        for c in df.columns:
+            nc = _norm_texto(c)
+            if (nc == patron or patron in nc) and c not in out:
+                nuniq = df[c].nunique(dropna=True)
+                if 1 < nuniq <= 300:
+                    out.append(c)
+    for c in df.columns:
+        if c in out:
+            continue
+        if pd.api.types.is_numeric_dtype(df[c]):
+            continue
+        nuniq = df[c].nunique(dropna=True)
+        if 1 < nuniq <= 120:
+            out.append(c)
+    return out
+
+
+def _sanitizar_filtros_drill_across_excel(
+    df: pd.DataFrame, filtros: dict[str, str]
+) -> dict[str, str]:
+    """Quita filtros de columnas que ya no existen tras cambiar de archivo u hoja."""
+    limpio: dict[str, str] = {}
+    for col, valor in (filtros or {}).items():
+        if col in df.columns and valor is not None and str(valor).strip():
+            limpio[col] = str(valor)
+    return limpio
+
+
+def _aplicar_filtros_drill_across_excel(
+    df: pd.DataFrame, filtros: dict[str, str]
+) -> pd.DataFrame:
+    out = df.copy()
+    for col, valor in filtros.items():
+        if col not in out.columns:
+            continue
+        out = out[out[col].astype(str) == str(valor)]
+    return out
+
+
+def _dataframe_vista_excel_con_drill(df: pd.DataFrame) -> pd.DataFrame:
+    """DataFrame filtrado según los filtros activos del drill across."""
+    filtros = _sanitizar_filtros_drill_across_excel(
+        df, dict(st.session_state.get("lri_excel_drill_filtros") or {})
+    )
+    return _aplicar_filtros_drill_across_excel(df, filtros)
+
+
+def _render_info_drill_across_excel(df: pd.DataFrame) -> None:
+    """Muestra filtros drill across activos (sin controles de cruce en sidebar)."""
+    filtros = _sanitizar_filtros_drill_across_excel(
+        df, dict(st.session_state.get("lri_excel_drill_filtros") or {})
+    )
+    if filtros != st.session_state.get("lri_excel_drill_filtros"):
+        st.session_state["lri_excel_drill_filtros"] = filtros
+    if not filtros:
+        return
+    chips = " · ".join(
+        f"**{html.escape(k)}** = {html.escape(v)}" for k, v in filtros.items()
+    )
+    c_info, c_btn = st.columns([4, 1])
+    with c_info:
+        st.markdown(f"**↔ Drill across:** {chips}")
+    with c_btn:
+        if st.button("Limpiar", key="lri_excel_drill_limpiar", use_container_width=True):
+            st.session_state["lri_excel_drill_filtros"] = {}
+            st.rerun()
+
+
+def _css_ancho_completo_excel() -> None:
+    """Expande el área principal para que la tabla use todo el ancho disponible a la derecha."""
+    st.markdown(
+        """
+        <style>
+        section[data-testid="stMain"] .block-container {
+            max-width: 100% !important;
+            padding-left: 0.5rem !important;
+            padding-right: 0.5rem !important;
+        }
+        section[data-testid="stMain"] [data-testid="stVerticalBlock"],
+        section[data-testid="stMain"] [data-testid="stHorizontalBlock"],
+        section[data-testid="stMain"] [data-testid="element-container"],
+        section[data-testid="stMain"] [data-testid="stElementContainer"],
+        section[data-testid="stMain"] div[data-testid="stVerticalBlock"] > div:has(iframe),
+        section[data-testid="stMain"] [data-testid="stHtml"],
+        section[data-testid="stMain"] [data-testid="stIFrame"] {
+            width: 100% !important;
+            max-width: 100% !important;
+        }
+        section[data-testid="stMain"] iframe {
+            width: 100% !important;
+            max-width: 100% !important;
+            display: block;
+        }
+        section[data-testid="stMain"] div[data-testid="stElementContainer"]:has(iframe),
+        section[data-testid="stMain"] div[data-testid="stMarkdownContainer"]:has(iframe) {
+            overflow: visible !important;
+            max-height: none !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _css_pantalla_completa_excel_activa() -> None:
+    """Alias: ancho completo + altura ampliada del explorador Excel."""
+    _css_ancho_completo_excel()
+
+
+def _left_columna_fija_excel(anchos: list[int], col_idx: int) -> int:
+    return sum(anchos[:col_idx])
+
+
+def _estilo_sticky_celda_excel(
+    *,
+    col_idx: int,
+    left_px: int,
+    es_fija: bool,
+    es_header: bool = False,
+    es_footer: bool = False,
+    es_ultima_fija: bool = False,
+) -> str:
+    if not es_fija and not es_header and not es_footer:
+        return ""
+    partes: list[str] = ["position:sticky"]
+    z = 12
+    if es_header:
+        partes.append("top:0")
+        z = 34
+    if es_footer:
+        partes.append("bottom:0")
+        z = max(z, 32)
+    if es_fija:
+        partes.append(f"left:{left_px}px")
+        z += 12 + col_idx
+    if es_header and es_fija:
+        z = 58 + col_idx
+    elif es_footer and es_fija:
+        z = 52 + col_idx
+    sombra = ""
+    if es_fija and es_ultima_fija:
+        sombra = "box-shadow:6px 0 12px rgba(0,0,0,0.45);"
+    elif es_header:
+        sombra = "box-shadow:0 2px 0 #333333;"
+    elif es_footer:
+        sombra = "box-shadow:0 -2px 0 #333333;"
+    return f"{';'.join(partes)};z-index:{z};{sombra}"
+
+
+def _altura_contenedor_tabla_excel(
+    n_filas: int, font_px: int, *, pantalla_completa: bool = False, viewport_h: int = REF_VIEWPORT_H
+) -> int:
+    alto_hdr = max(48, int(font_px * 1.75))
+    alto_fila = max(36, int(font_px * 1.4))
+    alto_pie = max(40, int(font_px * 1.5))
+    if pantalla_completa:
+        usable = max(480, viewport_h - 300)
+        return int(min(usable, max(520, alto_hdr + alto_pie + 16 + min(n_filas, 40) * alto_fila)))
+    visible = min(n_filas, _EXCEL_FILAS_VISIBLES_SCROLL)
+    return int(min(720, max(420, alto_hdr + alto_pie + 12 + visible * alto_fila)))
+
+
+def _css_tabla_excel_wall_street(altura_px: int) -> str:
+    return f"""
+<style>
+.lri-excel-ws-scroll {{
+    overflow-x: auto;
+    overflow-y: auto;
+    max-height: {altura_px}px;
+    position: relative;
+    background: {_EXCEL_WS_FONDO};
+    border: 1px solid {_EXCEL_WS_BORDE};
+    border-radius: 8px;
+    box-shadow: inset 0 0 0 1px #0f172a, 0 4px 20px rgba(0,0,0,0.4);
+    scrollbar-width: auto;
+    scrollbar-color: #3b82f6 #0a0f1a;
+    overscroll-behavior: contain;
+}}
+section[data-testid="stMain"] div[data-testid="stElementContainer"]:has(.lri-excel-ws-scroll),
+section[data-testid="stMain"] div[data-testid="stMarkdownContainer"]:has(.lri-excel-ws-scroll),
+section[data-testid="stMain"] div[data-testid="stElementContainer"]:has(.lri-html-table-scroll-container),
+section[data-testid="stMain"] div[data-testid="stMarkdownContainer"]:has(.lri-html-table-scroll-container) {{
+    overflow: visible !important;
+    max-height: none !important;
+}}
+.lri-excel-ws-scroll.lri-excel-ws-fullscreen {{
+    max-height: none;
+    width: 100%;
+}}
+.lri-excel-ws-scroll::-webkit-scrollbar {{
+    height: 14px;
+    width: 12px;
+}}
+.lri-excel-ws-scroll::-webkit-scrollbar-track {{
+    background: #0a0f1a;
+}}
+.lri-excel-ws-scroll::-webkit-scrollbar-thumb {{
+    background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%);
+    border-radius: 6px;
+}}
+.lri-excel-ws-table {{
+    border-collapse: separate;
+    border-spacing: 0;
+    width: max-content;
+    min-width: 100%;
+}}
+.lri-excel-ws-table thead th {{
+    position: sticky !important;
+    top: 0 !important;
+    z-index: 30 !important;
+    background: {_EXCEL_WS_HEADER_BG} !important;
+    color: {_EXCEL_WS_HEADER_FG} !important;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    box-shadow: 0 2px 0 #333333;
+    background-clip: padding-box !important;
+}}
+.lri-excel-ws-table thead th.lri-ws-frozen-hdr {{
+    z-index: 70 !important;
+}}
+.lri-excel-ws-table td {{
+    font-weight: 500;
+}}
+.lri-excel-ws-table td.lri-ws-frozen,
+.lri-excel-ws-table tfoot th.lri-ws-frozen-ft,
+.lri-excel-ws-table tfoot td.lri-ws-frozen-ft {{
+    position: sticky !important;
+    background-clip: padding-box !important;
+}}
+.lri-excel-ws-table td.lri-ws-frozen {{
+    z-index: 20 !important;
+}}
+.lri-excel-ws-table tfoot th,
+.lri-excel-ws-table tfoot td {{
+    position: sticky !important;
+    bottom: 0 !important;
+    z-index: 28 !important;
+    background: {_EXCEL_WS_TOTAL_BG} !important;
+    color: {_EXCEL_WS_TOTAL_FG} !important;
+    font-weight: 800 !important;
+    letter-spacing: 0.03em;
+    box-shadow: 0 -2px 0 #333333;
+    background-clip: padding-box !important;
+}}
+.lri-excel-ws-table tfoot th.lri-ws-frozen-ft,
+.lri-excel-ws-table tfoot td.lri-ws-frozen-ft {{
+    z-index: 68 !important;
+}}
+</style>
+"""
+
+
+def _html_tabla_excel_wall_street(
+    df: pd.DataFrame, font_px: int, *, pantalla_completa: bool = False
+) -> str:
+    cols = list(df.columns)
+    pad = f"{max(5, font_px // 3)}px {max(8, font_px // 2 + 2)}px"
+    alto_fila = max(36, int(font_px * 1.4))
+    anchos = _anchos_columnas_excel_ws(cols, font_px, pantalla_completa=pantalla_completa)
+    cols_fijas = _indices_columnas_fijas_excel(cols)
+    ultima_fija = max(cols_fijas) if cols_fijas else -1
+    totales = _totales_columnas_excel_ws(df)
+
+    def _celda(
+        col_idx: int,
+        contenido: str,
+        *,
+        bg: str,
+        fg: str,
+        es_header: bool = False,
+        es_footer: bool = False,
+        align: str = "left",
+    ) -> str:
+        es_fija = col_idx in cols_fijas
+        left = _left_columna_fija_excel(anchos, col_idx)
+        sticky = _estilo_sticky_celda_excel(
+            col_idx=col_idx,
+            left_px=left,
+            es_fija=es_fija,
+            es_header=es_header,
+            es_footer=es_footer,
+            es_ultima_fija=es_fija and col_idx == ultima_fija,
+        )
+        tag = "th" if es_header or es_footer else "td"
+        bg_use = _EXCEL_WS_HEADER_BG if es_header else (_EXCEL_WS_TOTAL_BG if es_footer else bg)
+        fg_use = _EXCEL_WS_HEADER_FG if es_header else (_EXCEL_WS_TOTAL_FG if es_footer else fg)
+        peso = "font-weight:700;" if es_header else ("font-weight:800;" if es_footer else "")
+        wrap = "white-space:normal;" if es_header else "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
+        titulo_attr = f' title="{html.escape(contenido)}"' if not es_header and contenido else ""
+        clases: list[str] = []
+        if es_fija:
+            clases.append("lri-ws-frozen")
+            if es_header:
+                clases.append("lri-ws-frozen-hdr")
+            elif es_footer:
+                clases.append("lri-ws-frozen-ft")
+        class_attr = f' class="{" ".join(clases)}"' if clases else ""
+        return (
+            f"<{tag}{class_attr}{titulo_attr} style=\"min-width:{anchos[col_idx]}px;max-width:{anchos[col_idx]}px;"
+            f"width:{anchos[col_idx]}px;padding:{pad};text-align:{align};"
+            f"line-height:1.35;vertical-align:middle;font-size:{font_px}px;"
+            f"background:{bg_use};color:{fg_use};{peso}{wrap}"
+            f"background-clip:padding-box;"
+            f"border-bottom:1px solid #1e293b;border-right:1px solid #1a2740;"
+            f"min-height:{alto_fila}px;{sticky}\">"
+            f"{html.escape(contenido)}</{tag}>"
+        )
+
+    thead = "<thead><tr>" + "".join(
+        _celda(i, str(c), bg="", fg="", es_header=True, align="left")
+        for i, c in enumerate(cols)
+    ) + "</tr></thead>"
+
+    filas: list[str] = []
+    for i, (_, row) in enumerate(df.iterrows()):
+        bg, fg = _EXCEL_WS_FILAS[i % 2]
+        celdas = "".join(
+            _celda(
+                j,
+                _formatear_celda_excel_ws(row[c], columna=str(c), df=df),
+                bg=bg,
+                fg=fg,
+                align="center" if j > 0 and pd.api.types.is_numeric_dtype(df[c]) else "left",
+            )
+            for j, c in enumerate(cols)
+        )
+        filas.append(f"<tr>{celdas}</tr>")
+
+    tfoot = "<tfoot><tr>" + "".join(
+        _celda(
+            j,
+            _formatear_celda_excel_ws(totales[c], es_total=True, columna=str(c), df=df),
+            bg=_EXCEL_WS_TOTAL_BG,
+            fg=_EXCEL_WS_TOTAL_FG,
+            es_footer=True,
+            align="left" if j == 0 else "center",
+        )
+        for j, c in enumerate(cols)
+    ) + "</tr></tfoot>"
+
+    return (
+        f'<table class="lri-excel-ws-table" style="font-size:{font_px}px;">'
+        f"{thead}<tbody>{''.join(filas)}</tbody>{tfoot}</table>"
+    )
+
+
+def _render_excel_explorador_unificado(df: pd.DataFrame, viewport_h: int = REF_VIEWPORT_H) -> None:
+    """Vista unificada: tabla Excel completa, resize con mouse, drill across y ancho expandido."""
+    hoja = st.session_state.get("lri_excel_hoja_activa") or "datos"
+    _css_ancho_completo_excel()
+
+    df_vista = _dataframe_vista_excel_con_drill(df)
+
+    st.markdown("##### 📋 Explorador Excel")
+    _render_info_drill_across_excel(df)
+
+    pantalla_completa = st.toggle(
+        "Tabla a pantalla completa",
+        key="lri_excel_pantalla_completa",
+        help="Amplía la altura del área de scroll para ver más filas a la vez.",
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Filas", f"{len(df_vista):,}")
+    c2.metric("Columnas", f"{len(df_vista.columns):,}")
+    if len(df_vista) != len(df):
+        st.caption(f"Mostrando **{len(df_vista):,}** de **{len(df):,}** filas tras drill across.")
+    if "categoria" in df_vista.columns:
+        c3.metric("Categorías", f"{df_vista['categoria'].nunique():,}")
+    else:
+        c3.metric("Hoja", hoja)
+    if "codigo" in df_vista.columns:
+        c4.metric("SKUs / códigos", f"{df_vista['codigo'].nunique():,}")
+    elif _resolver_columna_existente(df_vista, "descripcion", "descripción"):
+        col_desc = _resolver_columna_existente(df_vista, "descripcion", "descripción")
+        c4.metric("Productos", f"{df_vista[col_desc].nunique():,}" if col_desc else "—")
+    else:
+        c4.metric("Hoja activa", hoja)
+
+    font_px = max(11, int(st.session_state.get("lri_tabla_fontsize", 13)))
+    cols_fijas = _indices_columnas_fijas_excel(list(df_vista.columns))
+    nombres_fijos = ", ".join(f"**{list(df_vista.columns)[i]}**" for i in sorted(cols_fijas))
+    st.caption(
+        f"Hoja **{hoja}** · {len(df_vista):,} filas × {len(df_vista.columns)} columnas. "
+        "Desplácese **horizontalmente** con la barra azul **arriba de la tabla** (← →) para ver todas las columnas "
+        "desde el inicio, y **verticalmente** dentro del área para recorrer filas. "
+        "**Arrastre el borde derecho** de cada encabezado para ajustar columnas. "
+        f"Columnas ancladas al desplazar: {nombres_fijos}."
+    )
+
+    altura_px = _altura_contenedor_tabla_excel(
+        len(df_vista), font_px, pantalla_completa=pantalla_completa, viewport_h=viewport_h
+    )
+    # Siempre armar el HTML desde el DataFrame ya cargado en sesión.
+    # Releer bytes fallaba en Render/upload y dejaba el explorador en blanco ("Sin datos").
+    doc_html = _documento_html_excel_interactivo(
+        df_vista, font_px, altura_px, pantalla_completa=pantalla_completa
+    )
+    st.iframe(doc_html, height=altura_px + 28, width="stretch")
+
+    col_csv, col_xlsx = st.columns(2)
+    col_csv.download_button(
+        "Descargar CSV",
+        data=df_vista.to_csv(index=False).encode("utf-8"),
+        file_name=f"profile_pro_{_norm_texto(hoja) or 'datos'}.csv",
+        key="lri_excel_csv",
+        use_container_width=True,
+    )
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df_vista.to_excel(writer, sheet_name=hoja[:31] or "datos", index=False)
+    col_xlsx.download_button(
+        "Descargar Excel",
+        data=buffer.getvalue(),
+        file_name=f"profile_pro_{_norm_texto(hoja) or 'datos'}.xlsx",
+        key="lri_excel_xlsx",
+        use_container_width=True,
+    )
+    st.divider()
+
+
+def _render_vista_excel_completo(df: pd.DataFrame, viewport_h: int = REF_VIEWPORT_H) -> None:
+    """Compatibilidad: delega en el explorador unificado."""
+    _render_excel_explorador_unificado(df, viewport_h)
+
+
+def _render_segmento_excel_interactivo(df: pd.DataFrame, viewport_h: int = REF_VIEWPORT_H) -> None:
+    """Compatibilidad: delega en el explorador unificado."""
+    _render_excel_explorador_unificado(df, viewport_h)
+
+
+# ==============================================================================
+# HTML del explorador Excel interactivo (resize con mouse)
+# ==============================================================================
+def _attrs_celda_excel_interactiva(
+    col_idx: int,
+    ancho: int,
+    *,
+    cols_fijas: set[int],
+    ultima_fija: int,
+    anchos: list[int],
+    es_header: bool = False,
+    es_footer: bool = False,
+) -> str:
+    clases = []
+    if es_header:
+        clases.append("lri-ec-th")
+        clases.append("lri-ec-sticky-top")
+    elif es_footer:
+        clases.append("lri-ec-ft")
+        clases.append("lri-ec-sticky-bottom")
+    else:
+        clases.append("lri-ec-td")
+    if col_idx in cols_fijas:
+        clases.append("lri-ec-frozen")
+    if col_idx == ultima_fija:
+        clases.append("lri-ec-frozen-last")
+    left = _left_columna_fija_excel(anchos, col_idx) if col_idx in cols_fijas else 0
+    left_css = f"left:{left}px;" if col_idx in cols_fijas else ""
+    return (
+        f'data-col="{col_idx}" class="{" ".join(clases)}" '
+        f'style="{left_css}width:{ancho}px;min-width:{ancho}px;max-width:{ancho}px;"'
+    )
+
+
+def _documento_html_excel_interactivo(
+    df: pd.DataFrame,
+    font_px: int,
+    altura_px: int,
+    *,
+    pantalla_completa: bool = False,
+) -> str:
+    """HTML autocontenido (iframe) con resize de columnas al arrastrar, estilo Excel."""
+    cols = list(df.columns)
+    anchos = _anchos_columnas_excel_ws(cols, font_px, pantalla_completa=pantalla_completa)
+    cols_fijas_set = _indices_columnas_fijas_excel(cols)
+    cols_fijas = sorted(cols_fijas_set)
+    ultima_fija = max(cols_fijas_set) if cols_fijas_set else -1
+    totales = _totales_columnas_excel_ws(df)
+    pad_v = max(5, font_px // 3)
+    pad_h = max(8, font_px // 2 + 2)
+    alto_fila = max(36, int(font_px * 1.4))
+    frozen_json = json.dumps(cols_fijas)
+
+    colgroup = "".join(
+        f'<col id="lri-col-{i}" style="width:{anchos[i]}px;min-width:{anchos[i]}px;">'
+        for i in range(len(cols))
+    )
+
+    th_parts: list[str] = []
+    for i, c in enumerate(cols):
+        attrs = _attrs_celda_excel_interactiva(
+            i, anchos[i], cols_fijas=cols_fijas_set, ultima_fija=ultima_fija, anchos=anchos, es_header=True
+        )
+        th_parts.append(
+            f"<th {attrs}>"
+            f'<span class="lri-th-text">{html.escape(str(c))}</span>'
+            f'<div class="lri-col-resizer" data-col="{i}" title="Arrastre para ajustar ancho"></div>'
+            f"</th>"
+        )
+
+    body_rows: list[str] = []
+    matriz = df.to_numpy()
+    for ri in range(len(df)):
+        tds = []
+        for j, c in enumerate(cols):
+            txt = _formatear_celda_excel_ws(matriz[ri, j], columna=str(c), df=df)
+            attrs = _attrs_celda_excel_interactiva(
+                j, anchos[j], cols_fijas=cols_fijas_set, ultima_fija=ultima_fija, anchos=anchos
+            )
+            align = "center" if j > 0 and pd.api.types.is_numeric_dtype(df[c]) else "left"
+            title = f' title="{html.escape(txt)}"' if txt else ""
+            bg, fg = _EXCEL_WS_FILAS[ri % 2]
+            extra = (
+                f"background:{bg};color:{fg};text-align:{align};"
+                f"font-size:{font_px}px;padding:{pad_v}px {pad_h}px;min-height:{alto_fila}px;"
+            )
+            attrs = attrs.replace('style="', f'style="{extra}')
+            tds.append(f"<td {attrs}{title}>{html.escape(txt)}</td>")
+        body_rows.append(f"<tr>{''.join(tds)}</tr>")
+
+    ft_parts: list[str] = []
+    for j, c in enumerate(cols):
+        txt = _formatear_celda_excel_ws(totales[c], es_total=True, columna=str(c), df=df)
+        attrs = _attrs_celda_excel_interactiva(
+            j, anchos[j], cols_fijas=cols_fijas_set, ultima_fija=ultima_fija, anchos=anchos, es_footer=True
+        )
+        align = "left" if j == 0 else "center"
+        extra = (
+            f"text-align:{align};font-size:{font_px}px;"
+            f"padding:{pad_v}px {pad_h}px;min-height:{alto_fila}px;"
+        )
+        attrs = attrs.replace('style="', f'style="{extra}')
+        ft_parts.append(f"<td {attrs}>{html.escape(txt)}</td>")
+
+    tabla = (
+        f'<table class="lri-ec-table" style="font-size:{font_px}px;">'
+        f"<colgroup>{colgroup}</colgroup>"
+        f"<thead><tr>{''.join(th_parts)}</tr></thead>"
+        f"<tbody>{''.join(body_rows)}</tbody>"
+        f"<tfoot><tr>{''.join(ft_parts)}</tr></tfoot>"
+        f"</table>"
+    )
+
+    return dedent(
+        f"""
+        <!DOCTYPE html>
+        <html lang="es">
+        <head>
+        <meta charset="utf-8"/>
+        <style>
+        * {{ box-sizing: border-box; }}
+        html, body {{
+            margin: 0; padding: 0;
+            height: {altura_px + 24}px;
+            max-height: {altura_px + 24}px;
+            background: {_EXCEL_WS_FONDO};
+            font-family: Arial, sans-serif;
+            overflow: hidden;
+        }}
+        #lri-excel-shell {{
+            display: flex;
+            flex-direction: column;
+            height: {altura_px + 24}px;
+            max-height: {altura_px + 24}px;
+            width: 100%;
+        }}
+        #lri-excel-scroll-top {{
+            flex: 0 0 22px;
+            overflow-x: scroll;
+            overflow-y: hidden;
+            background: #0a0f1a;
+            border: 1px solid {_EXCEL_WS_BORDE};
+            border-bottom: none;
+            border-radius: 6px 6px 0 0;
+            scrollbar-width: auto;
+            scrollbar-color: #3b82f6 #0a0f1a;
+            scrollbar-gutter: stable;
+        }}
+        #lri-excel-scroll-top-inner {{
+            height: 1px;
+            min-width: 100%;
+        }}
+        #lri-excel-scroll-top::-webkit-scrollbar {{
+            height: 18px;
+            display: block;
+        }}
+        #lri-excel-scroll-top::-webkit-scrollbar-track {{
+            background: #0a0f1a;
+            display: block;
+        }}
+        #lri-excel-scroll-top::-webkit-scrollbar-thumb {{
+            background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%);
+            border-radius: 6px;
+            border: 2px solid #0a0f1a;
+            min-width: 48px;
+        }}
+        #lri-excel-root {{
+            flex: 1 1 auto;
+            min-height: 0;
+            width: 100%;
+            max-width: 100%;
+            overflow-x: scroll;
+            overflow-y: auto;
+            overscroll-behavior: contain;
+            -webkit-overflow-scrolling: touch;
+            background: {_EXCEL_WS_FONDO};
+            border: 1px solid {_EXCEL_WS_BORDE};
+            border-top: none;
+            border-radius: 0 0 6px 6px;
+            box-shadow: inset 0 0 0 1px #0f172a, 0 4px 20px rgba(0,0,0,0.35);
+            scrollbar-width: auto;
+            scrollbar-color: #3b82f6 #0a0f1a;
+            scrollbar-gutter: stable;
+        }}
+        #lri-excel-root::-webkit-scrollbar {{
+            height: 14px;
+            width: 12px;
+            display: block;
+        }}
+        #lri-excel-root::-webkit-scrollbar-track {{ background: #0a0f1a; }}
+        #lri-excel-root::-webkit-scrollbar-thumb {{
+            background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%);
+            border-radius: 6px;
+        }}
+        .lri-ec-table {{
+            border-collapse: separate;
+            border-spacing: 0;
+            table-layout: fixed;
+            width: max-content;
+        }}
+        .lri-ec-th {{
+            position: sticky;
+            top: 0;
+            z-index: 40;
+            background: {_EXCEL_WS_HEADER_BG} !important;
+            color: {_EXCEL_WS_HEADER_FG};
+            font-weight: 700;
+            text-align: left;
+            padding: {pad_v}px {pad_h}px;
+            border-bottom: 1px solid #333;
+            border-right: 1px solid #1a2740;
+            background-clip: padding-box;
+            box-shadow: 0 2px 0 #333333;
+            vertical-align: middle;
+            white-space: normal;
+            line-height: 1.25;
+        }}
+        .lri-ec-td {{
+            font-weight: 500;
+            border-bottom: 1px solid #1e293b;
+            border-right: 1px solid #1a2740;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            vertical-align: middle;
+            background-clip: padding-box;
+        }}
+        .lri-ec-ft {{
+            position: sticky;
+            bottom: 0;
+            z-index: 35;
+            background: {_EXCEL_WS_TOTAL_BG} !important;
+            color: {_EXCEL_WS_TOTAL_FG};
+            font-weight: 800;
+            border-top: 1px solid #333;
+            border-right: 1px solid #1a2740;
+            background-clip: padding-box;
+            box-shadow: 0 -2px 0 #333333;
+        }}
+        .lri-ec-frozen {{
+            position: sticky !important;
+            background-clip: padding-box;
+        }}
+        .lri-ec-td.lri-ec-frozen {{
+            z-index: 50;
+        }}
+        .lri-ec-th.lri-ec-frozen {{
+            top: 0 !important;
+            z-index: 72 !important;
+            background: {_EXCEL_WS_HEADER_BG} !important;
+        }}
+        .lri-ec-ft.lri-ec-frozen {{
+            bottom: 0 !important;
+            z-index: 68 !important;
+            background: {_EXCEL_WS_TOTAL_BG} !important;
+        }}
+        .lri-ec-frozen-last {{
+            box-shadow: 6px 0 12px rgba(0,0,0,0.45);
+        }}
+        .lri-th-text {{
+            display: block;
+            padding-right: 8px;
+            pointer-events: none;
+        }}
+        .lri-col-resizer {{
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 8px;
+            height: 100%;
+            cursor: col-resize;
+            user-select: none;
+            z-index: 80;
+        }}
+        .lri-col-resizer:hover {{
+            background: rgba(96, 165, 250, 0.45);
+        }}
+        </style>
+        </head>
+        <body>
+        <div id="lri-excel-shell">
+        <div id="lri-excel-scroll-top" title="Desplazamiento horizontal (arriba)">
+            <div id="lri-excel-scroll-top-inner"></div>
+        </div>
+        <div id="lri-excel-root" data-frozen='{frozen_json}'>
+        {tabla}
+        </div>
+        </div>
+        <script>
+        (function() {{
+            const root = document.getElementById('lri-excel-root');
+            const topBar = document.getElementById('lri-excel-scroll-top');
+            const topInner = document.getElementById('lri-excel-scroll-top-inner');
+            if (!root) return;
+            const frozen = JSON.parse(root.dataset.frozen || '[]');
+
+            function syncTopScrollWidth() {{
+                const table = root.querySelector('table');
+                if (table && topInner) {{
+                    // +2 px asegura que la barra horizontal superior siempre tenga recorrido visible.
+                    topInner.style.width = (Math.max(table.scrollWidth, root.clientWidth) + 2) + 'px';
+                }}
+            }}
+
+            if (topBar) {{
+                topBar.addEventListener('scroll', function() {{
+                    root.scrollLeft = topBar.scrollLeft;
+                }});
+            }}
+            root.addEventListener('scroll', function() {{
+                if (topBar && topBar.scrollLeft !== root.scrollLeft) {{
+                    topBar.scrollLeft = root.scrollLeft;
+                }}
+                refreshFrozen();
+            }});
+
+            function colWidth(idx) {{
+                const col = document.getElementById('lri-col-' + idx);
+                if (col && col.style.width) {{
+                    return parseFloat(col.style.width) || col.offsetWidth;
+                }}
+                const cell = root.querySelector('[data-col="' + idx + '"]');
+                return cell ? cell.offsetWidth : 80;
+            }}
+
+            function setColWidth(idx, w) {{
+                w = Math.max(48, Math.min(640, Math.round(w)));
+                const px = w + 'px';
+                const col = document.getElementById('lri-col-' + idx);
+                if (col) {{
+                    col.style.width = px;
+                    col.style.minWidth = px;
+                }}
+                root.querySelectorAll('[data-col="' + idx + '"]').forEach(function(el) {{
+                    el.style.width = px;
+                    el.style.minWidth = px;
+                    el.style.maxWidth = px;
+                }});
+                refreshFrozen();
+                syncTopScrollWidth();
+            }}
+
+            function refreshFrozen() {{
+                let left = 0;
+                frozen.forEach(function(idx) {{
+                    root.querySelectorAll('.lri-ec-frozen[data-col="' + idx + '"]').forEach(function(el) {{
+                        el.style.left = left + 'px';
+                        el.style.position = 'sticky';
+                    }});
+                    left += colWidth(idx);
+                }});
+            }}
+
+            let drag = null;
+            root.querySelectorAll('.lri-col-resizer').forEach(function(handle) {{
+                handle.addEventListener('mousedown', function(e) {{
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const idx = parseInt(handle.dataset.col, 10);
+                    const th = root.querySelector('th[data-col="' + idx + '"]');
+                    drag = {{
+                        idx: idx,
+                        startX: e.clientX,
+                        startW: th ? th.offsetWidth : 100
+                    }};
+                    document.body.style.cursor = 'col-resize';
+                    document.body.style.userSelect = 'none';
+                }});
+            }});
+
+            window.addEventListener('mousemove', function(e) {{
+                if (!drag) return;
+                setColWidth(drag.idx, drag.startW + (e.clientX - drag.startX));
+            }});
+
+            window.addEventListener('mouseup', function() {{
+                drag = null;
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+            }});
+
+            function bootSync() {{
+                refreshFrozen();
+                syncTopScrollWidth();
+            }}
+            bootSync();
+            requestAnimationFrame(function() {{
+                bootSync();
+                requestAnimationFrame(bootSync);
+            }});
+            window.addEventListener('load', bootSync);
+            window.addEventListener('resize', syncTopScrollWidth);
+            if (window.ResizeObserver) {{
+                const ro = new ResizeObserver(syncTopScrollWidth);
+                ro.observe(root);
+                const table = root.querySelector('table');
+                if (table) ro.observe(table);
+            }}
+        }})();
+        </script>
+        </body>
+        </html>
+        """
+    )
+
+
+
 def render_perfilado_manual_panel(
-    df: pd.DataFrame, viewport_h_ui: int, base_font_size: int, tabla_font_size: int
+    df: pd.DataFrame,
+    viewport_h_ui: int,
+    base_font_size: int,
+    tabla_font_size: int,
+    etiqueta_barras_font_size: int,
 ) -> None:
+    _sincronizar_metricas_adicionales_sesion(df)
     eje_x_real = st.session_state["lri_man_eje_x"]
     eje_y_real = st.session_state["lri_man_eje_y"]
-    eje_y2_real = st.session_state.get("lri_man_eje_y2", METRICA_ADICIONAL_NINGUNA)
-    operacion_real = st.session_state["lri_man_operacion"]
+    eje_y2_real = _leer_metrica_adicional_sesion(df, "lri_man_eje_y2")
+    eje_y3_real = _leer_metrica_adicional_sesion(df, "lri_man_eje_y3")
+    operacion_y = st.session_state.get("lri_man_operacion_y", "Suma")
+    operacion_y2 = st.session_state.get("lri_man_operacion_y2", "Suma")
+    operacion_y3 = st.session_state.get("lri_man_operacion_y3", "Suma")
     top_n_real = st.session_state["lri_man_top_n"]
     set_pareto_real = st.session_state["lri_pareto_set"]
     ver_completo_graf = _ver_grafico_completo_en_pantalla(eje_x_real or "")
+    orden_asc_real = bool(st.session_state.get("lri_man_orden_ascendente", False))
+    top_n_real, aviso_top_n = _top_n_efectivo_para_dimension(df, eje_x_real, top_n_real)
+    if aviso_top_n:
+        st.caption(f"ℹ️ {aviso_top_n}")
 
-    if st.session_state["drill_down_categoria"]:
-        if st.button("⬅️ Volver a vista general (Categorías)"):
+    if st.session_state.get("drill_down_categoria") or st.session_state.get(
+        "drill_down_subcategoria"
+    ):
+        if st.button("⬅️ Volver a vista general"):
+            tenia_sub = bool(st.session_state.get("drill_down_subcategoria"))
             st.session_state["drill_down_categoria"] = None
-            if "categoria" in df.columns:
+            st.session_state["drill_down_subcategoria"] = None
+            if not tenia_sub and "categoria" in df.columns:
                 st.session_state["_lri_pending_man_eje_x"] = "categoria"
+            elif tenia_sub and "subcategoria" in df.columns:
+                st.session_state["_lri_pending_man_eje_x"] = "subcategoria"
             st.rerun()
 
     computable, aviso_perfil = _evaluar_perfilado_computable(
-        df, eje_x_real, eje_y_real, operacion_real
+        df, eje_x_real, eje_y_real, operacion_y
     )
     if not computable:
         _mostrar_error_perfil_no_computable(aviso_perfil)
         return
 
-    df_filtrado_base = df.copy()
-    if st.session_state["drill_down_categoria"] and "categoria" in df_filtrado_base.columns:
-        df_filtrado_base = df_filtrado_base[df_filtrado_base["categoria"] == st.session_state["drill_down_categoria"]]
+    df_filtrado_base = _aplicar_filtros_drill_df(df)
 
-    df_resumen = procesar_agrupacion_perfil(df, eje_x_real, eje_y_real, operacion_real, top_n_real, set_pareto_real)
+    # Vista especial ABC (scatter + tabla): no altera el pipeline estándar de barras.
+    if st.session_state.get("prf2_vista_abc_articulos") and "clase" in df_filtrado_base.columns:
+        metrica_abc = eje_y_real
+        if metrica_abc not in df_filtrado_base.columns or not pd.api.types.is_numeric_dtype(
+            df_filtrado_base[metrica_abc]
+        ):
+            metrica_abc = _resolver_columna_existente(
+                df_filtrado_base, "valor inventario promedio", "ventas totales"
+            )
+            if metrica_abc is None:
+                nums = df_filtrado_base.select_dtypes(include=["number"]).columns.tolist()
+                metrica_abc = nums[0] if nums else None
+        if metrica_abc:
+            _render_vista_abc_articulos(
+                df_filtrado_base,
+                metrica_abc,
+                viewport_h=viewport_h_ui,
+                base_font_size=base_font_size,
+            )
+            return
+        st.warning("Vista ABC activa, pero no hay métrica numérica para el eje Y del scatter.")
+
+    df_resumen = _procesar_agrupacion_con_cache(
+        df, eje_x_real, eje_y_real, operacion_y, top_n_real, set_pareto_real,
+        orden_ascendente=orden_asc_real,
+    )
 
     if isinstance(df_resumen, str) and df_resumen == "ERROR_NO_COMPUTABLE":
         _mostrar_error_perfil_no_computable(
-            f"«{eje_y_real}» no admite la operación «{operacion_real}» en este perfilado."
+            f"«{eje_y_real}» no admite la operación «{operacion_y}» en este perfilado."
         )
         return
 
-    y_pct, y_escala_0_100 = _info_presentacion_porcentaje_eje_y(df, eje_y_real, df_resumen)
+    if orden_asc_real:
+        st.caption("Orden: **menor → mayor** (valores más bajos primero).")
+    y_pct, y_escala_0_100, y_miles = _info_presentacion_formato_eje_y(df, eje_y_real, df_resumen)
     y_tasa_mant = _metrica_costo_mantener_pct(df, eje_y_real)
+    ys_principal = df_resumen[eje_y_real].astype(float).to_numpy()
 
-    ys_secundarios: Optional[np.ndarray] = None
-    eje_y2_grafico: Optional[str] = None
-    y2_pct = y2_escala_0_100 = False
-    y2_tasa_mant = False
-    y2_en_eje_secundario = False
-    aviso_metrica_2: Optional[str] = None
-
-    if _metrica_adicional_activa(eje_y2_real):
-        if eje_y2_real == eje_y_real:
-            aviso_metrica_2 = "La métrica adicional debe ser distinta del eje Y principal."
-        else:
-            computable_y2, aviso_y2 = _evaluar_perfilado_computable(
-                df, eje_x_real, eje_y2_real, operacion_real
-            )
-            if not computable_y2:
-                aviso_metrica_2 = aviso_y2 or f"«{eje_y2_real}» no es válida como métrica adicional."
-            else:
-                pareto_sec = set_pareto_real
-                df_resumen_y2 = procesar_agrupacion_perfil(
-                    df, eje_x_real, eje_y2_real, operacion_real, top_n_real, pareto_sec
-                )
-                if isinstance(df_resumen_y2, str):
-                    aviso_metrica_2 = (
-                        f"«{eje_y2_real}» no admite «{operacion_real}» como métrica adicional."
-                    )
-                else:
-                    ys_secundarios = _alinear_serie_metrica_secundaria(
-                        df_resumen, df_resumen_y2, eje_x_real, eje_y2_real
-                    )
-                    eje_y2_grafico = eje_y2_real
-                    y2_pct, y2_escala_0_100 = _info_presentacion_porcentaje_eje_y(
-                        df, eje_y2_real, df_resumen_y2
-                    )
-                    y2_tasa_mant = _metrica_costo_mantener_pct(df, eje_y2_real)
-                    y2_en_eje_secundario = _comparativo_usa_doble_eje_y(
-                        y_pct,
-                        y2_pct,
-                        df_resumen[eje_y_real].astype(float).to_numpy(),
-                        ys_secundarios,
-                    )
-
-    if aviso_metrica_2:
-        st.caption(f"⚠️ Métrica adicional: {aviso_metrica_2}")
-    elif eje_y2_grafico and ys_secundarios is not None and y2_en_eje_secundario:
-        st.caption(
-            f"📐 Escala dual: eje izquierdo (azul) = **{eje_y_real}** · "
-            f"eje derecho (amarillo) = **{eje_y2_grafico}**"
+    metricas_extras: list[dict[str, Any]] = []
+    avisos_extra: list[str] = []
+    seleccionadas = {eje_y_real}
+    for col, op in (
+        (eje_y2_real, operacion_y2),
+        (eje_y3_real, operacion_y3),
+    ):
+        resuelta, aviso = _intentar_resolver_metrica_adicional(
+            df,
+            eje_x_real,
+            col,
+            op,
+            top_n_real,
+            set_pareto_real,
+            df_resumen,
+            eje_y_real,
+            ys_principal,
+            y_pct,
+            seleccionadas,
         )
+        if aviso:
+            avisos_extra.append(aviso)
+        if resuelta:
+            metricas_extras.append(resuelta)
+            seleccionadas.add(resuelta["columna"])
 
-    label_metrica, val_total_formateado = calcular_metricas_encabezado(
-        df_filtrado_base, eje_y_real, operacion_real
+    for aviso in avisos_extra:
+        st.caption(f"⚠️ Métrica adicional: {aviso}")
+
+    if metricas_extras:
+        escala_dual = [m for m in metricas_extras if m.get("en_eje_secundario")]
+        if escala_dual:
+            nombres_sec = ", ".join(f"**{m['columna']}** ({m['operacion']})" for m in escala_dual)
+            st.caption(
+                f"📐 Escala dual: eje izquierdo = **{eje_y_real}** ({operacion_y}) · "
+                f"eje derecho = {nombres_sec}"
+            )
+
+    label_metrica, _, val_total_formateado = _resolver_total_metrica_perfil(
+        df_filtrado_base, eje_y_real, operacion_y, df_resumen=df_resumen
     )
     cats_count = df_filtrado_base[eje_x_real].nunique() if eje_x_real in df_filtrado_base.columns else 0
     y_max, y_min = _extremos_eje_y_perfilado(df_resumen, eje_y_real)
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
-        st.markdown(
-            f"<div class='kpi-card'><div class='kpi-title'>{label_metrica}</div>"
-            f"<div class='kpi-value'>{val_total_formateado}</div></div>",
-            unsafe_allow_html=True,
-        )
-    with c2:
         st.markdown(
             f"<div class='kpi-card'><div class='kpi-title'>Elementos Únicos ({eje_x_real})</div>"
             f"<div class='kpi-value'>{cats_count}</div></div>",
             unsafe_allow_html=True,
         )
-    with c3:
+    with c2:
         st.markdown(
             f"<div class='kpi-card'><div class='kpi-title'>Máximo {eje_y_real}</div>"
-            f"<div class='kpi-value'>{_formatear_valor_kpi_eje_y(y_max, y_pct, y_escala_0_100)}</div></div>",
+            f"<div class='kpi-value'>{_formatear_valor_kpi_eje_y(y_max, y_pct, y_escala_0_100, y_miles, eje_y=eje_y_real)}</div></div>",
+            unsafe_allow_html=True,
+        )
+    with c3:
+        st.markdown(
+            f"<div class='kpi-card'><div class='kpi-title'>Mínimo {eje_y_real}</div>"
+            f"<div class='kpi-value'>{_formatear_valor_kpi_eje_y(y_min, y_pct, y_escala_0_100, y_miles, eje_y=eje_y_real)}</div></div>",
             unsafe_allow_html=True,
         )
     with c4:
         st.markdown(
-            f"<div class='kpi-card'><div class='kpi-title'>Mínimo {eje_y_real}</div>"
-            f"<div class='kpi-value'>{_formatear_valor_kpi_eje_y(y_min, y_pct, y_escala_0_100)}</div></div>",
+            f"<div class='kpi-card'><div class='kpi-title'>Ítems en perfil</div>"
+            f"<div class='kpi-value'>{len(df_resumen):,}</div></div>",
             unsafe_allow_html=True,
         )
+    with c5:
+        st.markdown(
+            f"<div class='kpi-card kpi-card-total'>"
+            f"<div class='kpi-title'>{html.escape(label_metrica)} · {html.escape(operacion_y)}</div>"
+            f"<div class='kpi-value kpi-value-total'>{html.escape(val_total_formateado)}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+    if (
+        operacion_y == "Suma"
+        and _columna_es_metrica_aditiva_suma(eje_y_real, df_filtrado_base)
+        and eje_y_real in df_resumen.columns
+    ):
+        total_datos = _suma_numerica_columna(df_filtrado_base, eje_y_real)
+        total_graf = _suma_numerica_columna(df_resumen, eje_y_real)
+        if top_n_real > 0 and total_graf < total_datos * 0.999:
+            st.caption(
+                f"ℹ️ Total en pantalla ({total_graf:,.0f}) refleja Top **{top_n_real}** del gráfico; "
+                f"total en datos: **{total_datos:,.0f}**."
+            )
+        elif total_datos > 0 and abs(total_graf - total_datos) / total_datos > 0.01:
+            st.caption(
+                f"⚠️ La suma del gráfico ({total_graf:,.0f}) difiere del total en datos ({total_datos:,.0f}). "
+                "Revise el **Control de calidad de datos** en el panel lateral."
+            )
 
     pareto_activo_prev = (
         "color_pareto" in df_resumen.columns
@@ -2878,8 +6708,9 @@ def render_perfilado_manual_panel(
         and df_resumen["color_pareto"].iloc[0] is not None
     )
     df_resumen_tabla = df_resumen.copy()
-    if eje_y2_grafico and ys_secundarios is not None:
-        df_resumen_tabla[eje_y2_grafico] = ys_secundarios
+    cols_extra_graf = [m["columna"] for m in metricas_extras]
+    for m in metricas_extras:
+        df_resumen_tabla[m["columna"]] = np.asarray(m["valores"], dtype=float)
 
     df_mostrar, columnas_visibles, clase_tabla, altura_tabla = _preparar_tabla_metricas_detalle(
         df_resumen_tabla,
@@ -2888,7 +6719,8 @@ def render_perfilado_manual_panel(
         eje_y_real,
         viewport_h_ui,
         tabla_font_size,
-        eje_y2=eje_y2_grafico,
+        metricas_extra=cols_extra_graf,
+        metricas_extras_data=metricas_extras,
         ver_completo_pantalla=ver_completo_graf,
     )
     df_export = _preparar_df_exportacion_perfil(
@@ -2896,27 +6728,35 @@ def render_perfilado_manual_panel(
         df_filtrado_base,
         eje_x_real,
         eje_y_real,
-        operacion_real,
+        operacion_y,
         pareto_activo_prev,
-        eje_y2=eje_y2_grafico,
+        metricas_extra=cols_extra_graf,
+        metricas_extras_data=metricas_extras,
     )
     meta_export = _meta_exportacion_perfil(
         eje_x_real,
         eje_y_real,
-        operacion_real,
+        operacion_y,
         set_pareto_real,
         st.session_state.get("drill_down_categoria"),
         len(df_export),
-        eje_y2=eje_y2_grafico,
+        metricas_extra=metricas_extras,
+        drill_subcategoria=st.session_state.get("drill_down_subcategoria"),
     )
     nombre_excel = _nombre_archivo_perfilado(
         eje_x_real,
         eje_y_real,
-        operacion_real,
-        st.session_state.get("drill_down_categoria"),
+        operacion_y,
+        st.session_state.get("drill_down_categoria")
+        or st.session_state.get("drill_down_subcategoria"),
     )
-    bytes_excel = _bytes_excel_perfilado(df_export, meta_export)
-    dims_tabla = _dims_tabla_metricas(clase_tabla, tabla_font_size)
+    bytes_excel = _bytes_excel_perfilado_cached(
+        json.dumps(meta_export, sort_keys=True),
+        df_export.to_csv(index=False),
+    )
+    dims_tabla = _dims_tabla_metricas(
+        clase_tabla, tabla_font_size, n_cols_real=len(columnas_visibles)
+    )
     ancho_fig_pareto = 0
 
     if pareto_activo_prev:
@@ -2928,21 +6768,28 @@ def render_perfilado_manual_panel(
         ratio_tabla, ratio_graf = _proporcion_tabla_vs_grafico(
             len(columnas_visibles), pareto_activo_prev
         )
-        col_tabla, col_chart = st.columns([ratio_tabla, ratio_graf], gap="medium")
+        col_tabla, col_chart = st.columns([ratio_tabla, ratio_graf], gap="small")
         col_sum = None
 
     with col_tabla:
-        alinear = "flex-start" if pareto_activo_prev else "center"
+        n_cols_tab = len(columnas_visibles)
+        ancho_panel_tab = _ancho_panel_tabla_metricas(dims_tabla)
+        estilo_bloque = (
+            f"width:fit-content;min-width:{ancho_panel_tab}px;max-width:none;"
+            if n_cols_tab >= 3
+            else "width:100%;"
+        )
         st.markdown(
-            f'<div class="lri-bloque-tabla" style="display:flex;flex-direction:column;'
-            f'align-items:{alinear};width:100%;max-width:100%;overflow:visible;">',
+            f'<div class="lri-bloque-tabla lri-bloque-tabla-ncols-{n_cols_tab}" '
+            f'style="display:flex;flex-direction:column;align-items:flex-start;'
+            f'{estilo_bloque}overflow:visible;">',
             unsafe_allow_html=True,
         )
         st.session_state.pop("lri_ultimo_excel_guardado", None)
         st.session_state.pop("lri_ultimo_excel_error", None)
         firma_perfil = (
-            f"{eje_x_real}|{eje_y_real}|{eje_y2_grafico or ''}|{operacion_real}|"
-            f"{set_pareto_real}|{top_n_real}"
+            f"{eje_x_real}|{eje_y_real}|{'|'.join(cols_extra_graf)}|{operacion_y}|"
+            f"{operacion_y2}|{operacion_y3}|{set_pareto_real}|{top_n_real}"
         )
         st.download_button(
             label="Guardar en Excel",
@@ -2953,16 +6800,33 @@ def render_perfilado_manual_panel(
             key=f"lri_excel_{hashlib.md5(firma_perfil.encode(), usedforsecurity=False).hexdigest()[:12]}",
         )
 
-        titulo_tabla = f"Métricas Detalladas ({operacion_real})"
+        titulo_tabla = f"Métricas Detalladas · {eje_y_real} ({operacion_y})"
         if "producto" in columnas_visibles:
             titulo_tabla += " · código y producto"
-        if eje_y2_grafico and eje_y2_grafico in columnas_visibles:
-            titulo_tabla += f" · {eje_y_real} + {eje_y2_grafico}"
+        if cols_extra_graf:
+            titulo_tabla += " · " + " · ".join(
+                f"{m['columna']} ({m['operacion']})" for m in metricas_extras
+            )
 
-        def _fmt_columna_metrica(col: str, es_pct: bool, escala_100: bool) -> str:
+        operaciones_por_col = {eje_y_real: operacion_y}
+        flags_por_col = {eje_y_real: (y_pct, y_escala_0_100, y_miles)}
+        for m in metricas_extras:
+            operaciones_por_col[m["columna"]] = m["operacion"]
+            flags_por_col[m["columna"]] = (
+                m["y_pct"],
+                m["y_escala_0_100"],
+                m.get("y_miles", False),
+            )
+
+        def _fmt_columna_metrica(
+            col: str, es_pct: bool, escala_100: bool, en_miles: bool
+        ) -> str:
             if es_pct:
-                return _fmt_pandas_columna_porcentaje(escala_100)
-            if operacion_real == "Promedio" or col not in df_resumen_tabla.columns:
+                return _fmt_pandas_columna_porcentaje(escala_100, eje_y=col)
+            if en_miles:
+                return _fmt_pandas_columna_miles
+            op_col = operaciones_por_col.get(col, operacion_y)
+            if op_col == "Promedio" or col not in df_resumen_tabla.columns:
                 return "{:,.2f}"
             try:
                 mx = float(pd.to_numeric(df_resumen_tabla[col], errors="coerce").max())
@@ -2970,94 +6834,93 @@ def render_perfilado_manual_panel(
                 mx = 0.0
             return "{:,.2f}" if mx < 100 else "{:,.0f}"
 
-        fmt_cols = {
-            c: _fmt_columna_metrica(c, y_pct, y_escala_0_100)
-            for c in columnas_visibles
-            if c == eje_y_real
-        }
-        if eje_y2_grafico and eje_y2_grafico in columnas_visibles:
-            fmt_cols[eje_y2_grafico] = _fmt_columna_metrica(
-                eje_y2_grafico, y2_pct, y2_escala_0_100
-            )
+        fmt_cols: dict[str, str] = {}
+        for c in columnas_visibles:
+            if c in flags_por_col:
+                fmt_cols[c] = _fmt_columna_metrica(c, *flags_por_col[c])
+            elif (
+                c in df_mostrar.columns
+                and c not in (eje_x_real, "producto")
+                and pd.api.types.is_numeric_dtype(df_mostrar[c])
+            ):
+                fmt_cols[c] = "{:,.2f}"
 
         colores_pareto_filas = None
         estilos_por_celda = None
         if pareto_activo_prev:
             fs_celda = f"font-size: {dims_tabla['fs_celda']}px;"
-            if (
-                eje_y2_grafico
-                and ys_secundarios is not None
-                and eje_y2_grafico in columnas_visibles
-            ):
-                estilos_por_celda = _matriz_estilos_tabla_pareto_dual(
-                    df_resumen,
-                    eje_x_real,
-                    eje_y_real,
-                    eje_y2_grafico,
-                    ys_secundarios,
-                    columnas_visibles,
-                    set_pareto_real,
-                    fs_celda,
-                )
-            else:
-                mapa_color_texto_pareto = {
-                    COLOR_PARETO_TOP: _estilo_texto_pareto_tabla(COLOR_PARETO_TOP, fs_celda),
-                    COLOR_PARETO_MEDIO: _estilo_texto_pareto_tabla(COLOR_PARETO_MEDIO, fs_celda),
-                    COLOR_PARETO_COLA: _estilo_texto_pareto_tabla(COLOR_PARETO_COLA, fs_celda),
-                }
-                colores_pareto_filas = [
-                    mapa_color_texto_pareto.get(c, fs_celda)
-                    for c in df_resumen["color_pareto"]
-                ]
+            estilos_por_celda = _matriz_estilos_tabla_pareto_multimetrica(
+                df_resumen,
+                eje_x_real,
+                eje_y_real,
+                metricas_extras,
+                columnas_visibles,
+                set_pareto_real,
+                fs_celda,
+            )
+            estilos_por_celda.append(
+                [_ESTILO_FILA_TOTAL_TABLA] * len(columnas_visibles)
+            )
 
-        styler_tabla = _styler_tabla_metricas(df_mostrar, fmt_cols)
+        df_mostrar_tabla = _tabla_perfilado_con_fila_total(
+            df_mostrar,
+            df_filtrado_base,
+            columnas_visibles,
+            eje_x_real,
+            operaciones_por_col,
+            df_resumen=df_resumen_tabla,
+        )
+        altura_tabla_total = altura_tabla + max(28, int(dims_tabla["fs_celda"] * 1.55))
+
+        styler_tabla = _styler_tabla_metricas(df_mostrar_tabla, fmt_cols)
+        fluido_tabla = _tabla_usa_layout_fluido(pareto_activo_prev, dims_tabla)
         st.markdown(
             _html_tabla_metricas_panel(
                 styler_tabla,
                 clase_tabla,
                 titulo_tabla,
-                altura_tabla,
+                altura_tabla_total,
                 dims_tabla,
                 estilos_por_fila=colores_pareto_filas,
                 estilos_por_celda=estilos_por_celda,
-                fluido=not pareto_activo_prev,
+                fluido=fluido_tabla,
             ),
             unsafe_allow_html=True,
         )
         st.markdown("</div>", unsafe_allow_html=True)
 
-    mostrar_acumulado = (
-        st.session_state.get("lri_pareto_acumulado", False)
-        and ys_secundarios is None
-    )
     fig = fig_ranking_barras(
         df_resumen,
         eje_x_real,
         eje_y_real,
-        operacion_real,
+        operacion_y,
         viewport_h=viewport_h_ui,
         base_font_size=base_font_size,
         y_en_porcentaje=y_pct,
         y_es_tasa_mantenimiento=y_tasa_mant,
         y_escala_0_100=y_escala_0_100,
-        mostrar_acumulado=mostrar_acumulado,
+        y_miles=y_miles,
         ancho_fig_px=ancho_fig_pareto if pareto_activo_prev and ancho_fig_pareto > 0 else None,
-        col_val_2=eje_y2_grafico,
-        ys_secundarios=ys_secundarios,
-        y2_en_porcentaje=y2_pct,
-        y2_es_tasa_mantenimiento=y2_tasa_mant,
-        y2_escala_0_100=y2_escala_0_100,
-        y2_en_eje_secundario=y2_en_eje_secundario,
+        metricas_extras=metricas_extras,
         ver_completo_pantalla=ver_completo_graf,
+        etiqueta_barras_font_size=etiqueta_barras_font_size,
     )
 
     n_barras_graf = len(df_resumen)
-    dual_graf = bool(eje_y2_grafico and ys_secundarios is not None)
+    dual_graf = bool(metricas_extras)
     max_label_graf = (
         int(df_resumen[eje_x_real].astype(str).str.len().max())
         if eje_x_real in df_resumen.columns and len(df_resumen) > 0
         else 0
     )
+
+    nomenclatura_graf: list[tuple[str, str]] = []
+    if pareto_activo_prev:
+        nomenclatura_graf.extend(_items_nomenclatura_pareto(set_pareto_real))
+    if metricas_extras:
+        nomenclatura_graf.extend(
+            _items_nomenclatura_multimetrica(eje_y_real, operacion_y, metricas_extras)
+        )
 
     if pareto_activo_prev:
         with col_chart:
@@ -3068,12 +6931,9 @@ def render_perfilado_manual_panel(
                 eje_x=eje_x_real,
                 max_label_len=max_label_graf,
                 ver_completo_pantalla=ver_completo_graf,
+                nomenclatura=nomenclatura_graf or None,
             )
         with col_sum:
-            st.markdown(
-                '<div style="display:flex;justify-content:flex-end;width:100%;">',
-                unsafe_allow_html=True,
-            )
             _mostrar_resumen_pareto_ejecutivo(
                 df_resumen,
                 eje_x_real,
@@ -3082,8 +6942,8 @@ def render_perfilado_manual_panel(
                 base_font_size,
                 y_pct,
                 y_escala_0_100,
+                y_miles,
             )
-            st.markdown("</div>", unsafe_allow_html=True)
     else:
         with col_chart:
             _mostrar_grafico_barras(
@@ -3093,14 +6953,69 @@ def render_perfilado_manual_panel(
                 eje_x=eje_x_real,
                 max_label_len=max_label_graf,
                 ver_completo_pantalla=ver_completo_graf,
+                nomenclatura=nomenclatura_graf or None,
             )
+
+    # Hechos ChatGPT: siempre sobre el universo filtrado completo (Top N = 0),
+    # para que “los 3 primeros / % del total” no use solo las barras visibles.
+    df_universo_hechos = df_resumen_tabla
+    if isinstance(top_n_real, int) and top_n_real > 0:
+        df_full = _procesar_agrupacion_con_cache(
+            df,
+            eje_x_real,
+            eje_y_real,
+            operacion_y,
+            0,
+            set_pareto_real,
+            orden_ascendente=orden_asc_real,
+        )
+        if isinstance(df_full, pd.DataFrame) and not df_full.empty:
+            # Reaplicar métricas adicionales como en df_resumen_tabla si aplica.
+            df_universo_hechos = df_full
+            for col_extra, op_extra in (
+                (eje_y2_real, operacion_y2),
+                (eje_y3_real, operacion_y3),
+            ):
+                if not col_extra or col_extra == METRICA_ADICIONAL_NINGUNA:
+                    continue
+                if col_extra in df_universo_hechos.columns:
+                    continue
+                extra = _procesar_agrupacion_con_cache(
+                    df,
+                    eje_x_real,
+                    col_extra,
+                    op_extra,
+                    0,
+                    set_pareto_real,
+                    orden_ascendente=orden_asc_real,
+                )
+                if isinstance(extra, pd.DataFrame) and col_extra in extra.columns:
+                    df_universo_hechos = df_universo_hechos.merge(
+                        extra[[eje_x_real, col_extra]],
+                        on=eje_x_real,
+                        how="left",
+                    )
+    analisis_chatgpt_profile.talvez_narrar_tras_perfil(
+        df_resumen_tabla,
+        eje_x=eje_x_real,
+        eje_y=eje_y_real,
+        operacion_y=str(operacion_y),
+        eje_y2=eje_y2_real,
+        eje_y3=eje_y3_real,
+        df_universo=df_universo_hechos,
+        n_en_pantalla=len(df_resumen_tabla) if isinstance(df_resumen_tabla, pd.DataFrame) else None,
+    )
 
 
 # ==============================================================================
 # CONTROL DE FLUJO Y ORQUESTACIÓN PRINCIPAL
 # ==============================================================================
+_sincronizar_revision_perfil()
+_migrar_toggle_explorador_excel_legacy()
+
 if "lri_df_datos" not in st.session_state:
-    st.session_state["lri_df_datos"], st.session_state["lri_error_carga"] = cargar_datos()
+    _df0, _err0, _hojas0, _hoja0, _meta0 = cargar_datos()
+    _aplicar_resultado_carga_a_sesion(_df0, _err0, _hojas0, _hoja0, meta_limpieza=_meta0)
 
 df = st.session_state.get("lri_df_datos")
 error_carga = st.session_state.get("lri_error_carga")
@@ -3110,43 +7025,19 @@ if df is not None:
     cols_num = df.select_dtypes(include=["number"]).columns.tolist()
     columnas_df = df.columns.tolist()
 
+    # Antes de voz/bloqueo: marcar widgets como no listos (evita diferir mal el cruce).
+    st.session_state["_lri_widgets_ejes_listos"] = False
+    # 1) Voz/ChatGPT pendiente pisa el manual.
     aplicar_config_voz_pendiente()
+    # 2) Si el usuario tocó selectores, el manual pisa el bloqueo ChatGPT.
+    analisis_chatgpt_profile.restaurar_perfil_bloqueado_si_aplica()
 
-    # Seed del primer gráfico: ventas totales por categoría (automático).
-    if not st.session_state.get("lri_default_seeded", False):
-        default_x = _resolver_columna_existente(df, "categoria", "categoría")
-        if default_x is None:
-            # Respaldo si el dataset no trae categoría
-            default_x = _resolver_columna_existente(df, "subcategoria", "subcategoría")
-        if default_x is None:
-            default_x = cols_texto[0] if cols_texto else (columnas_df[0] if columnas_df else None)
+    _sincronizar_operaciones_metricas()
 
-        default_y = _resolver_eje_y_default(df)
-
-        if default_x in columnas_df:
-            st.session_state["lri_man_eje_x"] = default_x
-        if default_y is not None:
-            st.session_state["lri_man_eje_y"] = default_y
-        st.session_state["lri_man_operacion"] = "Suma"
-        st.session_state["lri_man_top_n"] = 0
-        st.session_state["lri_default_seeded"] = True
-
-    # Universal scrolling: los ejes pueden ser cualquier columna del DataFrame.
-    # No restringir a cols_texto / cols_num (eso borraba la voz y el manual en cada rerun).
-    if (
-        st.session_state["lri_man_eje_x"] is None
-        or st.session_state["lri_man_eje_x"] not in columnas_df
-    ):
-        st.session_state["lri_man_eje_x"] = (
-            cols_texto[0] if cols_texto else (columnas_df[0] if columnas_df else None)
-        )
-    if not _eje_y_valido(df, st.session_state.get("lri_man_eje_y")):
-        st.session_state["lri_man_eje_y"] = _resolver_eje_y_default(df)
-
-    # Eje X diferido (p. ej. botón "Volver"): no tocar lri_man_eje_x tras instanciar el selectbox.
-    pend_eje_x = st.session_state.pop("_lri_pending_man_eje_x", None)
-    if pend_eje_x is not None and pend_eje_x in columnas_df:
-        st.session_state["lri_man_eje_x"] = pend_eje_x
+    # Antes de cualquier selectbox de ejes: sembrar/ajustar y aplicar pendientes.
+    _aplicar_pendientes_ejes_antes_widgets(df)
+    _sembrar_ejes_default_si_corresponde(df)
+    _ajustar_ejes_a_dataframe(df)
 
     with st.sidebar:
         st.title("⚙️ Operaciones LRI")
@@ -3154,52 +7045,178 @@ if df is not None:
         archivo_subido = st.file_uploader(
             "Archivo Excel",
             type=["xlsx", "xls"],
-            help=f"Si no sube archivo, se usa {os.path.basename(ARCHIVO_EXCEL_PATH)} del proyecto.",
+            help=(
+                "Puede elegir cualquier .xlsx desde su PC (Documentos, OneDrive, etc.). "
+                f"Si no sube archivo, se usa {os.path.basename(ARCHIVO_EXCEL_PATH)} del proyecto."
+            ),
         )
         if archivo_subido is not None:
-            upload_id = (archivo_subido.name, len(archivo_subido.getvalue()))
+            bytes_subidos = archivo_subido.getvalue()
+            contenido_id = _contenido_id_excel(bytes_subidos)
+            upload_id = (archivo_subido.name, contenido_id)
             if st.session_state.get("lri_upload_id") != upload_id:
-                df_up, err_up = cargar_datos_desde_upload(archivo_subido.getvalue())
+                df_up, err_up, hojas_up, hoja_up, meta_up = cargar_datos_desde_upload(
+                    bytes_subidos
+                )
                 if err_up:
                     st.error(err_up)
                 else:
-                    st.session_state["lri_df_datos"] = df_up
-                    st.session_state["lri_error_carga"] = None
+                    _aplicar_resultado_carga_a_sesion(
+                        df_up,
+                        None,
+                        hojas_up,
+                        hoja_up,
+                        file_bytes=bytes_subidos,
+                        reset_ejes=True,
+                        meta_limpieza=meta_up,
+                    )
                     st.session_state["lri_upload_id"] = upload_id
                     st.rerun()
             st.caption(f"Archivo: {archivo_subido.name}")
         else:
-            if st.session_state.get("lri_upload_id") is not None:
-                st.session_state.pop("lri_upload_id", None)
-                st.session_state["lri_df_datos"], st.session_state["lri_error_carga"] = cargar_datos()
-                st.rerun()
-            st.caption(f"Por defecto: {os.path.basename(ARCHIVO_EXCEL_PATH)}")
+            upload_id = st.session_state.get("lri_upload_id")
+            if upload_id and st.session_state.get("lri_excel_bytes"):
+                df_act = st.session_state.get("lri_df_datos")
+                n_filas = len(df_act) if isinstance(df_act, pd.DataFrame) else 0
+                st.caption(f"Archivo activo: {upload_id[0]} · {n_filas:,} filas")
+            else:
+                st.caption(f"Por defecto: {os.path.basename(ARCHIVO_EXCEL_PATH)}")
+
+        hojas_excel = st.session_state.get("lri_excel_hojas") or []
+        hoja_activa = st.session_state.get("lri_excel_hoja_activa")
+        if len(hojas_excel) > 1:
+            idx_hoja = hojas_excel.index(hoja_activa) if hoja_activa in hojas_excel else 0
+            hoja_elegida = st.selectbox(
+                "Hoja del Excel",
+                options=hojas_excel,
+                index=idx_hoja,
+                help="Solo hojas de datos (se omiten Parámetros y configuración).",
+            )
+            if hoja_elegida != hoja_activa:
+                bytes_hoja = _obtener_bytes_excel_activos()
+                if bytes_hoja:
+                    df_hoja, err_hoja, hojas_hoja, hoja_ok, meta_hoja = _cargar_dataframe_excel(
+                        bytes_hoja, sheet_name=hoja_elegida
+                    )
+                    if err_hoja:
+                        st.error(err_hoja)
+                    else:
+                        _aplicar_resultado_carga_a_sesion(
+                            df_hoja,
+                            None,
+                            hojas_hoja,
+                            hoja_ok,
+                            reset_ejes=True,
+                            meta_limpieza=meta_hoja,
+                        )
+                        st.rerun()
+        elif hoja_activa:
+            st.caption(f"Hoja de datos: {hoja_activa}")
+
+        _render_panel_auditoria_datos_sidebar()
+
+        st.toggle(
+            "Explorador Excel",
+            key="lri_mostrar_excel_completo",
+            help=(
+                "Muestra la hoja Excel completa en el panel principal: columnas ajustables "
+                "con el mouse, atributos fijos, drill across y descarga CSV/Excel."
+            ),
+        )
+
+        # Prefijos ChatGPT → mic de perfilado → Narrar (debajo del mic) → conversación.
+        analisis_chatgpt_profile.render_prefijos_chatgpt_sidebar()
 
         _render_control_voz_sidebar(df)
 
-        st.divider()
-        st.markdown("##### Selectores de Respaldo")
-        
-        ops_lista = ["Suma", "Promedio"]
-        if st.session_state["lri_man_operacion"] not in ops_lista:
-            st.session_state["lri_man_operacion"] = "Suma"
+        analisis_chatgpt_profile.render_boton_narrar_sidebar()
 
-        st.selectbox("Eje X (Dimensión Logística)", options=columnas_df, key="lri_man_eje_x")
-        st.selectbox("Eje Y (Métrica de Operación)", options=columnas_df, key="lri_man_eje_y")
-        opciones_y2 = _opciones_metrica_adicional(df, st.session_state.get("lri_man_eje_y"))
-        if st.session_state.get("lri_man_eje_y2") not in opciones_y2:
-            st.session_state["lri_man_eje_y2"] = METRICA_ADICIONAL_NINGUNA
+        analisis_chatgpt_profile.render_panel_chatgpt_sidebar(
+            df,
+            aplicar_config=aplicar_config_perfil_en_sesion,
+        )
+
+        st.divider()
+        st.markdown("##### Selectores de perfilado")
+        st.caption(
+            "Manual y voz se pisan entre sí: el último cambio es el que se muestra en pantalla."
+        )
+
         st.selectbox(
-            "Métrica adicional en el gráfico (opcional)",
+            "Eje X (Dimensión Logística)",
+            options=columnas_df,
+            key="lri_man_eje_x",
+        )
+        st.selectbox(
+            "Eje Y (Métrica principal)",
+            options=columnas_df,
+            key="lri_man_eje_y",
+            format_func=lambda c: _etiqueta_metrica_selector_ui(df, c),
+            help="[$] monto · [%] porcentaje/tasa · [ratio] rotación/meses · [#] unidades o conteos",
+        )
+        st.caption("Leyenda métricas: **[$]** monto  ·  **[%]** porcentaje  ·  **[ratio]** rotación/meses  ·  **[#]** unidades")
+        st.session_state["_lri_widgets_ejes_listos"] = True
+        st.radio(
+            "Cálculo · métrica principal",
+            list(OPS_CALCULO),
+            key="lri_man_operacion_y",
+            horizontal=True,
+        )
+
+        _asegurar_metrica_adicional_en_opciones(
+            df, "lri_man_eje_y2", st.session_state.get("lri_man_eje_y")
+        )
+        opciones_y2 = _opciones_metrica_adicional(df, st.session_state.get("lri_man_eje_y"))
+        st.selectbox(
+            "Métrica adicional 2 (opcional)",
             options=opciones_y2,
             key="lri_man_eje_y2",
+            format_func=lambda c: _etiqueta_metrica_selector_ui(df, c),
             help=(
-                "Barras lado a lado por categoría (azul + amarillo). Si una métrica es % "
-                "y la otra en colones/unidades, o si las magnitudes son muy distintas, "
-                "se usan dos ejes Y (izquierdo y derecho)."
+                "Hasta 3 métricas en el gráfico (azul, ámbar, verde). "
+                "Cada una puede usar Suma o Promedio por separado. "
+                "[$]=monto · [%]=porcentaje · [ratio]=rotación/meses · [#]=unidades."
             ),
         )
-        st.radio("Cálculo Operativo", ops_lista, key="lri_man_operacion")
+        if _metrica_adicional_activa(st.session_state.get("lri_man_eje_y2")):
+            st.radio(
+                "Cálculo · métrica adicional 2",
+                list(OPS_CALCULO),
+                key="lri_man_operacion_y2",
+                horizontal=True,
+            )
+
+        _asegurar_metrica_adicional_en_opciones(
+            df,
+            "lri_man_eje_y3",
+            [
+                st.session_state.get("lri_man_eje_y"),
+                st.session_state.get("lri_man_eje_y2"),
+            ],
+        )
+        opciones_y3 = _opciones_metrica_adicional(
+            df,
+            [
+                st.session_state.get("lri_man_eje_y"),
+                st.session_state.get("lri_man_eje_y2"),
+            ],
+        )
+        st.selectbox(
+            "Métrica adicional 3 (opcional)",
+            options=opciones_y3,
+            key="lri_man_eje_y3",
+            format_func=lambda c: _etiqueta_metrica_selector_ui(df, c),
+            help="[$]=monto · [%]=porcentaje · [ratio]=rotación/meses · [#]=unidades.",
+        )
+        if _metrica_adicional_activa(st.session_state.get("lri_man_eje_y3")):
+            st.radio(
+                "Cálculo · métrica adicional 3",
+                list(OPS_CALCULO),
+                key="lri_man_operacion_y3",
+                horizontal=True,
+            )
+
+        st.session_state["lri_man_operacion"] = st.session_state.get("lri_man_operacion_y", "Suma")
         st.number_input(
             "Filtrar Top N elementos (0 = Todos)",
             min_value=0,
@@ -3207,16 +7224,23 @@ if df is not None:
             step=5,
             key="lri_man_top_n",
         )
-        if _eje_x_es_codigo_o_descripcion(st.session_state.get("lri_man_eje_x") or ""):
-            st.checkbox(
-                "Ver gráfico completo en pantalla (sin scroll)",
-                key="lri_grafico_scroll_completo",
-                help=(
-                    "Marcado: todas las barras se ajustan al ancho visible, sin barra de desplazamiento. "
-                    "Desmarcado: con más de 35 ítems se usa scroll horizontal para barras más legibles."
-                ),
-                on_change=st.rerun,
-            )
+        st.checkbox(
+            "Ordenar de menor a mayor (peores primero)",
+            key="lri_man_orden_ascendente",
+            help=(
+                "Por defecto el gráfico va de mayor a menor. Márquelo (o pídalo por voz/"
+                "ChatGPT: «de menor a mayor», «peores», «menor utilidad») para invertir el orden."
+            ),
+        )
+        st.checkbox(
+            "Ver gráfico completo en pantalla (sin scroll)",
+            key="lri_grafico_scroll_completo",
+            help=(
+                "Marcado: todas las barras en el ancho visible (categorías, subcategorías, "
+                "códigos o descripciones apiñados). Desmarcado: scroll horizontal cuando hay "
+                "muchos ítems para barras más legibles."
+            ),
+        )
         forzar_sincronizacion_espejo()
 
         st.divider()
@@ -3224,7 +7248,11 @@ if df is not None:
         if "categoria" in cols_texto:
             lista_cats = ["Ver Todas"] + sorted(df["categoria"].dropna().unique().tolist())
             idx_cat_drill = lista_cats.index(st.session_state["drill_down_categoria"]) if st.session_state["drill_down_categoria"] in lista_cats else 0
-            sel_drill = st.selectbox("Aislar por Categoría", options=lista_cats, index=idx_cat_drill)
+            sel_drill = st.selectbox(
+                "Aislar por Categoría",
+                options=lista_cats,
+                index=idx_cat_drill,
+            )
             
             drill_anterior = st.session_state.get("prev_drill_down_categoria")
             if sel_drill == "Ver Todas":
@@ -3246,17 +7274,15 @@ if df is not None:
         if st.session_state["lri_pareto_set"] in MAPEO_PARETO_LEGACY:
             st.session_state["lri_pareto_set"] = MAPEO_PARETO_LEGACY[st.session_state["lri_pareto_set"]]
         opciones_pareto = OPCIONES_PARETO_UI
-        idx_pareto = opciones_pareto.index(st.session_state["lri_pareto_set"]) if st.session_state["lri_pareto_set"] in opciones_pareto else 0
-        st.session_state["lri_pareto_set"] = st.selectbox("Segmentar Inventario / Demanda", options=opciones_pareto, index=idx_pareto)
-        pareto_habilitado = st.session_state["lri_pareto_set"] != "Desactivado (Paleta Azul)"
-        if pareto_habilitado:
-            st.session_state["lri_pareto_acumulado"] = st.checkbox(
-                "Acumulado",
-                value=st.session_state.get("lri_pareto_acumulado", False),
-                help="Activado: muestra la curva de % acumulado en el gráfico. Desactivado: solo barras Pareto.",
-            )
-        elif st.session_state.get("lri_pareto_acumulado"):
-            st.session_state["lri_pareto_acumulado"] = False
+        if st.session_state.get("lri_pareto_set") not in opciones_pareto:
+            st.session_state["lri_pareto_set"] = opciones_pareto[0]
+        st.selectbox(
+            "Segmentar Inventario / Demanda",
+            options=opciones_pareto,
+            key="lri_pareto_set",
+        )
+        if "lri_pareto_acumulado" in st.session_state:
+            st.session_state.pop("lri_pareto_acumulado", None)
 
         st.divider()
         st.markdown("##### Ajustes de Interfaz")
@@ -3267,8 +7293,18 @@ if df is not None:
             value=16,
             step=1,
             key="lri_fontsize_ui",
-            help="Título, ejes, leyenda y valores sobre las barras. El resumen ABC Pareto sigue esta escala.",
+            help="Título, ejes y leyenda del gráfico. El resumen ABC Pareto sigue esta escala.",
         )
+        etiqueta_barras_font_size = st.slider(
+            "Texto sobre las barras (px)",
+            min_value=8,
+            max_value=24,
+            value=int(st.session_state.get("lri_etiqueta_barras_fontsize", 16)),
+            step=1,
+            key="lri_etiqueta_barras_fontsize_ui",
+            help="Tamaño de los números que aparecen encima de cada barra (todas las métricas).",
+        )
+        st.session_state["lri_etiqueta_barras_fontsize"] = etiqueta_barras_font_size
         tabla_font_size = st.slider(
             "Texto de la tabla (px)",
             min_value=10,
@@ -3279,13 +7315,55 @@ if df is not None:
             help="Solo la tabla de métricas detalladas (datos y encabezados).",
         )
         st.session_state["lri_tabla_fontsize"] = tabla_font_size
-        viewport_h_ui = st.select_slider("Resolución Vertical (px)", options=[720, 768, 900, 1080, 1200, 1440], value=1080, key="lri_man_viewport_h")
+
+        st.markdown("##### Ajuste a la pantalla")
+        modo_pantalla = st.radio(
+            "Tamaño de pantalla",
+            options=["Automático", "Manual"],
+            index=0,
+            horizontal=True,
+            key="lri_modo_pantalla",
+            help=(
+                "Automático: detecta el tamaño de esta ventana y adapta gráficos/escala. "
+                "Manual: elige la altura vertical con el slicer (resaltado en teal)."
+            ),
+        )
+        _css_slicer_resolucion_pantalla()
+        if modo_pantalla == "Automático":
+            viewport_h_ui = _snap_altura_viewport(_VIEWPORT_H_DETECTADO)
+            escala_pct = int(
+                round(float(st.session_state.get("lri_escala_interfaz", _ESCALA_APLICADA)) * 100)
+            )
+            st.caption(
+                f"Detectado {_VIEWPORT_W_DETECTADO}×{_VIEWPORT_H_DETECTADO} px · "
+                f"altura útil {viewport_h_ui} px · escala {escala_pct}%"
+            )
+            st.session_state["lri_man_viewport_h"] = viewport_h_ui
+        else:
+            valor_prev = int(
+                st.session_state.get(
+                    "lri_man_viewport_h", _snap_altura_viewport(_VIEWPORT_H_DETECTADO)
+                )
+                or 1080
+            )
+            if valor_prev not in _OPCIONES_VIEWPORT_H:
+                valor_prev = _snap_altura_viewport(valor_prev)
+                st.session_state["lri_man_viewport_h"] = valor_prev
+            st.markdown(
+                '<div class="lri-slicer-marker" aria-hidden="true"></div>',
+                unsafe_allow_html=True,
+            )
+            viewport_h_ui = st.select_slider(
+                "Resolución Vertical (px)",
+                options=list(_OPCIONES_VIEWPORT_H),
+                key="lri_man_viewport_h",
+                help="Slicer de altura de pantalla (color teal). Baje el valor en laptops pequeñas.",
+            )
 
     subtitulo_panel = None
-    if st.session_state.get("drill_down_categoria"):
-        subtitulo_panel = (
-            f"Detalle por artículo · filtro: {st.session_state['drill_down_categoria']}"
-        )
+    etiqueta = _etiqueta_filtros_drill()
+    if etiqueta:
+        subtitulo_panel = f"Detalle por artículo · filtro: {etiqueta}"
 
     st.markdown(
         f"""
@@ -3294,7 +7372,121 @@ if df is not None:
         .kpi-card {{ background-color: #1e2130; padding: 18px; border-radius: 8px; border: 1px solid #2d3142; text-align: center; margin-bottom: 12px; }}
         .kpi-title {{ font-size: 13px; color: #a1a1aa; text-transform: uppercase; margin-bottom: 8px; letter-spacing: 0.5px; }}
         .kpi-value {{ font-size: 26px; font-weight: bold; color: #ffffff; }}
-        .block-container {{ padding-top: 0.35rem !important; padding-bottom: 0.5rem !important; max-width: min(100%, {REF_VIEWPORT_W}px) !important; margin: auto !important; }}
+        .kpi-card-total {{
+            background: linear-gradient(135deg, #1e293b 0%, #131722 100%);
+            border: 1px solid #334155;
+            border-left: 4px solid #38bdf8;
+        }}
+        .kpi-card-total .kpi-title {{
+            color: #cbd5e1;
+            text-transform: none;
+            letter-spacing: 0.02em;
+            line-height: 1.25;
+        }}
+        .kpi-value-total {{
+            font-size: 30px;
+            font-weight: 800;
+            color: #fbbf24;
+        }}
+        .block-container {{
+            padding-top: 0.35rem !important;
+            padding-bottom: 0.5rem !important;
+            padding-left: 0.5rem !important;
+            padding-right: 0.5rem !important;
+            max-width: 100% !important;
+            width: 100% !important;
+            margin-left: 0 !important;
+            margin-right: 0 !important;
+        }}
+        section[data-testid="stMain"] > div {{
+            padding-left: 0.5rem !important;
+            padding-right: 0.5rem !important;
+            max-width: 100% !important;
+            width: 100% !important;
+        }}
+        section[data-testid="stMain"] [data-testid="stHorizontalBlock"] {{
+            width: 100% !important;
+            max-width: 100% !important;
+        }}
+        section[data-testid="stMain"] [data-testid="column"] {{
+            min-width: 0 !important;
+        }}
+        section[data-testid="stMain"] [data-testid="column"]:has(.lri-bloque-tabla-ncols-3),
+        section[data-testid="stMain"] [data-testid="column"]:has(.lri-bloque-tabla-ncols-4),
+        section[data-testid="stMain"] [data-testid="column"]:has(.lri-bloque-tabla-ncols-5) {{
+            flex: 0 0 auto !important;
+            width: auto !important;
+            max-width: none !important;
+            overflow: visible !important;
+            padding-right: 0.1rem !important;
+        }}
+        section[data-testid="stMain"] [data-testid="column"]:has(.lri-bloque-tabla-ncols-3)
+            + [data-testid="column"],
+        section[data-testid="stMain"] [data-testid="column"]:has(.lri-bloque-tabla-ncols-4)
+            + [data-testid="column"],
+        section[data-testid="stMain"] [data-testid="column"]:has(.lri-bloque-tabla-ncols-5)
+            + [data-testid="column"] {{
+            flex: 1 1 0 !important;
+            min-width: 0 !important;
+            padding-left: 0.15rem !important;
+        }}
+        section[data-testid="stMain"] [data-testid="stHorizontalBlock"]:has(.lri-bloque-tabla-ncols-3),
+        section[data-testid="stMain"] [data-testid="stHorizontalBlock"]:has(.lri-bloque-tabla-ncols-4),
+        section[data-testid="stMain"] [data-testid="stHorizontalBlock"]:has(.lri-bloque-tabla-ncols-5) {{
+            gap: 0.3rem !important;
+            justify-content: flex-start !important;
+            align-items: flex-start !important;
+        }}
+        section[data-testid="stMain"] [data-testid="stPlotlyChart"],
+        section[data-testid="stMain"] [data-testid="stPlotlyChart"] > div,
+        section[data-testid="stMain"] .js-plotly-plot,
+        section[data-testid="stMain"] .plotly-graph-div {{
+            width: 100% !important;
+            max-width: 100% !important;
+        }}
+        [data-testid="stHorizontalBlock"] {{
+            gap: 0.45rem !important;
+        }}
+        .lri-bloque-tabla {{
+            width: 100% !important;
+            overflow: visible !important;
+            margin-left: 0 !important;
+            padding-left: 0 !important;
+        }}
+        .lri-bloque-tabla-ncols-3,
+        .lri-bloque-tabla-ncols-4,
+        .lri-bloque-tabla-ncols-5 {{
+            width: fit-content !important;
+            max-width: none !important;
+            overflow: visible !important;
+        }}
+        .lri-tabla-wrap .lri-tabla-col {{
+            max-width: none !important;
+        }}
+        .lri-tabla-wrap.lri-tabla-col-multimetrica .lri-tabla-col,
+        .lri-tabla-wrap.lri-tabla-col-3col-dual .lri-tabla-col,
+        .lri-tabla-wrap.lri-tabla-col-4col .lri-tabla-col,
+        .lri-tabla-wrap.lri-tabla-col-multimetrica-prod .lri-tabla-col {{
+            min-width: unset !important;
+        }}
+        .lri-tabla-wrap .lri-html-table-scroll-container {{
+            overflow-x: auto !important;
+            overflow-y: auto !important;
+            overscroll-behavior: contain;
+        }}
+        section[data-testid="stMain"] div[data-testid="stElementContainer"]:has(.lri-html-table-scroll-container),
+        section[data-testid="stMain"] div[data-testid="stMarkdownContainer"]:has(.lri-html-table-scroll-container) {{
+            overflow: visible !important;
+            max-height: none !important;
+        }}
+        .lri-tabla-wrap table.lri-perfil-table thead th {{
+            position: sticky !important;
+            top: 0 !important;
+            z-index: 25 !important;
+            background-color: #000000 !important;
+            color: #ffffff !important;
+            box-shadow: 0 2px 0 #333333;
+        }}
         .lri-grafico-scroll-h {{
             scrollbar-width: auto;
             scrollbar-color: #3b82f6 #0a0f1a;
@@ -3356,11 +7548,19 @@ if df is not None:
     )
     _render_cabecera_app(subtitulo_panel)
 
+    # Tras la carga en sidebar, el df ya está en sesión; no reajustar ejes aquí
+    # (los selectbox ya existen → provocaría StreamlitAPIException al cambiar de archivo).
+    df = st.session_state.get("lri_df_datos")
+    if df is not None:
+        if st.session_state.get("lri_mostrar_excel_completo"):
+            _render_excel_explorador_unificado(df, viewport_h_ui)
+
     render_perfilado_manual_panel(
         df=df,
         viewport_h_ui=viewport_h_ui,
         base_font_size=base_font_size,
         tabla_font_size=tabla_font_size,
+        etiqueta_barras_font_size=etiqueta_barras_font_size,
     )
 else:
     mensaje = _mensaje_error_carga(texto=error_carga)
@@ -3378,7 +7578,10 @@ else:
     col_retry, _ = st.columns([1, 3])
     with col_retry:
         if st.button("Reintentar lectura del archivo"):
-            st.session_state["lri_df_datos"], st.session_state["lri_error_carga"] = cargar_datos()
+            df_retry, err_retry, hojas_retry, hoja_retry, meta_retry = cargar_datos()
+            _aplicar_resultado_carga_a_sesion(
+                df_retry, err_retry, hojas_retry, hoja_retry, reset_ejes=True, meta_limpieza=meta_retry
+            )
             st.rerun()
     archivo_rescate = st.file_uploader(
         "Subir Excel manualmente",
@@ -3386,12 +7589,24 @@ else:
         key="lri_rescate_excel",
     )
     if archivo_rescate is not None:
-        df_rescate, err_rescate = cargar_datos_desde_upload(archivo_rescate.getvalue())
+        df_rescate, err_rescate, hojas_rescate, hoja_rescate, meta_rescate = cargar_datos_desde_upload(
+            archivo_rescate.getvalue()
+        )
         if err_rescate:
             st.error(err_rescate)
         else:
-            st.session_state["lri_df_datos"] = df_rescate
-            st.session_state["lri_error_carga"] = None
-            st.session_state["lri_upload_id"] = (archivo_rescate.name, len(archivo_rescate.getvalue()))
-            st.rerun()
+            bytes_rescate = archivo_rescate.getvalue()
+            _aplicar_resultado_carga_a_sesion(
+                df_rescate,
+                None,
+                hojas_rescate,
+                hoja_rescate,
+                file_bytes=bytes_rescate,
+                reset_ejes=True,
+                meta_limpieza=meta_rescate,
+            )
+            st.session_state["lri_upload_id"] = (
+                archivo_rescate.name,
+                _contenido_id_excel(bytes_rescate),
+            )
             st.rerun()

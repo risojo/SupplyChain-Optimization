@@ -1184,17 +1184,17 @@ def leyenda_scorecard_columnas(
     n_categorias: int,
     nombres: list[str] | None = None,
 ) -> None:
-    """Paleta por columna de categoría (tabla de KPI's)."""
-    n = min(n_categorias, len(SCORECARD_PALETA_COLUMNAS))
-    if n <= 0:
+    """Paleta por columna de categoría/subcategoría (tabla de KPI's)."""
+    if n_categorias <= 0:
         return
     chips = []
-    for i in range(n):
-        bg, fg = SCORECARD_PALETA_COLUMNAS[i]
+    n_mostrar = n_categorias if nombres is None else len(nombres)
+    for i in range(n_mostrar):
+        bg, fg = SCORECARD_PALETA_COLUMNAS[i % len(SCORECARD_PALETA_COLUMNAS)]
         etiqueta = (
             str(nombres[i])
             if nombres is not None and i < len(nombres)
-            else f"Cat. {i + 1}"
+            else f"Col. {i + 1}"
         )
         chips.append(
             f'<span style="display:inline-block;margin:0 8px 4px 0;padding:2px 10px;'
@@ -1204,7 +1204,7 @@ def leyenda_scorecard_columnas(
     st.markdown(
         f'<div style="margin:4px 0 10px 0;">{"".join(chips)}'
         '<span style="color:#64748b;font-size:13px;margin-left:6px;">'
-        "Color por columna de categoría</span></div>",
+        "Color por columna (categoría o subcategoría)</span></div>",
         unsafe_allow_html=True,
     )
 

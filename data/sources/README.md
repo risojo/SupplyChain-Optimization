@@ -9,6 +9,8 @@ Excel oficial compartido (orden de columnas **fijo** según foto del usuario):
 | `template_inventarios.xlsx` | Plantilla histórica / referencia |
 
 Orden fijo de `data` (inicio):  
-`codigo → categoria → clase → subcategoria → descripcion → proveedor → pais → …`
+`codigo → categoria → clase → subcategoria → descripcion → proveedor → pais → …`  
+Al final opcionales de control: `EVAI`.  
+Tras demanda 1–12 (posición del Excel): `pronostico`, `desviacion estandar` (también «standart»), `stock seguridad k`, `pronostico ajustado`.
 
-No alterar el orden de columnas. Ambos módulos leen `perfilado.xlsx`.
+No alterar el orden de columnas base. Ambos módulos leen `perfilado.xlsx`.

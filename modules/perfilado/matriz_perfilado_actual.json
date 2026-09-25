@@ -1,0 +1,147 @@
+{
+  "version": 1,
+  "reglas": {
+    "eje_x": "exactamente 1 atributo de atributos_eje_x",
+    "eje_y": "1 a 3 métricas de metricas_eje_y (orden: principal, adicional 2, adicional 3)",
+    "filtro_opcional": "drill-down por valor de categoria o subcategoria (preferir match más largo; p. ej. Alimentos Secos > Alimentos)",
+    "fuente": "solo columnas presentes en el Excel/DataFrame cargado"
+  },
+  "atributos_eje_x": [
+    "codigo",
+    "categoria",
+    "clase",
+    "subcategoria",
+    "descripcion",
+    "proveedor",
+    "pais"
+  ],
+  "metricas_eje_y": [
+    "empaque",
+    "bultos tarima",
+    "cubicaje tarima",
+    "demanda mes 1",
+    "demanda mes 2",
+    "demanda mes 3",
+    "demanda mes 4",
+    "demanda mes 5",
+    "demanda mes 6",
+    "demanda mes 7",
+    "demanda mes 8",
+    "demanda mes 9",
+    "demanda mes 10",
+    "demanda mes 11",
+    "demanda mes 12",
+    "ordenes anual",
+    "tiempo entrega",
+    "inventario final bulto",
+    "inventario promedio bultos",
+    "valor inventario transito",
+    "precio unitario bulto",
+    "costo unitario bulto",
+    "factor escazes",
+    "unidades vendidas",
+    "bultos vendidos",
+    "margen utilidad ventas",
+    "ventas totales",
+    "ventas costo",
+    "margen bruto total",
+    "valor inventario promedio",
+    "rotacion",
+    "meses inventario",
+    "bultos despachados mes",
+    "cubicaje inventario",
+    "costo mantener inventario",
+    "EVAI"
+  ],
+  "grupos_atributos": {
+    "producto_sku": [
+      "codigo",
+      "descripcion"
+    ],
+    "categoria_clase": [
+      "categoria",
+      "clase"
+    ],
+    "subcategoria": [
+      "subcategoria"
+    ],
+    "proveedor": [
+      "proveedor"
+    ],
+    "geografia": [
+      "pais"
+    ]
+  },
+  "grupos_metricas": {
+    "numerica_otras": [
+      "empaque",
+      "unidades vendidas"
+    ],
+    "inventario_logistica": [
+      "bultos tarima",
+      "cubicaje tarima",
+      "bultos vendidos",
+      "rotacion",
+      "bultos despachados mes"
+    ],
+    "demanda": [
+      "demanda mes 1",
+      "demanda mes 2",
+      "demanda mes 3",
+      "demanda mes 4",
+      "demanda mes 5",
+      "demanda mes 6",
+      "demanda mes 7",
+      "demanda mes 8",
+      "demanda mes 9",
+      "demanda mes 10",
+      "demanda mes 11",
+      "demanda mes 12"
+    ],
+    "servicio_operacion": [
+      "ordenes anual",
+      "tiempo entrega",
+      "factor escazes"
+    ],
+    "financiera_comercial": [
+      "inventario final bulto",
+      "inventario promedio bultos",
+      "valor inventario transito",
+      "precio unitario bulto",
+      "costo unitario bulto",
+      "margen utilidad ventas",
+      "ventas totales",
+      "ventas costo",
+      "margen bruto total",
+      "valor inventario promedio",
+      "meses inventario",
+      "cubicaje inventario",
+      "costo mantener inventario",
+      "EVAI"
+    ]
+  },
+  "valores_filtro_categoria": [
+    "Alimentos",
+    "Bebidas",
+    "Hogar",
+    "Mascotas"
+  ],
+  "valores_filtro_subcategoria": [
+    "Agua Embasada",
+    "Alimentos Preparados",
+    "Alimentos Secos",
+    "Harinas y Pastas",
+    "Jugos",
+    "Mariscos",
+    "Platos",
+    "Productos de Limpieza",
+    "Vasos"
+  ],
+  "cobertura": {
+    "n_atributos": 7,
+    "n_metricas": 36,
+    "n_combinaciones_metricas_y_hasta_3": 7806,
+    "n_cruces_perfil_posibles": 54642,
+    "assertividad": "ChatGPT solo puede elegir nombres exactos de esta matriz; todo cruce 1 atributo × 1–3 métricas es válido para graficar."
+  }
+}
