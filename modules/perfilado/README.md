@@ -41,6 +41,18 @@ ChatGPT solo elige cruces dentro de una **matriz** generada del Excel cargado:
 
 Archivo de referencia (se regenera al interpretar): `modules/perfilado/matriz_perfilado_actual.json`.
 
+## Mapa lab vs producción
+
+| Archivo | Rol |
+|---------|-----|
+| `profile1.py` | Producción / Render |
+| `profile2.py` | Laboratorio (ChatGPT cruces) |
+| `analisis_chatgpt_profile.py` | Interpretación matriz X/Y (lab) |
+| `matriz_perfilado_actual.json` | Matriz regenerable del Excel |
+| `perfil_patch.py` | Parches/helpers de laboratorio |
+
+Al reorganizar Python: actualizar este README y `.cursor/rules/lri-python-organizacion.mdc`.
+
 ## Integración futura
 
 `view.py` será el punto de entrada cuando se integre Perfilado dentro del

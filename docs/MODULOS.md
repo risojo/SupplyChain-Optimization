@@ -1,30 +1,33 @@
 # Módulos LRI — Supply Chain Optimization
 
 Orden de negocio acordado para el desarrollo de la plataforma.
+**Pronóstico es el módulo 1 (de inicio):** es el primero que se abre. Los demás se
+habilitan después, en el orden que defina el usuario.
 
 | # | Módulo | Carpeta | App / entrada | Estado |
 |---|--------|---------|---------------|--------|
-| 1 | **Almacenaje** | `modules/almacenaje/` | `view.py` (esqueleto) | En construcción |
-| 2 | **Compras** | `modules/compras/` | `view.py` (esqueleto) | En construcción |
-| 3 | **Inventarios** | `modules/inventarios/` | **`inventario_app.py`** | En desarrollo (activo) |
-| 4 | **Perfilado** | `modules/perfilado/` | **`profile1.py`** | Terminado / operativo |
-| 5 | **Pronóstico** | `modules/pronostico/` | `view.py` (esqueleto) | En construcción |
+| 1 | **Pronóstico** | `modules/pronostico/` | **`pronostico_app.py`** | En desarrollo (activo) |
+| 2 | **Almacenaje** | `modules/almacenaje/` | `view.py` (esqueleto) | En construcción |
+| 3 | **Compras** | `modules/compras/` | `view.py` (esqueleto) | En construcción |
+| 4 | **Inventarios** | `modules/inventarios/` | **`inventario_app.py`** | En desarrollo (activo) |
+| 5 | **Perfilado** | `modules/perfilado/` | **`profile1.py`** | Terminado / operativo |
 | 6 | **Transportes** | `modules/transportes/` | `view.py` (esqueleto) | Pendiente (último) |
 
 ## Datos (`data/sources/`)
 
-| Archivo | Módulo |
-|---------|--------|
-| `almacenaje.xlsx` | 1. Almacenaje *(pendiente)* |
-| `compras.xlsx` | 2. Compras *(pendiente)* |
-| `template_inventarios.xlsx` | 3. Inventarios ✅ |
-| `perfilado.xlsx` | 4. Perfilado ✅ |
-| `pronostico.xlsx` | 5. Pronóstico *(pendiente)* |
-| `transportes.xlsx` | 6. Transportes *(pendiente)* |
+Pronóstico, Inventarios, Compras y Perfilado leen el **mismo archivo compartido**:
+`perfilado.xlsx` (hojas `data` + `parametros`). `inventarios.xlsx` es una copia idéntica.
+
+| Archivo | Uso |
+|---------|-----|
+| `perfilado.xlsx` | Archivo compartido ✅ |
+| `template_inventarios.xlsx` | Plantilla demo de Inventarios |
+| `pronostico.xlsx` | *(futuro)* Archivo de resultados que llenarán los cálculos de Pronóstico |
 
 ## Ejecutar en local (apps operativas)
 
 ```bash
+streamlit run modules/pronostico/pronostico_app.py
 streamlit run modules/inventarios/inventario_app.py
 streamlit run modules/perfilado/profile1.py
 ```

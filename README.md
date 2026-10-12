@@ -13,11 +13,11 @@ Orden de negocio LRI (detalle en [`docs/MODULOS.md`](docs/MODULOS.md)):
 
 | # | Módulo | Estado |
 |---|--------|--------|
-| 1 | Almacenaje | 🚧 En construcción (`modules/almacenaje/`) |
-| 2 | Compras | 🚧 En construcción (`modules/compras/`) |
-| 3 | Inventarios | 🔧 En desarrollo — **`inventario_app.py`** |
-| 4 | Perfilado | ✅ Terminado — **`profile1.py`** |
-| 5 | Pronóstico | 🚧 En construcción (`modules/pronostico/`) |
+| 1 | Pronóstico (módulo de inicio) | 🔧 En desarrollo — **`pronostico_app.py`** |
+| 2 | Almacenaje | 🚧 En construcción (`modules/almacenaje/`) |
+| 3 | Compras | 🚧 En construcción (`modules/compras/`) |
+| 4 | Inventarios | 🔧 En desarrollo — **`inventario_app.py`** |
+| 5 | Perfilado | ✅ Terminado — **`profile1.py`** |
 | 6 | Transportes | ⏳ Pendiente (`modules/transportes/`) |
 
 **Todo el árbol `modules/` está versionado en GitHub** (esqueletos + apps operativas).

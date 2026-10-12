@@ -1,0 +1,143 @@
+---
+description: Organización de módulos Python LRI (Inventarios + Perfilado), pipelines y resultados oficiales
+alwaysApply: true
+---
+
+# Organización Python LRI — control de estructura y resultados
+
+Cuando un cambio **reorganice** programas Python (mover, partir, renombrar, añadir pipelines),
+**actualiza también** este mapa: `modules/inventarios/README.md` y, si aplica,
+`modules/perfilado/README.md`. No dejes la estructura solo en el código.
+
+## Datos oficiales (compartidos)
+
+| Archivo | Rol |
+|---------|-----|
+| `data/sources/perfilado.xlsx` | Excel maestro (hojas `data` + `parametros`) |
+| `data/sources/inventarios.xlsx` | Espejo / alias del mismo libro |
+| `data/sources/template_inventarios.xlsx` | Plantilla demo |
+
+**No** versionar: `.streamlit/secrets.toml`, `parametros_actuales/`, `parametros_guardados.json`, `drivers_guardados.json`.
+
+## Inventory Pro (`modules/inventarios/`)
+
+**Entrada Render / local:** `streamlit run modules/inventarios/inventario_app.py`
+
+### Orquestación UI
+
+| Archivo | Resultado |
+|---------|-----------|
+| `inventario_app.py` | Shell Streamlit: Decisiones + Herramientas, carga Excel, sincroniza parámetros |
+| `ui_theme.py` | Tablas HTML, tipografía, paletas scorecard |
+| `view.py` | Solo aviso al orquestador; **no** es la app |
+
+### Datos y parámetros
+
+| Archivo | Resultado |
+|---------|-----------|
+| `data_loader.py` | DataFrame final oficial (columnas canónicas, métricas, reposición opcional) |
+| `parametros.py` | Lee hoja `parametros` del Excel → JSON base/actuales; widgets |
+| `parametros_base/parametros.json` | Caché versionada de parámetros base |
+
+### Scorecard / GMROI / EVAI
+
+| Archivo | Resultado |
+|---------|-----------|
+| `scorecard.py` | ICC por categoría/subcategoría, GMROI, EVAI, tablas pivot, gráficos barras |
+| `destruccion_valor.py` | Análisis EVAI negativo |
+| `analisis_chatgpt.py` | Narración EVAI / requerimiento de compra (OpenAI) |
+
+**Regla de grano:** Presentar GMROI/EVAI por subcategoría ⇒ ICC alineado a subcategoría.  
+Utilidad bruta `$` = `margen bruto total`; margen de utilidad `%` = `margen utilidad ventas`.
+
+### SKUs a comprar
+
+| Archivo | Resultado |
+|---------|-----------|
+| `skus_a_comprar.py` | Cantidad a comprar (columna resaltada), filtros, gráfico, **export Excel** (ítem, proveedor, cat, subcat, qty) |
+
+Fórmulas oficiales viven aquí / en data_loader — **no** reinventarlas en el asistente.
+
+### Asistente Inteligente (motor universal)
+
+Flujo único texto y voz (mic solo transcribe):
+
+```
+pregunta → asistente_openai (NL / tools)
+        → asistente_query_plan.construir_plan (QueryPlan)
+        → validar vs asistente_catalogo (+ asistente_derivadas)
+        → ejecutar_plan local sobre DataFrame enriquecido
+        → tabla + Plotly (asistente_charts) en asistente_ui
+```
+
+| Archivo | Resultado |
+|---------|-----------|
+| `asistente_ui.py` | Chat + verificación + tabla + gráfico + export Excel si hay qty compra |
+| `asistente_openai.py` | OpenAI solo interpreta; no inventa datos ni Base64 |
+| `asistente_query_plan.py` | QueryPlan + ejecutor determinista |
+| `asistente_catalogo.py` | Catálogo semántico dinámico del DF |
+| `asistente_derivadas.py` | Reglas auditables (qty según mínimo, presupuesto anual, …) |
+| `asistente_tools.py` | Compras por rotación, enriquecimiento DF |
+| `asistente_charts.py` | Plotly local (barras agrupadas / dual axis) |
+| `asistente_columnas.py` | Mapeo concepto → columna canónica |
+
+**Pruebas:** `modules/inventarios/tests/` (`test_motor_universal`, `test_motor_general`, `test_asistente_inventarios`).
+
+OpenAI **nunca** calcula sobre filas ni genera imágenes; el resultado oficial es local.
+
+## Profile Pro (`modules/perfilado/`)
+
+| Archivo | Rol |
+|---------|-----|
+| `profile1.py` | **Producción / Render** |
+| `profile2.py` | Laboratorio (ChatGPT cruces); no sustituye `profile1` en deploy |
+| `analisis_chatgpt_profile.py` | Interpretación de matriz de cruces (lab) |
+| `matriz_perfilado_actual.json` | Matriz X/Y regenerable del Excel |
+
+## Forecast Pro (`modules/pronostico/`) — Módulo 1 (de inicio)
+
+Pronóstico es el **primer módulo** en `core/registry.py` y en `docs/MODULOS.md`; los demás
+se habilitan después en el orden que indique el usuario.
+
+**Entrada local:** `streamlit run modules/pronostico/pronostico_app.py` (sin Render todavía)
+
+| Archivo | Resultado |
+|---------|-----------|
+| `pronostico_app.py` | Panel lateral en orden fijo (formato Profile Pro): 1) 📁 Cargar datos, 2) casilla «Mostrar archivo», 3) botón «📈 Cálculo del pronóstico» (estilo botones de Inventarios), 4) «Alternativas de cálculo» como botones verticales con ícono (Certificación, Serie por SKU, Estacionalidad, Distribución normal, Monte Carlo), 5) ⚙️ Nivel de servicio plegable + filtros |
+| `pronostico_calculos.py` | Cálculos sin UI (fórmulas oficiales + análisis de apoyo) |
+| `pronostico_excel.py` | Escribe solo `fill rate deseado` en la hoja `data` (edición XML; conserva fórmulas y valores en caché) |
+| `view.py` | Solo aviso al orquestador; **no** es la app |
+
+Fórmulas oficiales = Excel: `pronostico` = AVERAGE, `desviacion standart` = STDEV.S,
+`stock seguridad k` = **nivel de servicio**, `pronostico ajustado` = NORMINV(nivel, pronóstico, σ).
+Métodos alternativos (móvil, exponencial, regresión) solo comparan; no reemplazan el oficial.
+
+**Certificación (acordada con el usuario):** CV = desviación ÷ pronóstico. Certificado si
+0 ≤ CV ≤ 30 % (`CV_MAX_CERTIFICADO`) → modelo estadístico; CV > 30 % → no certificado
+(otro modelo o demanda anual). La coincidencia con el Excel es aparte: `cuadra con excel`.
+
+Columna `fill rate deseado` en el Excel, **después de `EVAI`** (AW): la escribe `pronostico_excel.py`
+al cargar la app, según `clase`: A+ 99.7 %, A 97 %, B 90 %, C 60 %, C- 50 % (`FILL_RATE_POR_CLASE`).
+No usar openpyxl para guardar el Excel maestro (borra los valores en caché de las fórmulas).
+Tras escribirla, copiar `perfilado.xlsx` → `inventarios.xlsx`. Base futura del stock de seguridad en Inventarios.
+
+**Administración de `pronostico_calculos.py` (acordado con el usuario):** lo mantiene el agente.
+- Toda fórmula o cálculo nuevo de pronóstico va aquí, nunca en `pronostico_app.py` (solo UI).
+- Cada cambio de fórmula lleva su prueba en `tests/test_pronostico_calculos.py` y se corre antes de entregar.
+- Si una fórmula oficial del Excel cambia, se actualiza aquí, en el README del módulo y en esta regla, y se avisa al usuario.
+- Otros módulos que necesiten pronóstico reutilizan este archivo; no copian fórmulas.
+
+**Pruebas:** `modules/pronostico/tests/` (`test_pronostico_calculos`, `test_pronostico_excel`).
+
+## Deploy
+
+- Repo: `https://github.com/risojo/SupplyChain-Optimization` · rama `main`
+- Inventarios Render: comando → `inventario_app.py`
+- Perfilado Render: comando → `profile1.py` (no `profile2`)
+
+## Checklist al reorganizar código
+
+1. Actualizar este rule y el README del módulo afectado.
+2. Mantener el DataFrame final y fórmulas oficiales intactos.
+3. Si se mueve el asistente: conservar QueryPlan → ejecutor local; no rutas rígidas por frase.
+4. Correr tests de `modules/inventarios/tests/` antes de push a `main`.

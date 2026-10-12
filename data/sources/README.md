@@ -14,3 +14,10 @@ Al final opcionales de control: `EVAI`.
 Tras demanda 1–12 (posición del Excel): `pronostico`, `desviacion estandar` (también «standart»), `stock seguridad k`, `pronostico ajustado`.
 
 No alterar el orden de columnas base. Ambos módulos leen `perfilado.xlsx`.
+
+Valores de `clase`: `A+`, `A`, `B`, `C`, `C-`. Al cargar, Pronóstico escribe la columna
+`fill rate deseado` después de `EVAI` (columna AW) según la clase: A+ 99.7 %, A 97 %,
+B 90 %, C 60 %, C- 50 %. `EVAI` queda en blanco.
+
+Las apps leen **esta** carpeta (`Documents\LRI SupplyChain optimization\data\sources`).
+Las copias del proyecto dentro de OneDrive no las ven las apps; si edita allí, copie el archivo aquí.
