@@ -61,6 +61,11 @@ SIN_DEMANDA = "Sin demanda"
 MODELO_ESTADISTICO = "Estadístico (distribución normal)"
 MODELO_ALTERNATIVO = "Otro modelo o demanda anual"
 
+# Pronóstico LRI (solo SKUs certificados): promedio 12 meses + K × σ, K = NORMSINV(fill rate deseado).
+COL_K = "k"
+COL_SEGURIDAD_K = "seguridad k sigma"
+COL_PRONOSTICO_LRI = "pronostico lri"
+
 _RE_MES = re.compile(r"^dem[a-z]*[\s_]*mes[\s_]*(\d{1,2})$")
 
 _ALIAS_COLUMNAS = {
@@ -236,9 +241,17 @@ def modelo_sugerido(certificacion: str) -> str:
     return "—"
 
 
+def factor_k(fill_rate) -> np.ndarray:
+    """Factor de seguridad K = NORMSINV(fill rate deseado); fuera de (0, 1) o vacío → NaN."""
+    valores = np.atleast_1d(pd.to_numeric(pd.Series(fill_rate), errors="coerce").to_numpy(dtype=float))
+    return np.array([NormalDist().inv_cdf(p) if 0 < p < 1 else np.nan for p in valores])
+
+
 def calcular_pronostico(df: pd.DataFrame, nivel_servicio: float | None = None) -> pd.DataFrame:
     """Recalcula el pronóstico por SKU, lo certifica por CV y lo compara con el Excel.
 
+    ``pronostico lri`` = promedio 12 meses + K × σ, con K según el fill rate deseado de la
+    clase; solo para SKUs certificados (los demás quedan vacíos hasta definir su política).
     Si ``nivel_servicio`` es None se usa el de cada fila del Excel.
     """
     meses = columnas_meses(df)
@@ -266,6 +279,14 @@ def calcular_pronostico(df: pd.DataFrame, nivel_servicio: float | None = None) -
     out["cv"] = cv
     out[COL_CERTIFICACION] = [certificar_cv(v) for v in cv]
     out[COL_MODELO_SUGERIDO] = out[COL_CERTIFICACION].map(modelo_sugerido)
+
+    k = factor_k(out[COL_FILL_RATE]) if COL_FILL_RATE in out.columns else np.full(len(out), np.nan)
+    certificado = (out[COL_CERTIFICACION] == CERTIFICADO).to_numpy()
+    seguridad = k * desv
+    out[COL_K] = k
+    out[COL_SEGURIDAD_K] = np.where(certificado, seguridad, np.nan)
+    out[COL_PRONOSTICO_LRI] = np.where(certificado, media + seguridad, np.nan)
+
     pendientes = np.array([_pendiente(fila) for fila in demanda])
     out["tendencia mensual"] = pendientes
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -292,6 +313,53 @@ def _cuadra_con_excel(df: pd.DataFrame, calc: pd.DataFrame) -> pd.Series:
         escala = np.maximum(1.0, np.abs(b))
         ok &= pd.Series(np.isfinite(a) & (np.abs(a - b) <= TOLERANCIA_CERTIFICACION * escala), index=calc.index)
     return ok.map({True: "Sí", False: "No"})
+
+
+def resumen_certificacion(calc: pd.DataFrame, columna: str) -> pd.DataFrame:
+    """SKUs certificados y no certificados por grupo (categoría, subcategoría o proveedor).
+
+    Ordenado para ver primero los grupos con más SKUs de demanda inestable.
+    """
+    grupos = calc[columna].fillna("(sin dato)").astype(str).str.strip()
+    no_cert = calc[COL_CERTIFICACION] != CERTIFICADO
+    resumen = (
+        pd.DataFrame({"grupo": grupos, "no_certificados": no_cert.astype(int)})
+        .groupby("grupo", sort=False)
+        .agg(skus=("no_certificados", "size"), no_certificados=("no_certificados", "sum"))
+        .reset_index()
+    )
+    resumen["certificados"] = resumen["skus"] - resumen["no_certificados"]
+    resumen["pct_no_certificados"] = resumen["no_certificados"] / resumen["skus"]
+    return resumen.sort_values(
+        ["no_certificados", "pct_no_certificados", "grupo"], ascending=[False, False, True]
+    ).reset_index(drop=True)[["grupo", "skus", "certificados", "no_certificados", "pct_no_certificados"]]
+
+
+def consolidar_pronostico(calc: pd.DataFrame, columna: str) -> pd.DataFrame:
+    """Pronóstico mensual de los SKUs certificados sumado por grupo (categoría, subcategoría, proveedor)."""
+    base = calc[np.isfinite(calc[COL_PRONOSTICO_LRI].to_numpy(dtype=float))]
+    grupos = base[columna].fillna("(sin dato)").astype(str).str.strip()
+    resumen = (
+        pd.DataFrame(
+            {
+                "grupo": grupos,
+                "promedio": base["pronostico calc"],
+                "seguridad": base[COL_SEGURIDAD_K],
+                "pronostico": base[COL_PRONOSTICO_LRI],
+            }
+        )
+        .groupby("grupo", sort=False)
+        .agg(
+            skus=("pronostico", "size"),
+            promedio=("promedio", "sum"),
+            seguridad=("seguridad", "sum"),
+            pronostico=("pronostico", "sum"),
+        )
+        .reset_index()
+    )
+    total = resumen["pronostico"].sum()
+    resumen["pct_total"] = resumen["pronostico"] / total if total else np.nan
+    return resumen.sort_values(["pronostico", "grupo"], ascending=[False, True]).reset_index(drop=True)
 
 
 @dataclass(frozen=True)

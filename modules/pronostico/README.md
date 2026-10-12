@@ -14,7 +14,8 @@ estacionalidad, distribución normal y simulación Monte Carlo.
    el ancho, resaltado cuando ya se calculó). Calcula todo y desmarca «Mostrar archivo».
 4. **Alternativas de cálculo** (botones verticales debajo) — ✅ Certificación, 📉 Serie por SKU,
    📅 Estacionalidad, 🔔 Distribución normal, 🎲 Monte Carlo. Si aún no se calculó, el
-   botón de la alternativa calcula primero. Luego **⚙️ Nivel de servicio** (plegable) y los filtros.
+   botón de la alternativa calcula primero. Debajo, la casilla **📥 Mostrar reportes (Excel)**
+   (apagada: los reportes se muestran solo si se piden). Luego **⚙️ Nivel de servicio** (plegable) y los filtros.
 
 Futuro: un archivo de resultados en blanco (`pronostico.xlsx`) que llenarán los cálculos.
 
@@ -49,7 +50,8 @@ Excel maestro compartido: `data/sources/perfilado.xlsx`, hoja `data`
 
 | Pestaña | Resultado |
 |---------|-----------|
-| Certificación | SKUs certificados (CV 0–30 %) vs no certificados (CV > 30 %), gráfico de CV con línea del límite, tablas (primero los no certificados, con casilla «📈 Ver gráfico» que sustituye el gráfico de arriba por la dispersión mensual del SKU), export Excel |
+| **Pronóstico** (botón «📈 Cálculo del pronóstico») | Pronóstico mensual = promedio 12 meses + K × σ solo de SKUs certificados; ver por SKU (con descripción), categoría, subcategoría o proveedor (consolidado = suma de SKUs, gráfico promedio + K × σ); excluidos (no certificados) en un plegable, pendientes de política; Excel si se piden reportes |
+| Certificación | SKUs certificados (CV 0–30 %) vs no certificados (CV > 30 %), gráfico de CV con línea del límite, tablas (primero los no certificados, con casilla «📈 Ver gráfico» que sustituye el gráfico de arriba por la dispersión mensual del SKU), cada tabla con su «🔎 Ver por» (ventana con categorías / subcategorías / proveedores y su conteo; al elegir uno filtra esa tabla; ✕ vuelve a todos). Reportes Excel (por tabla, reporte de certificación con resúmenes por grupo y pronóstico completo) **solo si se marca «📥 Mostrar reportes (Excel)»** en el panel lateral |
 | Serie por SKU | Demanda real, tendencia, pronóstico y ajustado; comparación de métodos (MAD, MAPE, sesgo) |
 | Estacionalidad | Índice mensual por total / categoría / subcategoría / proveedor |
 | Distribución normal | Curva normal del SKU, zona cubierta por el nivel de servicio, probabilidad consultable |
@@ -63,6 +65,14 @@ Excel maestro compartido: `data/sources/perfilado.xlsx`, hoja `data`
 | `desviacion standart` | `STDEV.S(demanda mes 1..12)` |
 | `stock seguridad k` | **Nivel de servicio** (probabilidad, p. ej. 0.8), no un factor z |
 | `pronostico ajustado` | `NORMINV(nivel, pronostico, desviacion)` = pronóstico + z·σ |
+
+### Pronóstico LRI (acordado con el usuario)
+
+`pronostico lri = promedio 12 meses + K × σ`, donde σ = desviación estándar de los 12 meses y
+**K = NORMSINV(fill rate deseado)** de la clase (`pronostico_calculos.factor_k`):
+A+ 99.7 % → K 2.75 · A 97 % → 1.88 · B 90 % → 1.28 · C 60 % → 0.25 · C- 50 % → 0.
+Solo se calcula para SKUs **certificados** (CV ≤ 30 %); los no certificados quedan sin pronóstico
+hasta definir su política. Consolidado por grupo (`consolidar_pronostico`) = suma de los SKUs.
 
 ### Columna `fill rate deseado` (se escribe en el Excel)
 

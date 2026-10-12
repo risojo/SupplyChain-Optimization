@@ -91,10 +91,76 @@ class TestCertificacionCV(unittest.TestCase):
         self.assertEqual(r.meses_sin_demanda, 1)
         self.assertEqual(r.meses_fuera_1sigma, sum(abs(v - media) > desv for v in validos))
 
+    def test_resumen_por_grupo(self) -> None:
+        calc = pd.DataFrame(
+            {
+                "proveedor": ["P1", "P1", "P2", "P2", "P2", None],
+                pc.COL_CERTIFICACION: [
+                    pc.CERTIFICADO,
+                    pc.NO_CERTIFICADO,
+                    pc.CERTIFICADO,
+                    pc.CERTIFICADO,
+                    pc.SIN_DEMANDA,
+                    pc.CERTIFICADO,
+                ],
+            }
+        )
+        r = pc.resumen_certificacion(calc, "proveedor").set_index("grupo")
+        self.assertEqual(r.loc["P1", "skus"], 2)
+        self.assertEqual(r.loc["P1", "no_certificados"], 1)
+        self.assertAlmostEqual(r.loc["P1", "pct_no_certificados"], 0.5)
+        self.assertEqual(r.loc["P2", "certificados"], 2)
+        self.assertEqual(r.loc["(sin dato)", "skus"], 1)
+        self.assertEqual(r.index[0], "P1")
+        self.assertEqual(int(r["skus"].sum()), len(calc))
+
     def test_resumen_dispersion_sin_datos(self) -> None:
         r = pc.resumen_dispersion([None, None])
         self.assertEqual(r.meses, 0)
         self.assertTrue(np.isnan(r.cv))
+
+
+class TestPronosticoLRI(unittest.TestCase):
+    def test_factor_k_por_fill_rate(self) -> None:
+        k = pc.factor_k([0.997, 0.97, 0.90, 0.60, 0.50, None, 1.0])
+        self.assertAlmostEqual(k[0], 2.7477813854, places=6)
+        self.assertAlmostEqual(k[1], 1.8807936082, places=6)
+        self.assertAlmostEqual(k[2], 1.2815515655, places=6)
+        self.assertAlmostEqual(k[3], 0.2533471031, places=6)
+        self.assertAlmostEqual(k[4], 0.0, places=9)
+        self.assertTrue(np.isnan(k[5]) and np.isnan(k[6]))
+
+    def test_promedio_mas_k_sigma_solo_certificados(self) -> None:
+        estable = [100, 110, 90, 105, 95, 100]
+        erratica = [10, 200, 0, 150, 5, 300]
+        filas = [
+            {"codigo": c, "clase": clase, **{f"demanda mes {i + 1}": v for i, v in enumerate(d)}}
+            for c, clase, d in (("E", "A", estable), ("R", "A", erratica), ("M", "C-", estable))
+        ]
+        calc = pc.calcular_pronostico(pd.DataFrame(filas)).set_index("codigo")
+        media, sigma = np.mean(estable), np.std(estable, ddof=1)
+        k_a = pc.factor_k([0.97])[0]
+        self.assertAlmostEqual(calc.loc["E", pc.COL_K], k_a)
+        self.assertAlmostEqual(calc.loc["E", pc.COL_SEGURIDAD_K], k_a * sigma)
+        self.assertAlmostEqual(calc.loc["E", pc.COL_PRONOSTICO_LRI], media + k_a * sigma)
+        self.assertAlmostEqual(calc.loc["M", pc.COL_PRONOSTICO_LRI], media)
+        self.assertTrue(np.isnan(calc.loc["R", pc.COL_PRONOSTICO_LRI]))
+
+    def test_consolidado_suma_los_skus(self) -> None:
+        calc = pd.DataFrame(
+            {
+                "proveedor": ["P1", "P1", "P2", "P2"],
+                "pronostico calc": [10.0, 20.0, 5.0, 7.0],
+                pc.COL_SEGURIDAD_K: [1.0, 2.0, 0.5, np.nan],
+                pc.COL_PRONOSTICO_LRI: [11.0, 22.0, 5.5, np.nan],
+            }
+        )
+        r = pc.consolidar_pronostico(calc, "proveedor").set_index("grupo")
+        self.assertEqual(r.loc["P1", "skus"], 2)
+        self.assertAlmostEqual(r.loc["P1", "pronostico"], 33.0)
+        self.assertAlmostEqual(r.loc["P1", "seguridad"], 3.0)
+        self.assertEqual(r.loc["P2", "skus"], 1)
+        self.assertAlmostEqual(r["pct_total"].sum(), 1.0)
 
 
 class TestFillRate(unittest.TestCase):
@@ -157,6 +223,13 @@ class TestExcelMaestro(unittest.TestCase):
         calc = pc.calcular_pronostico(self.df)
         distintos = calc[calc[pc.COL_CUADRA_EXCEL] != "Sí"]
         self.assertTrue(distintos.empty, f"SKUs que no cuadran: {distintos['codigo'].tolist()[:10]}")
+
+    def test_pronostico_lri_en_todos_los_certificados(self) -> None:
+        calc = pc.calcular_pronostico(self.df)
+        cert = calc[pc.COL_CERTIFICACION] == pc.CERTIFICADO
+        self.assertTrue(np.isfinite(calc.loc[cert, pc.COL_PRONOSTICO_LRI]).all())
+        self.assertTrue(calc.loc[~cert, pc.COL_PRONOSTICO_LRI].isna().all())
+        self.assertTrue((calc.loc[cert, pc.COL_PRONOSTICO_LRI] >= calc.loc[cert, "pronostico calc"] - 1e-9).all())
 
     def test_todo_sku_queda_certificado_o_no(self) -> None:
         calc = pc.calcular_pronostico(self.df)

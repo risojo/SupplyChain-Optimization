@@ -103,7 +103,7 @@ se habilitan después en el orden que indique el usuario.
 
 | Archivo | Resultado |
 |---------|-----------|
-| `pronostico_app.py` | Panel lateral en orden fijo (formato Profile Pro): 1) 📁 Cargar datos, 2) casilla «Mostrar archivo», 3) botón «📈 Cálculo del pronóstico» (estilo botones de Inventarios), 4) «Alternativas de cálculo» como botones verticales con ícono (Certificación, Serie por SKU, Estacionalidad, Distribución normal, Monte Carlo), 5) ⚙️ Nivel de servicio plegable + filtros |
+| `pronostico_app.py` | Panel lateral en orden fijo (formato Profile Pro): 1) 📁 Cargar datos, 2) casilla «Mostrar archivo», 3) botón «📈 Cálculo del pronóstico» (estilo botones de Inventarios), 4) «Alternativas de cálculo» como botones verticales con ícono (Certificación, Serie por SKU, Estacionalidad, Distribución normal, Monte Carlo), 5) casilla «📥 Mostrar reportes (Excel)» (los reportes solo se muestran si se piden), 6) ⚙️ Nivel de servicio plegable + filtros |
 | `pronostico_calculos.py` | Cálculos sin UI (fórmulas oficiales + análisis de apoyo) |
 | `pronostico_excel.py` | Escribe solo `fill rate deseado` en la hoja `data` (edición XML; conserva fórmulas y valores en caché) |
 | `view.py` | Solo aviso al orquestador; **no** es la app |
@@ -115,6 +115,11 @@ Métodos alternativos (móvil, exponencial, regresión) solo comparan; no reempl
 **Certificación (acordada con el usuario):** CV = desviación ÷ pronóstico. Certificado si
 0 ≤ CV ≤ 30 % (`CV_MAX_CERTIFICADO`) → modelo estadístico; CV > 30 % → no certificado
 (otro modelo o demanda anual). La coincidencia con el Excel es aparte: `cuadra con excel`.
+
+**Pronóstico LRI (acordado con el usuario):** `pronostico lri` = promedio 12 meses + K × σ,
+K = NORMSINV(`fill rate deseado`) (`factor_k`). Solo SKUs certificados; los no certificados no
+tienen pronóstico hasta que el usuario defina su política. Botón «📈 Cálculo del pronóstico» →
+vista Pronóstico por SKU / categoría / subcategoría / proveedor (`consolidar_pronostico`).
 
 Columna `fill rate deseado` en el Excel, **después de `EVAI`** (AW): la escribe `pronostico_excel.py`
 al cargar la app, según `clase`: A+ 99.7 %, A 97 %, B 90 %, C 60 %, C- 50 % (`FILL_RATE_POR_CLASE`).

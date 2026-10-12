@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -66,13 +67,19 @@ _FORMATO_TABLA = {
     "pronostico ajustado calc": "{:,.1f}",
     "stock seguridad mes": "{:,.1f}",
     "cv": "{:.1%}",
+    pc.COL_K: "{:.2f}",
+    pc.COL_SEGURIDAD_K: "{:,.1f}",
+    pc.COL_PRONOSTICO_LRI: "{:,.1f}",
     "tendencia mensual": "{:+,.2f}",
     "tendencia % mes": "{:+.1%}",
 }
 
 _ETIQUETAS = {
     "fill rate deseado": "Fill rate deseado",
-    "pronostico calc": "Pronóstico (promedio)",
+    "pronostico calc": "Promedio 12 meses",
+    pc.COL_K: "K (factor de seguridad)",
+    pc.COL_SEGURIDAD_K: "K × σ",
+    pc.COL_PRONOSTICO_LRI: "Pronóstico",
     "desviacion calc": "Desviación estándar",
     "nivel servicio": "Nivel de servicio",
     "pronostico ajustado calc": "Pronóstico ajustado",
@@ -84,6 +91,22 @@ _ETIQUETAS = {
     pc.COL_MODELO_SUGERIDO: "Modelo sugerido",
     pc.COL_CUADRA_EXCEL: "Cuadra con Excel",
 }
+
+_COLUMNAS_PRONOSTICO = (
+    "codigo",
+    "descripcion",
+    "categoria",
+    "subcategoria",
+    "proveedor",
+    "clase",
+    "fill rate deseado",
+    pc.COL_K,
+    "pronostico calc",
+    "desviacion calc",
+    "cv",
+    pc.COL_SEGURIDAD_K,
+    pc.COL_PRONOSTICO_LRI,
+)
 
 _COLUMNAS_CERTIFICACION = (
     "codigo",
@@ -104,6 +127,21 @@ _COLORES_CERTIFICACION = {
     pc.NO_CERTIFICADO: "rgba(239,68,68,0.30)",
     pc.SIN_DEMANDA: "rgba(148,163,184,0.25)",
 }
+_NIVELES_CERTIFICACION = {
+    "SKU": None,
+    "Categoría": "categoria",
+    "Subcategoría": "subcategoria",
+    "Proveedor": "proveedor",
+}
+_CLAVE_VER_POR_NO_CERT = "pron_ver_por_no_cert"
+_CLAVE_VER_POR_CERT = "pron_ver_por_cert"
+_MIME_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_COLUMNAS_PORCENTAJE_EXCEL = {
+    _ETIQUETAS["cv"],
+    _ETIQUETAS["fill rate deseado"],
+    "% no certificados",
+    "% del total",
+}
 _COL_VER_GRAFICO = "📈 Ver gráfico"
 _PREFIJO_VER_GRAFICO = "pron_ver_grafico_"
 _COLOR_FUERA_SIGMA = "#f59e0b"
@@ -114,6 +152,7 @@ _COLORES_GRAFICO_CERTIFICACION = {
 }
 
 
+VISTA_PRONOSTICO = "Pronóstico"
 VISTAS = ("Certificación", "Serie por SKU", "Estacionalidad", "Distribución normal", "Monte Carlo")
 _ICONOS_VISTA = {
     "Certificación": "✅",
@@ -132,6 +171,8 @@ _AYUDA_VISTA = {
 _CLAVE_VISTA = "pron_vista"
 _CLAVE_RESULTADO = "pron_resultado"
 _CLAVE_MOSTRAR_ARCHIVO = "pron_mostrar_archivo"
+_CLAVE_MOSTRAR_REPORTES = "pron_mostrar_reportes"
+_CLAVE_NIVEL_PRONOSTICO = "pron_nivel_pronostico"
 _CLAVE_FILL_MTIME = "pron_fill_rate_mtime"
 _CLAVE_FILL_RESULTADO = "pron_fill_rate_resultado"
 _COLOR_COLUMNA_USADA = "rgba(34,197,94,0.18)"
@@ -228,6 +269,11 @@ def _calcular(df: pd.DataFrame, nivel: float | None, clave_fuente: tuple) -> Non
     st.session_state[_CLAVE_MOSTRAR_ARCHIVO] = False
 
 
+def _calcular_pronostico(df: pd.DataFrame, nivel: float | None, clave_fuente: tuple) -> None:
+    _calcular(df, nivel, clave_fuente)
+    st.session_state[_CLAVE_VISTA] = VISTA_PRONOSTICO
+
+
 def _elegir_alternativa(vista: str, df: pd.DataFrame, nivel: float | None, clave_fuente: tuple) -> None:
     st.session_state[_CLAVE_VISTA] = vista
     resultado = st.session_state.get(_CLAVE_RESULTADO)
@@ -255,14 +301,19 @@ def _seccion_calculo(df: pd.DataFrame, fuente: Fuente) -> dict | None:
         st.session_state.pop(_CLAVE_RESULTADO)
         resultado = None
 
+    st.session_state.setdefault(_CLAVE_VISTA, VISTA_PRONOSTICO)
+    activa = st.session_state[_CLAVE_VISTA] if resultado else None
     zona_calculo.markdown("##### Cálculo")
     zona_calculo.button(
         "📈 Cálculo del pronóstico",
         key="pron_btn_calculo",
-        type="primary" if resultado else "secondary",
+        type="primary" if activa == VISTA_PRONOSTICO else "secondary",
         width="stretch",
-        help="Calcula el pronóstico de todos los SKUs con el método oficial del Excel.",
-        on_click=_calcular,
+        help=(
+            "Pronóstico = promedio 12 meses + K × σ (K según el fill rate deseado). "
+            "Solo artículos certificados (CV ≤ 30%)."
+        ),
+        on_click=_calcular_pronostico,
         args=(df, nivel, fuente.clave),
     )
     if resultado is None:
@@ -272,8 +323,6 @@ def _seccion_calculo(df: pd.DataFrame, fuente: Fuente) -> dict | None:
         if resultado["nivel"] != nivel:
             zona_calculo.warning("Cambiaste el nivel de servicio: vuelve a calcular.")
 
-    st.session_state.setdefault(_CLAVE_VISTA, VISTAS[0])
-    activa = st.session_state[_CLAVE_VISTA] if resultado else None
     zona_alternativas.markdown("##### Alternativas de cálculo")
     for vista in VISTAS:
         zona_alternativas.button(
@@ -285,6 +334,12 @@ def _seccion_calculo(df: pd.DataFrame, fuente: Fuente) -> dict | None:
             on_click=_elegir_alternativa,
             args=(vista, df, nivel, fuente.clave),
         )
+    st.session_state.setdefault(_CLAVE_MOSTRAR_REPORTES, False)
+    zona_alternativas.checkbox(
+        "📥 Mostrar reportes (Excel)",
+        key=_CLAVE_MOSTRAR_REPORTES,
+        help="Muestra los botones para descargar en Excel las tablas y el reporte de certificación.",
+    )
     return resultado
 
 
@@ -503,6 +558,141 @@ def _tabla_certificacion(df: pd.DataFrame) -> None:
     st.dataframe(estilo, width="stretch", hide_index=True)
 
 
+def _quitar_ver_por(clave: str) -> None:
+    st.session_state[clave] = None
+
+
+def _texto_tipo(certificados: bool, cantidad: int = 2) -> str:
+    base = "certificado" if certificados else "no certificado"
+    return base if cantidad == 1 else f"{base}s"
+
+
+@st.dialog("🔎 Ver por", width="large")
+def _dialogo_ver_por(calc: pd.DataFrame, clave: str, certificados: bool) -> None:
+    actual = st.session_state.get(clave)
+    st.markdown(f"**Artículos {_texto_tipo(certificados)}**")
+    niveles = [n for n, col in _NIVELES_CERTIFICACION.items() if col is None or col in calc.columns]
+    nivel = st.segmented_control("Nivel", niveles, default=actual[0] if actual else niveles[0]) or niveles[0]
+    columna = _NIVELES_CERTIFICACION[nivel]
+    if columna is None:
+        st.caption(f"Muestra todos los SKUs {_texto_tipo(certificados)}.")
+        if st.button("Ver todos", type="primary", width="stretch"):
+            _quitar_ver_por(clave)
+            st.rerun()
+        return
+
+    campo = "certificados" if certificados else "no_certificados"
+    resumen = pc.resumen_certificacion(calc, columna).sort_values([campo, "grupo"], ascending=[False, True])
+    st.caption(f"Haz clic en un grupo para ver sus artículos {_texto_tipo(certificados)}.")
+    with st.container(height=420):
+        for i, fila in resumen.iterrows():
+            cantidad = int(fila[campo])
+            if st.button(
+                f"{fila['grupo']} — {cantidad} {_texto_tipo(certificados, cantidad)} de {fila['skus']} SKUs",
+                key=f"{clave}_{nivel}_{i}",
+                type="primary" if actual == (nivel, fila["grupo"]) else "secondary",
+                width="stretch",
+                disabled=cantidad == 0,
+            ):
+                st.session_state[clave] = (nivel, fila["grupo"])
+                st.rerun()
+
+
+def _filtrar_ver_por(tabla: pd.DataFrame, clave: str) -> tuple[pd.DataFrame, tuple[str, str] | None]:
+    ver_por = st.session_state.get(clave)
+    if not ver_por:
+        return tabla, None
+    nivel, valor = ver_por
+    columna = _NIVELES_CERTIFICACION.get(nivel)
+    if columna not in tabla.columns:
+        return tabla, None
+    grupos = tabla[columna].fillna("(sin dato)").astype(str).str.strip()
+    return tabla[grupos == valor], ver_por
+
+
+def _nombre_archivo(texto: str) -> str:
+    return re.sub(r"[^\w\-]+", "_", texto).strip("_").lower()
+
+
+def _hoja_certificacion(tabla: pd.DataFrame) -> pd.DataFrame:
+    columnas = [c for c in _COLUMNAS_CERTIFICACION if c in tabla.columns]
+    return tabla[columnas].sort_values("cv", ascending=False).rename(columns=_ETIQUETAS)
+
+
+def _escribir_hojas(hojas: dict[str, pd.DataFrame]) -> bytes:
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        for nombre, tabla in hojas.items():
+            hoja = nombre[:31]
+            tabla.to_excel(writer, sheet_name=hoja, index=False)
+            ws = writer.sheets[hoja]
+            ws.freeze_panes = "A2"
+            for j, col in enumerate(tabla.columns, start=1):
+                letra = get_column_letter(j)
+                largo = int(tabla[col].astype(str).str.len().max()) if len(tabla) else 0
+                ws.column_dimensions[letra].width = min(45, max(10, len(str(col)) + 2, largo + 2))
+                if col in _COLUMNAS_PORCENTAJE_EXCEL:
+                    for celda in ws[letra][1:]:
+                        celda.number_format = "0.0%"
+    return buffer.getvalue()
+
+
+def _reporte_certificacion(calc: pd.DataFrame) -> bytes:
+    certificado = calc[pc.COL_CERTIFICACION] == pc.CERTIFICADO
+    hojas = {
+        "No certificados": _hoja_certificacion(calc[~certificado]),
+        "Certificados": _hoja_certificacion(calc[certificado]),
+    }
+    for nivel, columna in _NIVELES_CERTIFICACION.items():
+        if columna and columna in calc.columns:
+            hojas[f"Por {nivel.lower()}"] = pc.resumen_certificacion(calc, columna).rename(
+                columns={
+                    "grupo": nivel,
+                    "skus": "SKUs",
+                    "certificados": "Certificados",
+                    "no_certificados": "No certificados",
+                    "pct_no_certificados": "% no certificados",
+                }
+            )
+    return _escribir_hojas(hojas)
+
+
+def _encabezado_tabla(
+    titulo: str, calc: pd.DataFrame, tabla: pd.DataFrame, clave: str, certificados: bool
+) -> pd.DataFrame:
+    """Título + «🔎 Ver por» (+ «📥 Excel» si se piden reportes); devuelve la tabla filtrada."""
+    filtrada, ver_por = _filtrar_ver_por(tabla, clave)
+    col_titulo, col_ver, col_quitar, col_excel = st.columns([5, 3, 0.7, 1.5], vertical_alignment="bottom")
+    col_titulo.markdown(f"##### {titulo} ({len(filtrada):,})")
+    if col_ver.button(
+        f"🔎 {ver_por[0]}: {ver_por[1]}" if ver_por else "🔎 Ver por: todos",
+        key=f"{clave}_abrir",
+        type="primary" if ver_por else "secondary",
+        width="stretch",
+        help="Ver estos artículos por categoría, subcategoría o proveedor.",
+    ):
+        _dialogo_ver_por(calc, clave, certificados)
+    if ver_por:
+        col_quitar.button(
+            "✕", key=f"{clave}_quitar", on_click=_quitar_ver_por, args=(clave,), help="Ver todos", width="stretch"
+        )
+    if not st.session_state.get(_CLAVE_MOSTRAR_REPORTES):
+        return filtrada
+    hoja = "Certificados" if certificados else "No certificados"
+    nombre = hoja + (f" {ver_por[0]} {ver_por[1]}" if ver_por else "")
+    col_excel.download_button(
+        "📥 Excel",
+        data=_escribir_hojas({hoja: _hoja_certificacion(filtrada)}),
+        file_name=f"{_nombre_archivo(nombre)}.xlsx",
+        mime=_MIME_XLSX,
+        key=f"{clave}_excel",
+        width="stretch",
+        disabled=filtrada.empty,
+        help="Descarga en Excel los artículos que muestra esta tabla.",
+    )
+    return filtrada
+
+
 def _vista_certificacion(
     df: pd.DataFrame, calc: pd.DataFrame, meses: list[str], nivel_override: bool
 ) -> None:
@@ -544,32 +734,190 @@ def _vista_certificacion(
         )
 
     no_certificados = no_certificados.sort_values("cv", ascending=False)
-    marcados = _skus_marcados(no_certificados) if not no_certificados.empty else []
+    no_cert_visibles, _ = _filtrar_ver_por(no_certificados, _CLAVE_VER_POR_NO_CERT)
+    marcados = _skus_marcados(no_cert_visibles) if not no_cert_visibles.empty else []
     if marcados:
         for idx in marcados:
             _grafico_dispersion_sku(calc.loc[idx], df.loc[idx, meses].to_numpy(dtype=float), meses)
     else:
         _grafico_cv_por_sku(calc, limite)
 
-    st.markdown(f"##### ⚠️ No certificados · CV mayor a {limite:.0%} ({len(no_certificados):,})")
+    no_cert_visibles = _encabezado_tabla(
+        f"⚠️ No certificados · CV mayor a {limite:.0%}", calc, no_certificados, _CLAVE_VER_POR_NO_CERT, False
+    )
     if no_certificados.empty:
         st.success("Todos los SKUs filtrados están dentro del rango para análisis estadístico.")
+    elif no_cert_visibles.empty:
+        st.info("Este grupo no tiene artículos no certificados.")
     else:
         st.caption(
             "Variabilidad alta: requieren otro modelo estadístico o usar la demanda anual. "
             f"Marca **{_COL_VER_GRAFICO}** para ver arriba la dispersión de su demanda; "
             "desmárcalo para volver al gráfico general."
         )
-        _tabla_no_certificados(no_certificados)
+        _tabla_no_certificados(no_cert_visibles)
 
-    st.markdown(f"##### ✅ Certificados · CV entre 0% y {limite:.0%} ({len(certificados):,})")
-    _tabla_certificacion(certificados)
-    st.download_button(
+    cert_visibles = _encabezado_tabla(
+        f"✅ Certificados · CV entre 0% y {limite:.0%}", calc, certificados, _CLAVE_VER_POR_CERT, True
+    )
+    if cert_visibles.empty:
+        st.info("Este grupo no tiene artículos certificados.")
+    else:
+        _tabla_certificacion(cert_visibles)
+
+    if not st.session_state.get(_CLAVE_MOSTRAR_REPORTES):
+        return
+    col_reporte, col_pronostico, _ = st.columns([2, 2, 3])
+    col_reporte.download_button(
+        "📥 Reporte de certificación (Excel)",
+        data=_reporte_certificacion(calc),
+        file_name="certificacion_pronostico_lri.xlsx",
+        mime=_MIME_XLSX,
+        width="stretch",
+        help="No certificados, certificados y resumen por categoría, subcategoría y proveedor.",
+    )
+    col_pronostico.download_button(
         "Descargar pronóstico (Excel)",
         data=_excel_bytes(calc),
         file_name="pronostico_lri.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        mime=_MIME_XLSX,
+        width="stretch",
     )
+
+
+def _tabla_pronostico_sku(pron: pd.DataFrame) -> pd.DataFrame:
+    columnas = [c for c in _COLUMNAS_PRONOSTICO if c in pron.columns]
+    return pron[columnas].sort_values(pc.COL_PRONOSTICO_LRI, ascending=False).rename(columns=_ETIQUETAS)
+
+
+def _tabla_pronostico_grupo(calc: pd.DataFrame, nivel: str) -> pd.DataFrame:
+    return pc.consolidar_pronostico(calc, _NIVELES_CERTIFICACION[nivel]).rename(
+        columns={
+            "grupo": nivel,
+            "skus": "SKUs",
+            "promedio": _ETIQUETAS["pronostico calc"],
+            "seguridad": _ETIQUETAS[pc.COL_SEGURIDAD_K],
+            "pronostico": _ETIQUETAS[pc.COL_PRONOSTICO_LRI],
+            "pct_total": "% del total",
+        }
+    )
+
+
+def _reporte_pronostico(calc: pd.DataFrame, pron: pd.DataFrame, excluidos: pd.DataFrame) -> bytes:
+    hojas = {"Por SKU": _tabla_pronostico_sku(pron)}
+    for nivel, columna in _NIVELES_CERTIFICACION.items():
+        if columna and columna in calc.columns:
+            hojas[f"Por {nivel.lower()}"] = _tabla_pronostico_grupo(calc, nivel)
+    if not excluidos.empty:
+        hojas["Excluidos (no certificados)"] = _hoja_certificacion(excluidos)
+    return _escribir_hojas(hojas)
+
+
+def _vista_pronostico(calc: pd.DataFrame) -> None:
+    limite = pc.CV_MAX_CERTIFICADO
+    pron = calc[np.isfinite(calc[pc.COL_PRONOSTICO_LRI].to_numpy(dtype=float))]
+    excluidos = calc.drop(index=pron.index)
+
+    col_titulo, col_nivel = st.columns([3, 2], vertical_alignment="bottom")
+    col_titulo.subheader("Pronóstico mensual")
+    niveles = [n for n, col in _NIVELES_CERTIFICACION.items() if col is None or col in calc.columns]
+    nivel = (
+        col_nivel.segmented_control(
+            "Ver por", niveles, default=niveles[0], key=_CLAVE_NIVEL_PRONOSTICO, label_visibility="collapsed"
+        )
+        or niveles[0]
+    )
+    claves_k = " · ".join(
+        f"{clase} {fill:.1%} → K {pc.factor_k([fill])[0]:.2f}" for clase, fill in pc.FILL_RATE_POR_CLASE.items()
+    )
+    st.caption(
+        "**Pronóstico = promedio de los 12 meses + K × σ** · σ = desviación estándar de los 12 meses · "
+        f"K = factor de seguridad según el fill rate deseado de la clase ({claves_k}). "
+        f"Solo artículos certificados (CV ≤ {limite:.0%})."
+    )
+
+    promedio = float(pron["pronostico calc"].sum())
+    total = float(pron[pc.COL_PRONOSTICO_LRI].sum())
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("SKUs pronosticados", f"{len(pron):,}")
+    c2.metric(
+        "⚠️ Excluidos",
+        f"{len(excluidos):,}",
+        "Sin política aún",
+        delta_color="off",
+        help="No certificados (CV mayor a 30%): sin pronóstico hasta definir su política.",
+        delta_arrow="off",
+    )
+    c3.metric("Promedio 12 meses (mes)", f"{promedio:,.0f}")
+    c4.metric(
+        "Pronóstico (mes)",
+        f"{total:,.0f}",
+        f"+{total - promedio:,.0f} por K × σ",
+        delta_color="off",
+        delta_arrow="off",
+    )
+    if pron.empty:
+        st.warning("Ningún SKU certificado con los filtros actuales.")
+        return
+
+    formato = {k: v for k, v in _FORMATO_TABLA.items()}
+    if _NIVELES_CERTIFICACION[nivel] is None:
+        tabla = _tabla_pronostico_sku(pron)
+        formato_sku = {_ETIQUETAS.get(k, k): v for k, v in formato.items() if _ETIQUETAS.get(k, k) in tabla.columns}
+        st.dataframe(
+            tabla.style.format(formato_sku, na_rep="—").set_properties(
+                subset=[_ETIQUETAS[pc.COL_PRONOSTICO_LRI]], **{"font-weight": "bold"}
+            ),
+            width="stretch",
+            height=460,
+            hide_index=True,
+        )
+    else:
+        tabla = _tabla_pronostico_grupo(calc, nivel)
+        graf = tabla.melt(
+            id_vars=[nivel],
+            value_vars=[_ETIQUETAS["pronostico calc"], _ETIQUETAS[pc.COL_SEGURIDAD_K]],
+            var_name="Componente",
+            value_name="Unidades",
+        )
+        fig = px.bar(
+            graf,
+            x=nivel,
+            y="Unidades",
+            color="Componente",
+            color_discrete_sequence=[COLOR_PRONOSTICO, COLOR_AJUSTADO],
+            title=f"Pronóstico mensual por {nivel.lower()} (promedio + K × σ)",
+        )
+        fig.update_layout(
+            height=320,
+            margin=dict(t=40, b=0, l=0, r=0),
+            xaxis=dict(type="category", categoryorder="array", categoryarray=tabla[nivel]),
+            legend_title_text="",
+        )
+        st.plotly_chart(fig, width="stretch")
+        numeros = {c: "{:,.1f}" for c in tabla.columns[2:5]}
+        st.dataframe(
+            tabla.style.format({**numeros, "% del total": "{:.1%}"}),
+            width="stretch",
+            hide_index=True,
+        )
+
+    if not excluidos.empty:
+        with st.expander(f"⚠️ Artículos excluidos del pronóstico ({len(excluidos):,}) · pendientes de política"):
+            st.caption(
+                f"CV mayor a {limite:.0%}: no se les calcula pronóstico hasta definir su política "
+                "(por el usuario o por la AI)."
+            )
+            _tabla_certificacion(excluidos)
+
+    if st.session_state.get(_CLAVE_MOSTRAR_REPORTES):
+        st.download_button(
+            "📥 Pronóstico (Excel)",
+            data=_reporte_pronostico(calc, pron, excluidos),
+            file_name="pronostico_mensual_lri.xlsx",
+            mime=_MIME_XLSX,
+            help="Hojas: por SKU, por categoría, por subcategoría, por proveedor y excluidos.",
+        )
 
 
 def _vista_serie(df: pd.DataFrame, calc: pd.DataFrame, meses: list[str]) -> None:
@@ -737,7 +1085,9 @@ def main() -> None:
     df_f = df.loc[calc.index]
     meses = pc.columnas_meses(df_f)
 
-    if vista == "Certificación":
+    if vista == VISTA_PRONOSTICO:
+        _vista_pronostico(calc)
+    elif vista == "Certificación":
         _vista_certificacion(df_f, calc, meses, nivel_override=resultado["nivel"] is not None)
     elif vista == "Serie por SKU":
         _vista_serie(df_f, calc, meses)
