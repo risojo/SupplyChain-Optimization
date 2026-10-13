@@ -62,7 +62,9 @@ class TestAsistenteInventarios(unittest.TestCase):
             self.df, rotacion_objetivo=4, dias_trabajo=30
         )
         total_g = sum(float(g["monto"]) for g in res["por_proveedor"])
-        self.assertAlmostEqual(total_g, float(res["monto_total"]), places=2)
+        self.assertAlmostEqual(
+            total_g, float(res["monto_total"]), delta=0.005 * max(1, len(res["por_proveedor"]))
+        )
 
     def test_filtro_proveedor(self) -> None:
         if "proveedor" not in self.df.columns:

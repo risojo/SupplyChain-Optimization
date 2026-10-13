@@ -14,6 +14,7 @@ from __future__ import annotations
 import io
 import os
 import re
+import shutil
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -56,6 +57,7 @@ COLOR_REAL = "#2196f3"
 COLOR_PRONOSTICO = "#22c55e"
 COLOR_AJUSTADO = "#ef4444"
 COLOR_TENDENCIA = "#a855f7"
+_ESTILO_PRONOSTICO = {"font-weight": "bold", "color": COLOR_PRONOSTICO}
 
 _FORMATO_TABLA = {
     "fill rate deseado": "{:.1%}",
@@ -172,7 +174,13 @@ _CLAVE_VISTA = "pron_vista"
 _CLAVE_RESULTADO = "pron_resultado"
 _CLAVE_MOSTRAR_ARCHIVO = "pron_mostrar_archivo"
 _CLAVE_MOSTRAR_REPORTES = "pron_mostrar_reportes"
+_CLAVE_ANCHO_BARRAS = "pron_ancho_barras"
+_CLAVE_ESCRITURA_PRONOSTICO = "pron_escritura_pronostico"
+_ARCHIVO_ESPEJO = "inventarios.xlsx"
+_ANCHO_BARRAS_INICIAL = 25
 _CLAVE_NIVEL_PRONOSTICO = "pron_nivel_pronostico"
+_CLAVE_NIVEL_ANTERIOR = "pron_nivel_anterior"
+_CLAVE_ABRIR_GRUPO = "pron_abrir_grupo"
 _CLAVE_FILL_MTIME = "pron_fill_rate_mtime"
 _CLAVE_FILL_RESULTADO = "pron_fill_rate_resultado"
 _COLOR_COLUMNA_USADA = "rgba(34,197,94,0.18)"
@@ -266,12 +274,54 @@ def _calcular(df: pd.DataFrame, nivel: float | None, clave_fuente: tuple) -> Non
         "calc": pc.calcular_pronostico(df, nivel),
         "hora": datetime.now(),
     }
+    st.session_state.pop(_CLAVE_ESCRITURA_PRONOSTICO, None)
     st.session_state[_CLAVE_MOSTRAR_ARCHIVO] = False
 
 
-def _calcular_pronostico(df: pd.DataFrame, nivel: float | None, clave_fuente: tuple) -> None:
-    _calcular(df, nivel, clave_fuente)
+def _calcular_pronostico(df: pd.DataFrame, nivel: float | None, fuente: Fuente) -> None:
+    _calcular(df, nivel, fuente.clave)
     st.session_state[_CLAVE_VISTA] = VISTA_PRONOSTICO
+    if fuente.ruta:
+        _escribir_pronostico(fuente)
+
+
+def _escribir_pronostico(fuente: Fuente) -> None:
+    """Pone el pronóstico en la columna «pronostico» del Excel compartido y copia el espejo."""
+    resultado = st.session_state[_CLAVE_RESULTADO]
+    calc = resultado["calc"]
+    escritura = pexcel.escribir_pronostico_excel(dict(zip(calc["codigo"], calc[pc.COL_PRONOSTICO_LRI])), fuente.ruta)
+    st.session_state[_CLAVE_ESCRITURA_PRONOSTICO] = (escritura, None)
+    if escritura.estado != "actualizado":
+        return
+    espejo = os.path.join(os.path.dirname(fuente.ruta), _ARCHIVO_ESPEJO)
+    aviso_espejo = None
+    if os.path.isfile(espejo):
+        try:
+            shutil.copy2(fuente.ruta, espejo)
+        except OSError:
+            aviso_espejo = f"No se pudo copiar a {_ARCHIVO_ESPEJO} (¿está abierto?)."
+    st.session_state[_CLAVE_ESCRITURA_PRONOSTICO] = (escritura, aviso_espejo)
+    mtime = os.path.getmtime(fuente.ruta)
+    df, _ = _cargar_demanda(None, mtime)
+    if df is not None:
+        resultado["calc"] = pc.calcular_pronostico(df, resultado["nivel"])
+    resultado["fuente"] = Fuente(None, fuente.nombre, fuente.ruta, mtime).clave
+
+
+def _aviso_escritura_pronostico(zona) -> None:
+    guardado = st.session_state.get(_CLAVE_ESCRITURA_PRONOSTICO)
+    if guardado is None:
+        return
+    escritura, aviso_espejo = guardado
+    columna = f"columna {escritura.columna}" if escritura.columna else "columna «pronostico»"
+    if escritura.estado == "actualizado":
+        zona.caption(f"✓ Pronóstico escrito en el Excel ({columna}, {escritura.celdas:,} SKUs).")
+    elif escritura.estado == "sin cambios":
+        zona.caption(f"✓ Pronóstico al día en el Excel ({columna}).")
+    else:
+        zona.warning(f"No se pudo escribir el pronóstico en el Excel: {escritura.mensaje}")
+    if aviso_espejo:
+        zona.warning(aviso_espejo)
 
 
 def _elegir_alternativa(vista: str, df: pd.DataFrame, nivel: float | None, clave_fuente: tuple) -> None:
@@ -295,6 +345,17 @@ def _seccion_calculo(df: pd.DataFrame, fuente: Fuente) -> dict | None:
         nivel = None
         if not usar_excel:
             nivel = st.slider("Nivel de servicio", 0.50, 0.995, float(nivel_excel), 0.005, format="%.3f")
+    with st.sidebar.expander("🎨 Gráficos"):
+        st.slider(
+            "Ancho de barras",
+            10,
+            100,
+            _ANCHO_BARRAS_INICIAL,
+            5,
+            format="%d%%",
+            key=_CLAVE_ANCHO_BARRAS,
+            help="Porcentaje del espacio de cada barra que ocupa la columna (100% = barras pegadas).",
+        )
 
     resultado = st.session_state.get(_CLAVE_RESULTADO)
     if resultado and resultado["fuente"] != fuente.clave:
@@ -314,12 +375,13 @@ def _seccion_calculo(df: pd.DataFrame, fuente: Fuente) -> dict | None:
             "Solo artículos certificados (CV ≤ 30%)."
         ),
         on_click=_calcular_pronostico,
-        args=(df, nivel, fuente.clave),
+        args=(df, nivel, fuente),
     )
     if resultado is None:
         zona_calculo.caption("Aún no se ha calculado el pronóstico.")
     else:
         zona_calculo.caption(f"✓ Calculado a las {resultado['hora']:%H:%M} · {len(resultado['calc']):,} SKUs")
+        _aviso_escritura_pronostico(zona_calculo)
         if resultado["nivel"] != nivel:
             zona_calculo.warning("Cambiaste el nivel de servicio: vuelve a calcular.")
 
@@ -459,6 +521,14 @@ def _tabla_no_certificados(tabla: pd.DataFrame) -> None:
     )
 
 
+def _barras_delgadas(fig: go.Figure, n_barras: int) -> None:
+    """Ancho según el slider «Ancho de barras»; con más de 40 barras se ensancha para que se vean."""
+    ancho = st.session_state.get(_CLAVE_ANCHO_BARRAS, _ANCHO_BARRAS_INICIAL) / 100
+    if n_barras > 40:
+        ancho = 0.5 + ancho / 2
+    fig.update_layout(bargap=max(0.0, 1 - ancho))
+
+
 def _grafico_cv_por_sku(calc: pd.DataFrame, limite: float) -> None:
     graf = calc.sort_values("cv", ascending=False).assign(
         sku=lambda d: d["codigo"].astype(str), cv_pct=lambda d: d["cv"] * 100
@@ -486,6 +556,7 @@ def _grafico_cv_por_sku(calc: pd.DataFrame, limite: float) -> None:
         xaxis=dict(type="category", categoryorder="array", categoryarray=graf["sku"], showticklabels=False),
         legend_title_text="",
     )
+    _barras_delgadas(fig, len(graf))
     st.plotly_chart(fig, width="stretch")
 
 
@@ -535,6 +606,7 @@ def _grafico_dispersion_sku(fila: pd.Series, serie: np.ndarray, meses: list[str]
         showlegend=False,
         yaxis_title="Demanda (unidades)",
     )
+    _barras_delgadas(fig, len(etiquetas))
     st.plotly_chart(fig, width="stretch")
     st.caption(
         f"Mínimo {r.minimo:,.0f} · Máximo {r.maximo:,.0f} · Desviación {r.desviacion:,.1f} · "
@@ -790,24 +862,88 @@ def _tabla_pronostico_sku(pron: pd.DataFrame) -> pd.DataFrame:
     return pron[columnas].sort_values(pc.COL_PRONOSTICO_LRI, ascending=False).rename(columns=_ETIQUETAS)
 
 
-def _tabla_pronostico_grupo(calc: pd.DataFrame, nivel: str) -> pd.DataFrame:
-    return pc.consolidar_pronostico(calc, _NIVELES_CERTIFICACION[nivel]).rename(
-        columns={
-            "grupo": nivel,
-            "skus": "SKUs",
-            "promedio": _ETIQUETAS["pronostico calc"],
-            "seguridad": _ETIQUETAS[pc.COL_SEGURIDAD_K],
-            "pronostico": _ETIQUETAS[pc.COL_PRONOSTICO_LRI],
-            "pct_total": "% del total",
-        }
+def _mostrar_pronostico_sku(pron: pd.DataFrame, altura: int | str = "auto") -> None:
+    tabla = _tabla_pronostico_sku(pron)
+    formato = {_ETIQUETAS.get(k, k): v for k, v in _FORMATO_TABLA.items() if _ETIQUETAS.get(k, k) in tabla.columns}
+    st.dataframe(
+        tabla.style.format(formato, na_rep="—").set_properties(
+            subset=[_ETIQUETAS[pc.COL_PRONOSTICO_LRI]], **_ESTILO_PRONOSTICO
+        ),
+        width="stretch",
+        height=altura,
+        hide_index=True,
     )
 
 
-def _reporte_pronostico(calc: pd.DataFrame, pron: pd.DataFrame, excluidos: pd.DataFrame) -> bytes:
-    hojas = {"Por SKU": _tabla_pronostico_sku(pron)}
-    for nivel, columna in _NIVELES_CERTIFICACION.items():
-        if columna and columna in calc.columns:
-            hojas[f"Por {nivel.lower()}"] = _tabla_pronostico_grupo(calc, nivel)
+def _clave_grupo(nivel: str) -> str:
+    return f"pron_grupo_{_NIVELES_CERTIFICACION[nivel]}"
+
+
+def _grupos(tabla: pd.DataFrame, nivel: str) -> pd.Series:
+    return tabla[_NIVELES_CERTIFICACION[nivel]].fillna("(sin dato)").astype(str).str.strip()
+
+
+def _articulo_nivel(nivel: str) -> str:
+    return f"{'un' if nivel == 'Proveedor' else 'una'} {nivel.lower()}"
+
+
+def _cambiar_nivel_pronostico() -> None:
+    """Al pulsar categoría, subcategoría o proveedor (aunque ya esté activo) se abre el panel para escoger."""
+    nivel = st.session_state.get(_CLAVE_NIVEL_PRONOSTICO) or st.session_state.get(_CLAVE_NIVEL_ANTERIOR, "SKU")
+    st.session_state[_CLAVE_NIVEL_PRONOSTICO] = nivel
+    st.session_state[_CLAVE_NIVEL_ANTERIOR] = nivel
+    st.session_state[_CLAVE_ABRIR_GRUPO] = _NIVELES_CERTIFICACION.get(nivel) is not None
+
+
+def _abrir_panel_grupo() -> None:
+    st.session_state[_CLAVE_ABRIR_GRUPO] = True
+
+
+@st.dialog("🔎 Elegir grupo", width="large")
+def _dialogo_grupo_pronostico(pron: pd.DataFrame, nivel: str) -> None:
+    clave = _clave_grupo(nivel)
+    actual = st.session_state.get(clave)
+    conteo = _grupos(pron, nivel).value_counts()
+    st.markdown(f"**{nivel}** · haz clic para ver sus artículos con pronóstico.")
+    with st.container(height=420):
+        for i, grupo in enumerate(sorted(conteo.index)):
+            if st.button(
+                f"{grupo} — {conteo[grupo]} SKUs",
+                key=f"{clave}_opcion_{i}",
+                type="primary" if grupo == actual else "secondary",
+                width="stretch",
+            ):
+                st.session_state[clave] = grupo
+                st.rerun()
+
+
+def _grafico_pronostico_skus(skus: pd.DataFrame, titulo: str) -> None:
+    graf = skus.sort_values(pc.COL_PRONOSTICO_LRI, ascending=False)
+    x = graf["codigo"].astype(str)
+    descripcion = graf["descripcion"].fillna("") if "descripcion" in graf.columns else pd.Series("", index=graf.index)
+    datos = np.column_stack([descripcion.astype(str), graf[pc.COL_PRONOSTICO_LRI].to_numpy(dtype=float)])
+    plantilla = "<b>%{x}</b> · %{customdata[0]}<br>%{fullData.name}: %{y:,.1f}<br>Pronóstico: %{customdata[1]:,.1f}<extra></extra>"
+    fig = go.Figure()
+    fig.add_bar(x=x, y=graf["pronostico calc"], name="Promedio 12 meses", marker_color=COLOR_PRONOSTICO,
+                customdata=datos, hovertemplate=plantilla)
+    fig.add_bar(x=x, y=graf[pc.COL_SEGURIDAD_K], name="K × σ", marker_color=COLOR_AJUSTADO,
+                customdata=datos, hovertemplate=plantilla)
+    fig.update_layout(
+        barmode="stack",
+        height=300,
+        title=f"Pronóstico mensual por SKU · {titulo} (mayor a menor)",
+        title_font_size=14,
+        margin=dict(t=36, b=0, l=0, r=0),
+        xaxis=dict(type="category", categoryorder="array", categoryarray=x, showticklabels=len(graf) <= 40, tickangle=-45),
+        yaxis_title="Unidades / mes",
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1, traceorder="normal"),
+    )
+    _barras_delgadas(fig, len(graf))
+    st.plotly_chart(fig, width="stretch")
+
+
+def _reporte_pedido(skus: pd.DataFrame, excluidos: pd.DataFrame) -> bytes:
+    hojas = {"Pronóstico por SKU": _tabla_pronostico_sku(skus)}
     if not excluidos.empty:
         hojas["Excluidos (no certificados)"] = _hoja_certificacion(excluidos)
     return _escribir_hojas(hojas)
@@ -821,12 +957,16 @@ def _vista_pronostico(calc: pd.DataFrame) -> None:
     col_titulo, col_nivel = st.columns([3, 2], vertical_alignment="bottom")
     col_titulo.subheader("Pronóstico mensual")
     niveles = [n for n, col in _NIVELES_CERTIFICACION.items() if col is None or col in calc.columns]
-    nivel = (
-        col_nivel.segmented_control(
-            "Ver por", niveles, default=niveles[0], key=_CLAVE_NIVEL_PRONOSTICO, label_visibility="collapsed"
-        )
-        or niveles[0]
+    if st.session_state.get(_CLAVE_NIVEL_PRONOSTICO) not in niveles:
+        st.session_state[_CLAVE_NIVEL_PRONOSTICO] = niveles[0]
+    col_nivel.segmented_control(
+        "Ver por",
+        niveles,
+        key=_CLAVE_NIVEL_PRONOSTICO,
+        label_visibility="collapsed",
+        on_change=_cambiar_nivel_pronostico,
     )
+    nivel = st.session_state.get(_CLAVE_NIVEL_PRONOSTICO) or niveles[0]
     claves_k = " · ".join(
         f"{clase} {fill:.1%} → K {pc.factor_k([fill])[0]:.2f}" for clase, fill in pc.FILL_RATE_POR_CLASE.items()
     )
@@ -835,14 +975,42 @@ def _vista_pronostico(calc: pd.DataFrame) -> None:
         f"K = factor de seguridad según el fill rate deseado de la clase ({claves_k}). "
         f"Solo artículos certificados (CV ≤ {limite:.0%})."
     )
+    if pron.empty:
+        st.warning("Ningún SKU certificado con los filtros actuales.")
+        return
 
-    promedio = float(pron["pronostico calc"].sum())
-    total = float(pron[pc.COL_PRONOSTICO_LRI].sum())
+    if _NIVELES_CERTIFICACION[nivel] is None:
+        skus, excl, titulo = pron, excluidos, "Todos los SKUs"
+        st.markdown(f"##### {titulo}")
+    else:
+        clave = _clave_grupo(nivel)
+        if st.session_state.get(clave) not in set(_grupos(pron, nivel)):
+            st.session_state[clave] = None
+        if st.session_state.pop(_CLAVE_ABRIR_GRUPO, False):
+            _dialogo_grupo_pronostico(pron, nivel)
+        grupo = st.session_state.get(clave)
+        col_sel, col_boton = st.columns([3, 1], vertical_alignment="center")
+        col_boton.button(
+            f"🔎 Elegir {nivel.lower()}",
+            key="pron_btn_elegir_grupo",
+            on_click=_abrir_panel_grupo,
+            width="stretch",
+        )
+        if grupo is None:
+            col_sel.info(f"Elige {_articulo_nivel(nivel)} para ver sus artículos con pronóstico.")
+            return
+        skus = pron[_grupos(pron, nivel) == grupo]
+        excl = excluidos[_grupos(excluidos, nivel) == grupo]
+        titulo = f"{nivel}: {grupo}"
+        col_sel.markdown(f"##### {titulo}")
+
+    promedio = float(skus["pronostico calc"].sum())
+    total = float(skus[pc.COL_PRONOSTICO_LRI].sum())
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("SKUs pronosticados", f"{len(pron):,}")
+    c1.metric("SKUs con pronóstico", f"{len(skus):,}")
     c2.metric(
         "⚠️ Excluidos",
-        f"{len(excluidos):,}",
+        f"{len(excl):,}",
         "Sin política aún",
         delta_color="off",
         help="No certificados (CV mayor a 30%): sin pronóstico hasta definir su política.",
@@ -856,67 +1024,25 @@ def _vista_pronostico(calc: pd.DataFrame) -> None:
         delta_color="off",
         delta_arrow="off",
     )
-    if pron.empty:
-        st.warning("Ningún SKU certificado con los filtros actuales.")
-        return
 
-    formato = {k: v for k, v in _FORMATO_TABLA.items()}
-    if _NIVELES_CERTIFICACION[nivel] is None:
-        tabla = _tabla_pronostico_sku(pron)
-        formato_sku = {_ETIQUETAS.get(k, k): v for k, v in formato.items() if _ETIQUETAS.get(k, k) in tabla.columns}
-        st.dataframe(
-            tabla.style.format(formato_sku, na_rep="—").set_properties(
-                subset=[_ETIQUETAS[pc.COL_PRONOSTICO_LRI]], **{"font-weight": "bold"}
-            ),
-            width="stretch",
-            height=460,
-            hide_index=True,
-        )
-    else:
-        tabla = _tabla_pronostico_grupo(calc, nivel)
-        graf = tabla.melt(
-            id_vars=[nivel],
-            value_vars=[_ETIQUETAS["pronostico calc"], _ETIQUETAS[pc.COL_SEGURIDAD_K]],
-            var_name="Componente",
-            value_name="Unidades",
-        )
-        fig = px.bar(
-            graf,
-            x=nivel,
-            y="Unidades",
-            color="Componente",
-            color_discrete_sequence=[COLOR_PRONOSTICO, COLOR_AJUSTADO],
-            title=f"Pronóstico mensual por {nivel.lower()} (promedio + K × σ)",
-        )
-        fig.update_layout(
-            height=320,
-            margin=dict(t=40, b=0, l=0, r=0),
-            xaxis=dict(type="category", categoryorder="array", categoryarray=tabla[nivel]),
-            legend_title_text="",
-        )
-        st.plotly_chart(fig, width="stretch")
-        numeros = {c: "{:,.1f}" for c in tabla.columns[2:5]}
-        st.dataframe(
-            tabla.style.format({**numeros, "% del total": "{:.1%}"}),
-            width="stretch",
-            hide_index=True,
-        )
+    _grafico_pronostico_skus(skus, titulo)
+    _mostrar_pronostico_sku(skus, altura=420 if len(skus) > 12 else "auto")
 
-    if not excluidos.empty:
-        with st.expander(f"⚠️ Artículos excluidos del pronóstico ({len(excluidos):,}) · pendientes de política"):
+    if not excl.empty:
+        with st.expander(f"⚠️ Artículos excluidos del pronóstico ({len(excl):,}) · pendientes de política"):
             st.caption(
                 f"CV mayor a {limite:.0%}: no se les calcula pronóstico hasta definir su política "
                 "(por el usuario o por la AI)."
             )
-            _tabla_certificacion(excluidos)
+            _tabla_certificacion(excl)
 
     if st.session_state.get(_CLAVE_MOSTRAR_REPORTES):
         st.download_button(
-            "📥 Pronóstico (Excel)",
-            data=_reporte_pronostico(calc, pron, excluidos),
-            file_name="pronostico_mensual_lri.xlsx",
+            f"📥 Artículos a pedir · {titulo} (Excel)",
+            data=_reporte_pedido(skus, excl),
+            file_name=f"{_nombre_archivo(f'pronostico {titulo}')}.xlsx",
             mime=_MIME_XLSX,
-            help="Hojas: por SKU, por categoría, por subcategoría, por proveedor y excluidos.",
+            help="SKUs con descripción, clase, fill rate, K, promedio, σ, CV, K × σ y pronóstico (mayor a menor).",
         )
 
 

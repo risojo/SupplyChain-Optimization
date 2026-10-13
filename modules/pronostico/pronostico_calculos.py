@@ -297,22 +297,36 @@ def calcular_pronostico(df: pd.DataFrame, nivel_servicio: float | None = None) -
 
 
 def _cuadra_con_excel(df: pd.DataFrame, calc: pd.DataFrame) -> pd.Series:
-    """«Sí» si los valores oficiales del Excel coinciden con el recálculo."""
-    pares = [
-        (COL_PRONOSTICO, "pronostico calc"),
-        (COL_DESVIACION, "desviacion calc"),
-        (COL_PRONOSTICO_AJUSTADO, "pronostico ajustado calc"),
-    ]
-    pares = [(o, c) for o, c in pares if o in df.columns]
-    if not pares:
+    """«Sí» si los valores oficiales del Excel coinciden con el recálculo.
+
+    Fórmula original: «pronostico» = promedio y «pronostico ajustado» = NORMINV(nivel, pronostico, σ).
+    Con el pronóstico LRI ya escrito: «pronostico» = pronóstico LRI y «pronostico ajustado» = «pronostico».
+    """
+    if not any(c in df.columns for c in (COL_PRONOSTICO, COL_DESVIACION, COL_PRONOSTICO_AJUSTADO)):
         return pd.Series("Sin columnas oficiales", index=calc.index)
-    ok = pd.Series(True, index=calc.index)
-    for oficial, calculado in pares:
-        a = df[oficial].to_numpy(dtype=float)
-        b = calc[calculado].to_numpy(dtype=float)
-        escala = np.maximum(1.0, np.abs(b))
-        ok &= pd.Series(np.isfinite(a) & (np.abs(a - b) <= TOLERANCIA_CERTIFICACION * escala), index=calc.index)
-    return ok.map({True: "Sí", False: "No"})
+
+    def igual(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        with np.errstate(invalid="ignore"):
+            return np.isfinite(a) & (np.abs(a - b) <= TOLERANCIA_CERTIFICACION * np.maximum(1.0, np.abs(b)))
+
+    media = calc["pronostico calc"].to_numpy(dtype=float)
+    desv = calc["desviacion calc"].to_numpy(dtype=float)
+    ok = np.ones(len(calc), dtype=bool)
+    lri = calc[COL_PRONOSTICO_LRI].to_numpy(dtype=float)
+    pron_excel = media
+    escrito = np.zeros(len(calc), dtype=bool)
+    if COL_PRONOSTICO in df.columns:
+        pron_excel = df[COL_PRONOSTICO].to_numpy(dtype=float)
+        escrito = igual(pron_excel, lri)
+        ok &= igual(pron_excel, media) | escrito
+    if COL_DESVIACION in df.columns:
+        ok &= igual(df[COL_DESVIACION].to_numpy(dtype=float), desv)
+    if COL_PRONOSTICO_AJUSTADO in df.columns:
+        nivel = calc["nivel servicio"].to_numpy(dtype=float)
+        ajustado = df[COL_PRONOSTICO_AJUSTADO].to_numpy(dtype=float)
+        norminv = np.array([pronostico_ajustado(p, s, n) for p, s, n in zip(pron_excel, desv, nivel)])
+        ok &= igual(ajustado, norminv) | (escrito & igual(ajustado, pron_excel))
+    return pd.Series(ok, index=calc.index).map({True: "Sí", False: "No"})
 
 
 def resumen_certificacion(calc: pd.DataFrame, columna: str) -> pd.DataFrame:

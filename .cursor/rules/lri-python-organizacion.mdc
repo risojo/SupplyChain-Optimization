@@ -99,17 +99,17 @@ OpenAI **nunca** calcula sobre filas ni genera imágenes; el resultado oficial e
 Pronóstico es el **primer módulo** en `core/registry.py` y en `docs/MODULOS.md`; los demás
 se habilitan después en el orden que indique el usuario.
 
-**Entrada local:** `streamlit run modules/pronostico/pronostico_app.py` (sin Render todavía)
+**Entrada local / Render:** `streamlit run modules/pronostico/pronostico_app.py` (Render: `lri-forecast-pro`)
 
 | Archivo | Resultado |
 |---------|-----------|
-| `pronostico_app.py` | Panel lateral en orden fijo (formato Profile Pro): 1) 📁 Cargar datos, 2) casilla «Mostrar archivo», 3) botón «📈 Cálculo del pronóstico» (estilo botones de Inventarios), 4) «Alternativas de cálculo» como botones verticales con ícono (Certificación, Serie por SKU, Estacionalidad, Distribución normal, Monte Carlo), 5) casilla «📥 Mostrar reportes (Excel)» (los reportes solo se muestran si se piden), 6) ⚙️ Nivel de servicio plegable + filtros |
+| `pronostico_app.py` | Panel lateral en orden fijo (formato Profile Pro): 1) 📁 Cargar datos, 2) casilla «Mostrar archivo», 3) botón «📈 Cálculo del pronóstico» (estilo botones de Inventarios), 4) «Alternativas de cálculo» como botones verticales con ícono (Certificación, Serie por SKU, Estacionalidad, Distribución normal, Monte Carlo), 5) casilla «📥 Mostrar reportes (Excel)» (los reportes solo se muestran si se piden), 6) ⚙️ Nivel de servicio plegable, 7) 🎨 Gráficos plegable (slider «Ancho de barras»), 8) filtros |
 | `pronostico_calculos.py` | Cálculos sin UI (fórmulas oficiales + análisis de apoyo) |
-| `pronostico_excel.py` | Escribe solo `fill rate deseado` en la hoja `data` (edición XML; conserva fórmulas y valores en caché) |
+| `pronostico_excel.py` | Escribe `fill rate deseado` y el pronóstico LRI (columna `pronostico`) en la hoja `data` (edición XML; conserva el resto de fórmulas y valores en caché) |
 | `view.py` | Solo aviso al orquestador; **no** es la app |
 
-Fórmulas oficiales = Excel: `pronostico` = AVERAGE, `desviacion standart` = STDEV.S,
-`stock seguridad k` = **nivel de servicio**, `pronostico ajustado` = NORMINV(nivel, pronóstico, σ).
+Fórmulas oficiales = Excel: `pronostico` = pronóstico LRI (certificados, escrito por la app) o AVERAGE (no certificados), `desviacion standart` = STDEV.S,
+`stock seguridad k` = **nivel de servicio**, `pronostico ajustado` = `=pronostico` en certificados, NORMINV(nivel, pronóstico, σ) en no certificados.
 Métodos alternativos (móvil, exponencial, regresión) solo comparan; no reemplazan el oficial.
 
 **Certificación (acordada con el usuario):** CV = desviación ÷ pronóstico. Certificado si
@@ -119,7 +119,13 @@ Métodos alternativos (móvil, exponencial, regresión) solo comparan; no reempl
 **Pronóstico LRI (acordado con el usuario):** `pronostico lri` = promedio 12 meses + K × σ,
 K = NORMSINV(`fill rate deseado`) (`factor_k`). Solo SKUs certificados; los no certificados no
 tienen pronóstico hasta que el usuario defina su política. Botón «📈 Cálculo del pronóstico» →
-vista Pronóstico por SKU / categoría / subcategoría / proveedor (`consolidar_pronostico`).
+vista Pronóstico «Ver por» SKU / categoría / subcategoría / proveedor: al pulsar un nivel se abre un panel
+para escoger el grupo y se muestran gráfico + tabla de **sus SKUs** (mayor a menor) y Excel «Artículos a pedir».
+Sin resúmenes por grupo en pantalla (el usuario no los quiere; los pedidos son por SKU).
+El mismo botón escribe el pronóstico LRI como **valor** en la columna `pronostico` (W) del Excel
+(`pronostico_excel.escribir_pronostico_excel`): sustituye `AVERAGE` o llena vacíos; no certificados
+conservan su fórmula; en certificados `pronostico ajustado` = `=pronostico` (sin segundo margen NORMINV);
+copia a `inventarios.xlsx`.
 
 Columna `fill rate deseado` en el Excel, **después de `EVAI`** (AW): la escribe `pronostico_excel.py`
 al cargar la app, según `clase`: A+ 99.7 %, A 97 %, B 90 %, C 60 %, C- 50 % (`FILL_RATE_POR_CLASE`).
@@ -139,6 +145,7 @@ Tras escribirla, copiar `perfilado.xlsx` → `inventarios.xlsx`. Base futura del
 - Repo: `https://github.com/risojo/SupplyChain-Optimization` · rama `main`
 - Inventarios Render: comando → `inventario_app.py`
 - Perfilado Render: comando → `profile1.py` (no `profile2`)
+- Forecast Pro Render: servicio `lri-forecast-pro` → `pronostico_app.py` (en `render.yaml`)
 
 ## Checklist al reorganizar código
 

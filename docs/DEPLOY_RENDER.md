@@ -16,6 +16,7 @@ Un 404 significa: **ese servicio aún no está creado** (o fue eliminado).
 |--------|-----|
 | **Perfilado** (`profile1.py`) | https://lri-analytics-pro.onrender.com |
 | **Inventarios** (`inventario_app.py`) | https://lri-inventarios.onrender.com |
+| **Forecast Pro** (`pronostico_app.py`) | https://lri-forecast-pro.onrender.com |
 
 Repositorio GitHub: https://github.com/risojo/SupplyChain-Optimization
 
@@ -65,6 +66,15 @@ Repita **New → Web Service** con name `lri-inventarios` y este Start Command p
 ```bash
 streamlit run modules/inventarios/inventario_app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true --browser.gatherUsageStats false
 ```
+
+Y con name `lri-forecast-pro` para Forecast Pro (o **Blueprints → Manual Sync**, ya está en `render.yaml`):
+
+```bash
+streamlit run modules/pronostico/pronostico_app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true --browser.gatherUsageStats false
+```
+
+En Render el disco es temporal: el fill rate y el pronóstico que Forecast Pro escribe en el Excel
+viven solo en esa instancia (no llegan a Inventarios en Render ni a GitHub).
 
 ---
 

@@ -12,6 +12,7 @@ Orden fijo de `data` (inicio):
 `codigo → categoria → clase → subcategoria → descripcion → proveedor → pais → …`  
 Al final opcionales de control: `EVAI`.  
 Tras demanda 1–12 (posición del Excel): `pronostico`, `desviacion estandar` (también «standart»), `stock seguridad k`, `pronostico ajustado`.
+`pronostico` de los SKUs certificados lo escribe Forecast Pro (promedio 12 meses + K × σ); los no certificados conservan `AVERAGE`.
 
 No alterar el orden de columnas base. Ambos módulos leen `perfilado.xlsx`.
 

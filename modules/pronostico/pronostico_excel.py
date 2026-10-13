@@ -1,8 +1,11 @@
-"""Escritura de la columna «fill rate deseado» en el Excel compartido.
+"""Escritura en el Excel compartido: «fill rate deseado» y el pronóstico calculado.
 
-Edita directamente el XML de la hoja ``data`` dentro del .xlsx: agrega o
-actualiza solo esa columna (a la derecha de la última columna con encabezado,
-hoy después de ``EVAI``) y deja el resto del archivo byte a byte igual.
+Edita directamente el XML de la hoja ``data`` dentro del .xlsx:
+- ``actualizar_fill_rate_excel``: agrega o actualiza la columna «fill rate deseado»
+  (a la derecha de la última columna con encabezado, hoy después de ``EVAI``).
+- ``escribir_pronostico_excel``: pone el pronóstico LRI como valor en «pronostico»
+  (sustituye la fórmula AVERAGE) y deja «pronostico ajustado» = «pronostico».
+El resto del archivo queda byte a byte igual.
 No se usa openpyxl para guardar porque descarta los valores calculados de las
 fórmulas (``pronostico``, ``desviacion standart``, ``pronostico ajustado``)
 y Inventarios / Profile Pro los leerían vacíos.
@@ -14,7 +17,9 @@ import re
 import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass
-from xml.sax.saxutils import escape
+from xml.sax.saxutils import escape, unescape
+
+import numpy as np
 
 import pronostico_calculos as pc
 
@@ -83,7 +88,7 @@ def _texto_celda(celda: str, compartidos: list[str]) -> str | None:
 def _valor_numerico(celda: str) -> float | None:
     m = re.search(r"<v>(.*?)</v>", celda)
     try:
-        return float(m.group(1)) if m and 't="' not in celda else None
+        return float(m.group(1)) if m and not re.match(r'<c\b[^>]*\st="', celda) else None
     except ValueError:
         return None
 
@@ -171,6 +176,165 @@ def _celda_encabezado(col: str, texto: str) -> str:
     return f'<c r="{col}1" t="inlineStr"><is><t>{escape(texto)}</t></is></c>'
 
 
+def _guardar(ruta: str, reemplazos: dict[str, bytes], quitar: frozenset[str] = frozenset()) -> None:
+    temporal = f"{ruta}.tmp"
+    try:
+        with zipfile.ZipFile(ruta) as origen, zipfile.ZipFile(temporal, "w") as destino:
+            for info in origen.infolist():
+                if info.filename not in quitar:
+                    destino.writestr(info, reemplazos.get(info.filename, origen.read(info.filename)))
+        os.replace(temporal, ruta)
+    finally:
+        if os.path.exists(temporal):
+            os.remove(temporal)
+
+
+def normalizar_codigo(valor: object) -> str:
+    """Mismo texto para ``77001046``, ``77001046.0`` y ``"77001046"``."""
+    texto = str(valor).strip()
+    try:
+        numero = float(texto)
+    except ValueError:
+        return texto
+    return str(int(numero)) if numero.is_integer() else texto
+
+
+def _desplazar_filas(formula: str, delta: int) -> str:
+    """Traslada las referencias relativas de una fórmula compartida ``delta`` filas."""
+
+    def mover(m: re.Match) -> str:
+        if m.group(3):
+            return m.group(0)
+        return f"{m.group(1)}{m.group(2)}{int(m.group(4)) + delta}"
+
+    return re.sub(r"(?<![A-Za-z_.$])(\$?)([A-Z]{1,3})(\$?)(\d+)(?![\d(])", mover, formula)
+
+
+def _fila_de_celda(celda: str) -> int:
+    return int(re.match(r'<c r="[A-Z]+(\d+)"', celda).group(1))
+
+
+def _sin_formula_compartida(celda: str, maestras: dict[str, tuple[int, str]]) -> str:
+    """Convierte una celda de fórmula compartida en fórmula propia (misma fórmula, mismo valor)."""
+    m = re.search(r'<f\b[^>/]*\bt="shared"[^>/]*(?:/>|>(.*?)</f>)', celda, re.S)
+    if not m:
+        return celda
+    si = re.search(r'\bsi="(\d+)"', m.group(0)).group(1)
+    fila_maestra, formula = maestras[si]
+    propia = _desplazar_filas(formula, _fila_de_celda(celda) - fila_maestra)
+    return celda[: m.start()] + f"<f>{escape(propia)}</f>" + celda[m.end():]
+
+
+def _maestras_compartidas(hoja: str, col: str) -> dict[str, tuple[int, str]]:
+    """Fórmulas compartidas que nacen en la columna ``col``: si → (fila, fórmula)."""
+    maestras = {}
+    for m in re.finditer(rf'<c r="{col}(\d+)"[^>]*>\s*<f\b[^>/]*\bt="shared"[^>/]*>(.*?)</f>', hoja, re.S):
+        si = re.search(r'\bsi="(\d+)"', m.group(0)).group(1)
+        maestras[si] = (int(m.group(1)), unescape(m.group(2)))
+    return maestras
+
+
+def _celda_numero(col: str, fila: int, valor: float, actual: str | None, formula: str | None = None) -> str:
+    estilo = re.search(r'\bs="(\d+)"', actual or "")
+    atributos = f' s="{estilo.group(1)}"' if estilo else ""
+    return f'<c r="{col}{fila}"{atributos}>' + (f"<f>{formula}</f>" if formula else "") + f"<v>{valor!r}</v></c>"
+
+
+def _quitar_calc_chain(z: zipfile.ZipFile) -> tuple[dict[str, bytes], frozenset[str]]:
+    """Excel reconstruye la cadena de cálculo al abrir; se quita para no apuntar a fórmulas borradas."""
+    if "xl/calcChain.xml" not in z.namelist():
+        return {}, frozenset()
+    tipos = re.sub(r'<Override[^>]*PartName="/xl/calcChain.xml"[^>]*/>', "", z.read("[Content_Types].xml").decode("utf-8"))
+    rels = re.sub(r'<Relationship[^>]*Target="[^"]*calcChain.xml"[^>]*/>', "", z.read("xl/_rels/workbook.xml.rels").decode("utf-8"))
+    return (
+        {"[Content_Types].xml": tipos.encode("utf-8"), "xl/_rels/workbook.xml.rels": rels.encode("utf-8")},
+        frozenset({"xl/calcChain.xml"}),
+    )
+
+
+def escribir_pronostico_excel(pronosticos: dict[str, float], ruta: str | None = None) -> ResultadoEscritura:
+    """Pone el pronóstico calculado como valor en la columna «pronostico» de la hoja ``data``.
+
+    ``pronosticos`` va por código (``normalizar_codigo``); solo se escriben valores finitos.
+    En esas filas «pronostico ajustado» pasa a ``=pronostico`` (el pronóstico LRI ya trae
+    K × σ; NORMINV sumaría un segundo margen de seguridad). Las filas sin pronóstico
+    (no certificados) conservan sus fórmulas.
+    """
+    ruta = ruta or pc.ARCHIVO_EXCEL_PATH
+    try:
+        with zipfile.ZipFile(ruta) as z:
+            ruta_hoja = _ruta_hoja(z, pc.HOJA_DATOS)
+            hoja = z.read(ruta_hoja).decode("utf-8")
+            compartidos = _textos_compartidos(z)
+            extra, quitar = _quitar_calc_chain(z)
+    except PermissionError:
+        return ResultadoEscritura("bloqueado", mensaje=pc.MSG_ARCHIVO_ABIERTO)
+    except (OSError, KeyError, StopIteration, zipfile.BadZipFile, ET.ParseError) as exc:
+        return ResultadoEscritura("error", mensaje=f"No se pudo leer el Excel: {exc}")
+
+    filas = list(_RE_FILA.finditer(hoja))
+    encabezado = next((f for f in filas if re.search(r'\br="1"', f.group(1))), None)
+    if encabezado is None:
+        return ResultadoEscritura("error", mensaje="La hoja «data» no tiene fila de encabezados.")
+    columnas = {
+        pc._nombre_canonico((_texto_celda(m.group(0), compartidos) or "").strip()): m.group(1)
+        for m in _RE_CELDA.finditer(encabezado.group(2) or "")
+    }
+    col_codigo = columnas.get("codigo")
+    col_pron = columnas.get(pc.COL_PRONOSTICO)
+    if col_codigo is None or col_pron is None:
+        return ResultadoEscritura("error", mensaje="La hoja «data» no tiene las columnas «codigo» y «pronostico».")
+    col_ajust = columnas.get(pc.COL_PRONOSTICO_AJUSTADO)
+    pronosticos = {normalizar_codigo(k): float(v) for k, v in pronosticos.items() if np.isfinite(v)}
+    maestras = {col: _maestras_compartidas(hoja, col) for col in (col_pron, col_ajust) if col}
+
+    escritas = 0
+    partes: list[str] = []
+    ultimo = 0
+    for f in filas:
+        numero = int(re.search(r'\br="(\d+)"', f.group(1)).group(1))
+        contenido = f.group(2) or ""
+        if numero == 1 or not contenido:
+            continue
+        celdas = {m.group(1): m.group(0) for m in _RE_CELDA.finditer(contenido)}
+        codigo = _texto_celda(celdas.get(col_codigo, ""), compartidos)
+        valor = pronosticos.get(normalizar_codigo(codigo)) if codigo else None
+        nuevas: dict[str, str] = {}
+        if valor is None:
+            for col, de_columna in maestras.items():
+                actual = celdas.get(col)
+                if actual and 't="shared"' in actual:
+                    nuevas[col] = _sin_formula_compartida(actual, de_columna)
+        else:
+            nuevas[col_pron] = _celda_numero(col_pron, numero, valor, celdas.get(col_pron))
+            if col_ajust:
+                nuevas[col_ajust] = _celda_numero(
+                    col_ajust, numero, valor, celdas.get(col_ajust), formula=f"{col_pron}{numero}"
+                )
+        nuevas = {col: nueva for col, nueva in nuevas.items() if nueva != celdas.get(col)}
+        if not nuevas:
+            continue
+        if valor is not None:
+            escritas += 1
+        for col, nueva in nuevas.items():
+            contenido, _ = _reemplazar_celda(contenido, col, numero, nueva)
+
+        partes.append(hoja[ultimo: f.start()])
+        partes.append(f"<row{f.group(1)}>{contenido}</row>")
+        ultimo = f.end()
+
+    if not partes:
+        return ResultadoEscritura("sin cambios", columna=col_pron)
+    partes.append(hoja[ultimo:])
+    try:
+        _guardar(ruta, {ruta_hoja: "".join(partes).encode("utf-8"), **extra}, quitar)
+    except PermissionError:
+        return ResultadoEscritura("bloqueado", columna=col_pron, mensaje=pc.MSG_ARCHIVO_ABIERTO)
+    except OSError as exc:
+        return ResultadoEscritura("error", columna=col_pron, mensaje=f"No se pudo guardar el Excel: {exc}")
+    return ResultadoEscritura("actualizado", columna=col_pron, celdas=escritas)
+
+
 def actualizar_fill_rate_excel(ruta: str | None = None) -> ResultadoEscritura:
     """Escribe/actualiza «fill rate deseado» en la hoja ``data`` según la clase de cada fila."""
     ruta = ruta or pc.ARCHIVO_EXCEL_PATH
@@ -245,17 +409,10 @@ def actualizar_fill_rate_excel(ruta: str | None = None) -> ResultadoEscritura:
     if usa_estilo_nuevo:
         reemplazos["xl/styles.xml"] = estilos_nuevos.encode("utf-8")
 
-    temporal = f"{ruta}.tmp"
     try:
-        with zipfile.ZipFile(ruta) as origen, zipfile.ZipFile(temporal, "w") as destino:
-            for info in origen.infolist():
-                destino.writestr(info, reemplazos.get(info.filename, origen.read(info.filename)))
-        os.replace(temporal, ruta)
+        _guardar(ruta, reemplazos)
     except PermissionError:
         return ResultadoEscritura("bloqueado", columna=col_fill, mensaje=pc.MSG_ARCHIVO_ABIERTO)
     except OSError as exc:
         return ResultadoEscritura("error", columna=col_fill, mensaje=f"No se pudo guardar el Excel: {exc}")
-    finally:
-        if os.path.exists(temporal):
-            os.remove(temporal)
     return ResultadoEscritura("actualizado", columna=col_fill, celdas=cambios)
