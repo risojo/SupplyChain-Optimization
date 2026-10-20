@@ -2,9 +2,10 @@
 
 Lee el Excel compartido ``data/sources/perfilado.xlsx`` (mismo archivo de
 Inventarios, Compras y Profile Pro). Panel lateral (formato Profile Pro):
-cargar datos → casilla «Mostrar archivo» → botón «Calcular pronóstico» y,
-debajo, sus opciones: certificación, serie por SKU, estacionalidad,
-distribución normal y Monte Carlo.
+cargar datos → casilla opcional «Abrir archivo» → botón «Calcular pronóstico» y,
+debajo, sus opciones: certificación, simulación Monte Carlo (@RISK), serie por SKU
+y estacionalidad. Al iniciar no se muestra el Excel; el foco es el cálculo del
+pronóstico.
 
 Ejecutar:
     streamlit run modules/pronostico/pronostico_app.py
@@ -28,30 +29,77 @@ import streamlit as st
 from openpyxl.utils import get_column_letter
 
 _DIR_ACTUAL = os.path.dirname(os.path.abspath(__file__))
-if _DIR_ACTUAL not in sys.path:
-    sys.path.insert(0, _DIR_ACTUAL)
+_DIR_EXPERIMENTOS = os.path.join(_DIR_ACTUAL, "_experimentos")
+for _p in (_DIR_ACTUAL, _DIR_EXPERIMENTOS):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 import pronostico_calculos as pc  # noqa: E402
 import pronostico_excel as pexcel  # noqa: E402
+from sync_linea_helpers import (  # noqa: E402
+    bultos_desde_probabilidad,
+    colores_barras_zonas,
+    discretizar_normal_barras,
+    probabilidad_desde_bultos,
+    rango_eje_x_demanda,
+    zonas_probabilidad_delimitadores,
+)
 
 st.set_page_config(page_title="LRI Forecast Pro", page_icon="📈", layout="wide")
 
 _CLAVE_CONTENEDOR_TABLA = "pron_tabla_archivo"
+_CLAVE_CONTENEDOR_PRON = "pron_tabla_pronostico"
+# Altura en px del st.dataframe (no «stretch»): así el scroll es interno y la
+# barra horizontal queda al pie del marco, visible en la primera pantalla.
+# Cabecera + esta altura deben caber en la primera pantalla (barra horizontal a la vista).
+_ALTURA_TABLA_ARCHIVO_PX = 460
+_ALTURA_TABLA_PRONOSTICO_PX = 320
 
-st.markdown(
-    f"""
-    <style>
-    [data-testid="stHeader"] {{ height: 2.25rem; background: transparent; }}
-    .block-container {{ padding-top: 2.25rem; padding-bottom: 0.5rem; }}
-    .block-container h4 {{ padding: 0 0 0.25rem 0; }}
-    .st-key-{_CLAVE_CONTENEDOR_TABLA} {{
-        flex: 0 0 auto !important; height: calc(100vh - 9.5rem) !important; min-height: 320px;
-    }}
-    .st-key-{_CLAVE_CONTENEDOR_TABLA} > div {{ flex: 1 1 auto; height: 100%; }}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+# Fondos Plotly (solo estética; no altera series ni marker_color).
+_PLOTLY_PAPER = "#051426"
+_PLOTLY_PLOT = "#051426"
+_PLOTLY_TEXTO = "#FFFFFF"
+_PLOTLY_EJE = "#C5D8E8"
+_PLOTLY_REJILLA = "rgba(8, 118, 185, 0.22)"
+
+
+def _cargar_tema_visual() -> None:
+    """Inyecta forecast_theme.css (solo apariencia de Forecast Pro)."""
+    ruta_css = os.path.join(_DIR_ACTUAL, "forecast_theme.css")
+    try:
+        with open(ruta_css, encoding="utf-8") as f:
+            css = f.read()
+    except OSError:
+        return
+    st.markdown(f"<style>\n{css}\n</style>", unsafe_allow_html=True)
+
+
+def _estilo_fondo_plotly(fig: go.Figure) -> None:
+    """Fondo, ejes y rejilla oscuros; no toca colores de barras ni datos."""
+    fig.update_layout(
+        paper_bgcolor=_PLOTLY_PAPER,
+        plot_bgcolor=_PLOTLY_PLOT,
+        font=dict(color=_PLOTLY_TEXTO),
+        title_font=dict(color=_PLOTLY_TEXTO),
+        legend=dict(font=dict(color=_PLOTLY_TEXTO)),
+    )
+    fig.update_xaxes(
+        gridcolor=_PLOTLY_REJILLA,
+        zerolinecolor=_PLOTLY_REJILLA,
+        tickfont=dict(color=_PLOTLY_EJE),
+        title_font=dict(color=_PLOTLY_EJE),
+        linecolor=_PLOTLY_EJE,
+    )
+    fig.update_yaxes(
+        gridcolor=_PLOTLY_REJILLA,
+        zerolinecolor=_PLOTLY_REJILLA,
+        tickfont=dict(color=_PLOTLY_EJE),
+        title_font=dict(color=_PLOTLY_EJE),
+        linecolor=_PLOTLY_EJE,
+    )
+
+
+_cargar_tema_visual()
 
 COLOR_REAL = "#2196f3"
 COLOR_PRONOSTICO = "#22c55e"
@@ -110,6 +158,36 @@ _COLUMNAS_PRONOSTICO = (
     pc.COL_PRONOSTICO_LRI,
 )
 
+# Excel imprimible / de entrega del cálculo (columnas principales).
+_COLUMNAS_ARCHIVO_PRONOSTICO = (
+    "codigo",
+    "descripcion",
+    "categoria",
+    "subcategoria",
+    "proveedor",
+    "clase",
+    "nivel servicio",
+    "fill rate deseado",
+    "inventario final bulto",
+    "inventario promedio bultos",
+    "cv",
+    "desviacion calc",
+    "pronostico calc",
+    pc.COL_SEGURIDAD_K,
+    pc.COL_PRONOSTICO_LRI,
+    pc.COL_CERTIFICACION,
+)
+_ETIQUETAS_ARCHIVO_PRONOSTICO = {
+    **_ETIQUETAS,
+    "nivel servicio": "Nivel de servicio",
+    "inventario final bulto": "Inventario final (bultos)",
+    "inventario promedio bultos": "Inventario promedio (bultos)",
+    "cv": "Variabilidad (CV)",
+    "desviacion calc": "Desviación estándar",
+    "pronostico calc": "Promedio 12 meses",
+    pc.COL_PRONOSTICO_LRI: "Pronóstico LRI",
+}
+
 _COLUMNAS_CERTIFICACION = (
     "codigo",
     "descripcion",
@@ -155,20 +233,22 @@ _COLORES_GRAFICO_CERTIFICACION = {
 
 
 VISTA_PRONOSTICO = "Pronóstico"
-VISTAS = ("Certificación", "Serie por SKU", "Estacionalidad", "Distribución normal", "Monte Carlo")
+VISTAS = ("Certificación", "Simulación Monte Carlo", "Serie por SKU", "Estacionalidad")
 _ICONOS_VISTA = {
     "Certificación": "✅",
+    "Simulación Monte Carlo": "🎲",
     "Serie por SKU": "📉",
     "Estacionalidad": "📅",
-    "Distribución normal": "🔔",
-    "Monte Carlo": "🎲",
 }
 _AYUDA_VISTA = {
     "Certificación": "SKUs con CV entre 0% y 30% (aptos para modelo estadístico) y los que quedan fuera.",
+    "Simulación Monte Carlo": "Histograma estilo @RISK: delimitadores, probabilidad y riesgo por zonas (anaranjado).",
     "Serie por SKU": "Demanda real, tendencia y comparación de métodos (móvil, exponencial, regresión).",
     "Estacionalidad": "Índice mensual por total, categoría, subcategoría o proveedor.",
-    "Distribución normal": "Curva normal del SKU y zona cubierta por el nivel de servicio.",
-    "Monte Carlo": "Demanda simulada, percentiles y cobertura real del pronóstico ajustado.",
+}
+_VISTAS_LEGACY = {
+    "Distribución normal": "Simulación Monte Carlo",
+    "Monte Carlo": "Simulación Monte Carlo",
 }
 _CLAVE_VISTA = "pron_vista"
 _CLAVE_RESULTADO = "pron_resultado"
@@ -176,6 +256,7 @@ _CLAVE_MOSTRAR_ARCHIVO = "pron_mostrar_archivo"
 _CLAVE_MOSTRAR_REPORTES = "pron_mostrar_reportes"
 _CLAVE_ANCHO_BARRAS = "pron_ancho_barras"
 _CLAVE_ESCRITURA_PRONOSTICO = "pron_escritura_pronostico"
+_CLAVE_ARCHIVO_TOKEN = "pron_archivo_token"  # fuerza remount de «Mostrar archivo» tras calcular
 _ARCHIVO_ESPEJO = "inventarios.xlsx"
 _ANCHO_BARRAS_INICIAL = 25
 _CLAVE_NIVEL_PRONOSTICO = "pron_nivel_pronostico"
@@ -262,9 +343,37 @@ def _seccion_archivo() -> Fuente:
         )
         if resultado_fill is not None:
             _aviso_fill_rate(resultado_fill)
-    st.session_state.setdefault(_CLAVE_MOSTRAR_ARCHIVO, True)
-    st.sidebar.checkbox("Mostrar archivo", key=_CLAVE_MOSTRAR_ARCHIVO)
+    st.session_state.setdefault(_CLAVE_MOSTRAR_ARCHIVO, False)
+    st.sidebar.button(
+        "📁 Abrir archivo",
+        key="pron_btn_abrir_archivo",
+        type="primary" if st.session_state[_CLAVE_MOSTRAR_ARCHIVO] else "secondary",
+        width="stretch",
+        help="Muestra solo el Excel en pantalla (oculta pronóstico y alternativas).",
+        on_click=_activar_vista_archivo,
+    )
     return fuente
+
+
+def _activar_vista_archivo() -> None:
+    """Vista exclusiva: solo el archivo Excel."""
+    st.session_state[_CLAVE_MOSTRAR_ARCHIVO] = True
+
+
+def _cerrar_vista_archivo() -> None:
+    """Al ir a cálculo o una alternativa, se oculta el Excel."""
+    st.session_state[_CLAVE_MOSTRAR_ARCHIVO] = False
+
+
+def _misma_fuente_datos(clave_guardada: tuple, fuente: Fuente) -> bool:
+    """True si el cálculo sigue valiendo: mismo archivo (el mtime puede cambiar al escribir)."""
+    if not clave_guardada:
+        return False
+    nombre_ok = clave_guardada[0] == fuente.nombre
+    # Subido: comparar tamaño del contenido; compartido en disco: solo el nombre.
+    if fuente.contenido is not None:
+        return nombre_ok and clave_guardada[2] == len(fuente.contenido)
+    return nombre_ok and fuente.ruta is not None
 
 
 def _calcular(df: pd.DataFrame, nivel: float | None, clave_fuente: tuple) -> None:
@@ -275,50 +384,100 @@ def _calcular(df: pd.DataFrame, nivel: float | None, clave_fuente: tuple) -> Non
         "hora": datetime.now(),
     }
     st.session_state.pop(_CLAVE_ESCRITURA_PRONOSTICO, None)
-    st.session_state[_CLAVE_MOSTRAR_ARCHIVO] = False
+    st.session_state[_CLAVE_ARCHIVO_TOKEN] = int(st.session_state.get(_CLAVE_ARCHIVO_TOKEN, 0)) + 1
+    _cerrar_vista_archivo()
 
 
 def _calcular_pronostico(df: pd.DataFrame, nivel: float | None, fuente: Fuente) -> None:
     _calcular(df, nivel, fuente.clave)
     st.session_state[_CLAVE_VISTA] = VISTA_PRONOSTICO
+    _cerrar_vista_archivo()
     if fuente.ruta:
-        _escribir_pronostico(fuente)
+        # Forzar escritura + limpiar caché para que «Mostrar archivo» relea el Excel.
+        _escribir_pronostico(fuente, forzar=True)
+    else:
+        st.session_state[_CLAVE_ESCRITURA_PRONOSTICO] = (
+            pexcel.ResultadoEscritura(
+                "error",
+                mensaje=(
+                    "El archivo subido no se escribe en disco. "
+                    "Use el Excel compartido (perfilado.xlsx) o pulse "
+                    "«Actualizar pronóstico en Excel» con ese archivo."
+                ),
+            ),
+            None,
+        )
 
 
-def _escribir_pronostico(fuente: Fuente) -> None:
+def _escribir_pronostico(fuente: Fuente, *, forzar: bool = False) -> None:
     """Pone el pronóstico en la columna «pronostico» del Excel compartido y copia el espejo."""
-    resultado = st.session_state[_CLAVE_RESULTADO]
-    calc = resultado["calc"]
-    escritura = pexcel.escribir_pronostico_excel(dict(zip(calc["codigo"], calc[pc.COL_PRONOSTICO_LRI])), fuente.ruta)
-    st.session_state[_CLAVE_ESCRITURA_PRONOSTICO] = (escritura, None)
-    if escritura.estado != "actualizado":
+    resultado = st.session_state.get(_CLAVE_RESULTADO)
+    if resultado is None or not fuente.ruta:
         return
+    calc = resultado["calc"]
+    escritura = pexcel.escribir_pronostico_excel(
+        dict(zip(calc["codigo"], calc[pc.COL_PRONOSTICO_LRI])),
+        fuente.ruta,
+        forzar=forzar,
+    )
+    # Siempre refrescar caché: «Mostrar archivo» debe releer el Excel de disco.
+    _cargar_demanda.clear()
+    _cargar_hojas.clear()
     espejo = os.path.join(os.path.dirname(fuente.ruta), _ARCHIVO_ESPEJO)
     aviso_espejo = None
-    if os.path.isfile(espejo):
+    if escritura.estado in ("actualizado", "sin cambios") and os.path.isfile(espejo):
         try:
             shutil.copy2(fuente.ruta, espejo)
         except OSError:
-            aviso_espejo = f"No se pudo copiar a {_ARCHIVO_ESPEJO} (¿está abierto?)."
+            aviso_espejo = (
+                f"No se pudo copiar a {_ARCHIVO_ESPEJO} (¿está abierto?). "
+                "perfilado.xlsx sí tiene el pronóstico LRI."
+            )
     st.session_state[_CLAVE_ESCRITURA_PRONOSTICO] = (escritura, aviso_espejo)
+    st.session_state[_CLAVE_ARCHIVO_TOKEN] = int(st.session_state.get(_CLAVE_ARCHIVO_TOKEN, 0)) + 1
+    if escritura.estado not in ("actualizado", "sin cambios"):
+        return
     mtime = os.path.getmtime(fuente.ruta)
     df, _ = _cargar_demanda(None, mtime)
     if df is not None:
         resultado["calc"] = pc.calcular_pronostico(df, resultado["nivel"])
+    # Actualizar clave al mtime nuevo sin invalidar el cálculo (el archivo es el mismo).
     resultado["fuente"] = Fuente(None, fuente.nombre, fuente.ruta, mtime).clave
 
 
+def _actualizar_pronostico_excel(fuente: Fuente) -> None:
+    """Reescribe el último cálculo en perfilado.xlsx (forzado; cerrar Excel si está abierto)."""
+    if st.session_state.get(_CLAVE_RESULTADO) is None:
+        st.session_state[_CLAVE_ESCRITURA_PRONOSTICO] = (
+            pexcel.ResultadoEscritura(
+                "error",
+                mensaje="Primero pulse «📈 Cálculo del pronóstico».",
+            ),
+            None,
+        )
+        return
+    if not fuente.ruta:
+        st.session_state[_CLAVE_ESCRITURA_PRONOSTICO] = (
+            pexcel.ResultadoEscritura(
+                "error",
+                mensaje=(
+                    "Solo se actualiza el Excel compartido en disco (perfilado.xlsx). "
+                    "Quite el archivo subido o use el archivo por defecto."
+                ),
+            ),
+            None,
+        )
+        return
+    _escribir_pronostico(fuente, forzar=True)
+
+
 def _aviso_escritura_pronostico(zona) -> None:
+    """Solo avisa si falló la escritura o la copia al espejo (sin mensaje de éxito)."""
     guardado = st.session_state.get(_CLAVE_ESCRITURA_PRONOSTICO)
     if guardado is None:
         return
     escritura, aviso_espejo = guardado
-    columna = f"columna {escritura.columna}" if escritura.columna else "columna «pronostico»"
-    if escritura.estado == "actualizado":
-        zona.caption(f"✓ Pronóstico escrito en el Excel ({columna}, {escritura.celdas:,} SKUs).")
-    elif escritura.estado == "sin cambios":
-        zona.caption(f"✓ Pronóstico al día en el Excel ({columna}).")
-    else:
+    if escritura.estado not in ("actualizado", "sin cambios"):
         zona.warning(f"No se pudo escribir el pronóstico en el Excel: {escritura.mensaje}")
     if aviso_espejo:
         zona.warning(aviso_espejo)
@@ -326,11 +485,10 @@ def _aviso_escritura_pronostico(zona) -> None:
 
 def _elegir_alternativa(vista: str, df: pd.DataFrame, nivel: float | None, clave_fuente: tuple) -> None:
     st.session_state[_CLAVE_VISTA] = vista
+    _cerrar_vista_archivo()
     resultado = st.session_state.get(_CLAVE_RESULTADO)
-    if resultado is None or resultado["fuente"] != clave_fuente:
+    if resultado is None or (resultado.get("fuente") or (None,))[0] != clave_fuente[0]:
         _calcular(df, nivel, clave_fuente)
-    else:
-        st.session_state[_CLAVE_MOSTRAR_ARCHIVO] = False
 
 
 def _seccion_calculo(df: pd.DataFrame, fuente: Fuente) -> dict | None:
@@ -358,12 +516,16 @@ def _seccion_calculo(df: pd.DataFrame, fuente: Fuente) -> dict | None:
         )
 
     resultado = st.session_state.get(_CLAVE_RESULTADO)
-    if resultado and resultado["fuente"] != fuente.clave:
+    if resultado and not _misma_fuente_datos(resultado.get("fuente"), fuente):
         st.session_state.pop(_CLAVE_RESULTADO)
         resultado = None
+    elif resultado is not None:
+        # El mtime cambia al escribir fill rate / pronóstico; conservar el cálculo.
+        resultado["fuente"] = fuente.clave
 
     st.session_state.setdefault(_CLAVE_VISTA, VISTA_PRONOSTICO)
-    activa = st.session_state[_CLAVE_VISTA] if resultado else None
+    solo_archivo = bool(st.session_state.get(_CLAVE_MOSTRAR_ARCHIVO))
+    activa = None if solo_archivo or resultado is None else st.session_state[_CLAVE_VISTA]
     zona_calculo.markdown("##### Cálculo")
     zona_calculo.button(
         "📈 Cálculo del pronóstico",
@@ -372,18 +534,41 @@ def _seccion_calculo(df: pd.DataFrame, fuente: Fuente) -> dict | None:
         width="stretch",
         help=(
             "Pronóstico = promedio 12 meses + K × σ (K según el fill rate deseado). "
-            "Solo artículos certificados (CV ≤ 30%)."
+            "Solo artículos certificados (CV ≤ 30%). "
+            "Con el Excel compartido, también escribe la columna «pronostico» en perfilado.xlsx. "
+            "Oculta la vista del archivo para mostrar solo el pronóstico."
         ),
         on_click=_calcular_pronostico,
         args=(df, nivel, fuente),
     )
     if resultado is None:
-        zona_calculo.caption("Aún no se ha calculado el pronóstico.")
+        zona_calculo.caption(
+            "Aún no se ha calculado el pronóstico. "
+            "Tras calcular, podrá crear el archivo Excel del pronóstico."
+        )
     else:
         zona_calculo.caption(f"✓ Calculado a las {resultado['hora']:%H:%M} · {len(resultado['calc']):,} SKUs")
         _aviso_escritura_pronostico(zona_calculo)
+        zona_calculo.download_button(
+            "📥 Crear archivo Excel del pronóstico",
+            data=_excel_archivo_pronostico(resultado["calc"], df),
+            file_name=f"pronostico_lri_{resultado['hora']:%Y%m%d_%H%M}.xlsx",
+            mime=_MIME_XLSX,
+            key="pron_dl_archivo_pronostico",
+            type="secondary",
+            width="stretch",
+            help=(
+                "Descarga un Excel con código, descripción, categoría, subcategoría, proveedor, "
+                "nivel de servicio, inventario, variabilidad (CV) y pronóstico LRI."
+            ),
+        )
         if resultado["nivel"] != nivel:
             zona_calculo.warning("Cambiaste el nivel de servicio: vuelve a calcular.")
+        if not fuente.ruta:
+            zona_calculo.caption(
+                "Archivo subido: el cálculo es solo en pantalla. "
+                "Este Excel de pronóstico es independiente del maestro perfilado.xlsx."
+            )
 
     zona_alternativas.markdown("##### Alternativas de cálculo")
     for vista in VISTAS:
@@ -428,7 +613,55 @@ def _para_mostrar(df: pd.DataFrame, es_datos: bool) -> pd.DataFrame:
     return out
 
 
-def _vista_archivo(hojas: dict[str, pd.DataFrame], fuente: Fuente) -> None:
+def _columna_por_nombre_canonico(df: pd.DataFrame, nombre: str) -> str | None:
+    for col in df.columns:
+        if pc._nombre_canonico(str(col)) == nombre:
+            return col
+    return None
+
+
+def _sincronizar_pronostico_en_vista(
+    df_hoja: pd.DataFrame, calc: pd.DataFrame
+) -> tuple[pd.DataFrame, int]:
+    """
+    En la tabla en pantalla, sustituye «pronostico» (y «pronostico ajustado»)
+    con el LRI del último cálculo, alineado por código. Se «cae encima» de los
+    valores anteriores del Excel para que «Mostrar archivo» muestre el cálculo actual.
+    """
+    out = df_hoja.copy()
+    col_cod = _columna_por_nombre_canonico(out, "codigo")
+    col_pron = _columna_por_nombre_canonico(out, pc.COL_PRONOSTICO)
+    if col_cod is None or col_pron is None or calc is None or calc.empty:
+        return out, 0
+    mapa = {
+        pexcel.normalizar_codigo(c): float(v)
+        for c, v in zip(calc["codigo"], calc[pc.COL_PRONOSTICO_LRI])
+        if np.isfinite(v)
+    }
+    if not mapa:
+        return out, 0
+    codigos = out[col_cod].map(pexcel.normalizar_codigo)
+    nuevos = codigos.map(mapa)
+    mask = nuevos.notna()
+    n = int(mask.sum())
+    if n == 0:
+        return out, 0
+    # Forzar dtype numérico: si la columna venía mixta, el assign a veces no se ve.
+    out[col_pron] = pd.to_numeric(out[col_pron], errors="coerce")
+    out.loc[mask, col_pron] = nuevos.loc[mask].to_numpy(dtype=float)
+    col_aj = _columna_por_nombre_canonico(out, pc.COL_PRONOSTICO_AJUSTADO)
+    if col_aj is not None:
+        out[col_aj] = pd.to_numeric(out[col_aj], errors="coerce")
+        out.loc[mask, col_aj] = nuevos.loc[mask].to_numpy(dtype=float)
+    out = out.rename(columns={col_pron: f"{col_pron} · LRI actualizado"})
+    return out, n
+
+
+def _vista_archivo(
+    hojas: dict[str, pd.DataFrame],
+    fuente: Fuente,
+    calc: pd.DataFrame | None = None,
+) -> None:
     nombres = list(hojas)
     col_hoja, col_info = st.columns([1, 3], vertical_alignment="center")
     with col_hoja:
@@ -439,27 +672,29 @@ def _vista_archivo(hojas: dict[str, pd.DataFrame], fuente: Fuente) -> None:
         )
     es_datos = str(hoja).strip().lower() == pc.HOJA_DATOS
     crudo = pc.agregar_fill_rate(hojas[hoja]) if es_datos else hojas[hoja]
+    n_sync = 0
+    if es_datos and calc is not None:
+        crudo, n_sync = _sincronizar_pronostico_en_vista(crudo, calc)
     tabla = _para_mostrar(crudo, es_datos)
-
-    usadas = [c for c in tabla.columns if es_datos and pc.es_columna_pronostico(c)]
-    calculadas = [c for c in tabla.columns if es_datos and c == pc.COL_FILL_RATE]
+    n_usadas = sum(1 for c in tabla.columns if es_datos and pc.es_columna_pronostico(c))
     resumen = f"**{fuente.nombre}** · {len(tabla):,} filas · {tabla.shape[1]:,} columnas"
     if es_datos:
-        resumen += (
-            f" · 🟩 {len(usadas)} que usa el pronóstico"
-            f" · 🟦 «{pc.COL_FILL_RATE}» (después de EVAI, se actualiza al cargar según la clase)"
-        )
+        resumen += f" · {n_usadas} columnas de demanda / atributo"
+        if n_sync:
+            resumen += f" · «pronostico» = LRI ({n_sync:,} SKUs)"
     col_info.caption(resumen)
 
-    estilo = tabla.style.format(precision=2, thousands=",", na_rep="")
-    if usadas:
-        estilo = estilo.set_properties(subset=usadas, **{"background-color": _COLOR_COLUMNA_USADA})
-    if calculadas:
-        estilo = estilo.format("{:.1%}", subset=calculadas, na_rep="").set_properties(
-            subset=calculadas, **{"background-color": _COLOR_COLUMNA_CALCULADA}
+    # height fijo en px + DataFrame sin Styler: el scroll es interno al marco
+    # (barra horizontal al pie, visible sin bajar miles de filas).
+    token = int(st.session_state.get(_CLAVE_ARCHIVO_TOKEN, 0))
+    with st.container(key=f"{_CLAVE_CONTENEDOR_TABLA}_{token}"):
+        st.dataframe(
+            tabla,
+            width="stretch",
+            height=_ALTURA_TABLA_ARCHIVO_PX,
+            hide_index=True,
+            key=f"pron_df_archivo_{token}_{n_sync}",
         )
-    with st.container(key=_CLAVE_CONTENEDOR_TABLA):
-        st.dataframe(estilo, width="stretch", height="stretch", hide_index=True)
 
 
 def _etiqueta_sku(fila: pd.Series) -> str:
@@ -480,6 +715,31 @@ def _excel_bytes(df: pd.DataFrame) -> bytes:
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         df.rename(columns=_ETIQUETAS).to_excel(writer, sheet_name="pronostico", index=False)
+    return buffer.getvalue()
+
+
+def _tabla_archivo_pronostico(calc: pd.DataFrame, df: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Hoja de entrega: código, descripción, cat/subcat/proveedor, nivel, inventario, variabilidad, pronóstico."""
+    out = calc.copy()
+    if df is not None:
+        for col in ("inventario final bulto", "inventario promedio bultos"):
+            if col in df.columns:
+                out[col] = df.reindex(out.index)[col]
+    columnas = [c for c in _COLUMNAS_ARCHIVO_PRONOSTICO if c in out.columns]
+    tabla = out[columnas].sort_values(pc.COL_PRONOSTICO_LRI, ascending=False, na_position="last")
+    return tabla.rename(columns=_ETIQUETAS_ARCHIVO_PRONOSTICO)
+
+
+def _excel_archivo_pronostico(calc: pd.DataFrame, df: pd.DataFrame | None = None) -> bytes:
+    """Bytes .xlsx del archivo de pronóstico (impresión / entrega)."""
+    buffer = io.BytesIO()
+    hoja = _tabla_archivo_pronostico(calc, df)
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        hoja.to_excel(writer, sheet_name="pronostico", index=False)
+        # Hoja aparte solo certificados (los que tienen LRI).
+        if pc.COL_PRONOSTICO_LRI in calc.columns:
+            cert = hoja[hoja["Pronóstico LRI"].notna()] if "Pronóstico LRI" in hoja.columns else hoja
+            cert.to_excel(writer, sheet_name="con pronostico LRI", index=False)
     return buffer.getvalue()
 
 
@@ -557,6 +817,7 @@ def _grafico_cv_por_sku(calc: pd.DataFrame, limite: float) -> None:
         legend_title_text="",
     )
     _barras_delgadas(fig, len(graf))
+    _estilo_fondo_plotly(fig)
     st.plotly_chart(fig, width="stretch")
 
 
@@ -607,6 +868,7 @@ def _grafico_dispersion_sku(fila: pd.Series, serie: np.ndarray, meses: list[str]
         yaxis_title="Demanda (unidades)",
     )
     _barras_delgadas(fig, len(etiquetas))
+    _estilo_fondo_plotly(fig)
     st.plotly_chart(fig, width="stretch")
     st.caption(
         f"Mínimo {r.minimo:,.0f} · Máximo {r.maximo:,.0f} · Desviación {r.desviacion:,.1f} · "
@@ -862,17 +1124,21 @@ def _tabla_pronostico_sku(pron: pd.DataFrame) -> pd.DataFrame:
     return pron[columnas].sort_values(pc.COL_PRONOSTICO_LRI, ascending=False).rename(columns=_ETIQUETAS)
 
 
-def _mostrar_pronostico_sku(pron: pd.DataFrame, altura: int | str = "auto") -> None:
+def _mostrar_pronostico_sku(pron: pd.DataFrame) -> None:
+    """Tabla de pronóstico con altura fija: barra horizontal siempre en pantalla."""
     tabla = _tabla_pronostico_sku(pron)
     formato = {_ETIQUETAS.get(k, k): v for k, v in _FORMATO_TABLA.items() if _ETIQUETAS.get(k, k) in tabla.columns}
-    st.dataframe(
-        tabla.style.format(formato, na_rep="—").set_properties(
-            subset=[_ETIQUETAS[pc.COL_PRONOSTICO_LRI]], **_ESTILO_PRONOSTICO
-        ),
-        width="stretch",
-        height=altura,
-        hide_index=True,
+    estilo = tabla.style.format(formato, na_rep="—").set_properties(
+        subset=[_ETIQUETAS[pc.COL_PRONOSTICO_LRI]], **_ESTILO_PRONOSTICO
     )
+    with st.container(key=_CLAVE_CONTENEDOR_PRON):
+        st.dataframe(
+            estilo,
+            width="stretch",
+            height=_ALTURA_TABLA_PRONOSTICO_PX,
+            hide_index=True,
+            key="pron_df_pronostico_sku",
+        )
 
 
 def _clave_grupo(nivel: str) -> str:
@@ -930,16 +1196,16 @@ def _grafico_pronostico_skus(skus: pd.DataFrame, titulo: str) -> None:
                 customdata=datos, hovertemplate=plantilla)
     fig.update_layout(
         barmode="stack",
-        height=300,
-        title=f"Pronóstico mensual por SKU · {titulo} (mayor a menor)",
-        title_font_size=14,
-        margin=dict(t=36, b=0, l=0, r=0),
+        height=520,
+        title=dict(text=f"Pronóstico mensual por SKU · {titulo}", font=dict(size=13)),
+        margin=dict(t=40, b=8, l=8, r=8),
         xaxis=dict(type="category", categoryorder="array", categoryarray=x, showticklabels=len(graf) <= 40, tickangle=-45),
         yaxis_title="Unidades / mes",
-        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1, traceorder="normal"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, traceorder="normal", font=dict(size=11)),
     )
     _barras_delgadas(fig, len(graf))
-    st.plotly_chart(fig, width="stretch")
+    _estilo_fondo_plotly(fig)
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 
 def _reporte_pedido(skus: pd.DataFrame, excluidos: pd.DataFrame) -> bytes:
@@ -954,96 +1220,102 @@ def _vista_pronostico(calc: pd.DataFrame) -> None:
     pron = calc[np.isfinite(calc[pc.COL_PRONOSTICO_LRI].to_numpy(dtype=float))]
     excluidos = calc.drop(index=pron.index)
 
-    col_titulo, col_nivel = st.columns([3, 2], vertical_alignment="bottom")
-    col_titulo.subheader("Pronóstico mensual")
-    niveles = [n for n, col in _NIVELES_CERTIFICACION.items() if col is None or col in calc.columns]
-    if st.session_state.get(_CLAVE_NIVEL_PRONOSTICO) not in niveles:
-        st.session_state[_CLAVE_NIVEL_PRONOSTICO] = niveles[0]
-    col_nivel.segmented_control(
-        "Ver por",
-        niveles,
-        key=_CLAVE_NIVEL_PRONOSTICO,
-        label_visibility="collapsed",
-        on_change=_cambiar_nivel_pronostico,
-    )
-    nivel = st.session_state.get(_CLAVE_NIVEL_PRONOSTICO) or niveles[0]
-    claves_k = " · ".join(
-        f"{clase} {fill:.1%} → K {pc.factor_k([fill])[0]:.2f}" for clase, fill in pc.FILL_RATE_POR_CLASE.items()
-    )
-    st.caption(
-        "**Pronóstico = promedio de los 12 meses + K × σ** · σ = desviación estándar de los 12 meses · "
-        f"K = factor de seguridad según el fill rate deseado de la clase ({claves_k}). "
-        f"Solo artículos certificados (CV ≤ {limite:.0%})."
-    )
-    if pron.empty:
-        st.warning("Ningún SKU certificado con los filtros actuales.")
-        return
-
-    if _NIVELES_CERTIFICACION[nivel] is None:
-        skus, excl, titulo = pron, excluidos, "Todos los SKUs"
-        st.markdown(f"##### {titulo}")
-    else:
-        clave = _clave_grupo(nivel)
-        if st.session_state.get(clave) not in set(_grupos(pron, nivel)):
-            st.session_state[clave] = None
-        if st.session_state.pop(_CLAVE_ABRIR_GRUPO, False):
-            _dialogo_grupo_pronostico(pron, nivel)
-        grupo = st.session_state.get(clave)
-        col_sel, col_boton = st.columns([3, 1], vertical_alignment="center")
-        col_boton.button(
-            f"🔎 Elegir {nivel.lower()}",
-            key="pron_btn_elegir_grupo",
-            on_click=_abrir_panel_grupo,
-            width="stretch",
+    with st.container(key="pron_vista_pron"):
+        col_titulo, col_nivel, col_buscar = st.columns([1.4, 2.2, 1.6], vertical_alignment="bottom")
+        col_titulo.markdown("#### Pronóstico mensual")
+        niveles = [n for n, col in _NIVELES_CERTIFICACION.items() if col is None or col in calc.columns]
+        if st.session_state.get(_CLAVE_NIVEL_PRONOSTICO) not in niveles:
+            st.session_state[_CLAVE_NIVEL_PRONOSTICO] = niveles[0]
+        col_nivel.segmented_control(
+            "Ver por",
+            niveles,
+            key=_CLAVE_NIVEL_PRONOSTICO,
+            label_visibility="collapsed",
+            on_change=_cambiar_nivel_pronostico,
         )
-        if grupo is None:
-            col_sel.info(f"Elige {_articulo_nivel(nivel)} para ver sus artículos con pronóstico.")
+        buscar = col_buscar.text_input(
+            "Buscar código",
+            key="pron_buscar_codigo",
+            placeholder="Código",
+            label_visibility="collapsed",
+            help="Filtra gráfico y tabla por código.",
+        )
+        nivel = st.session_state.get(_CLAVE_NIVEL_PRONOSTICO) or niveles[0]
+        if pron.empty:
+            st.warning("Ningún SKU certificado con los filtros actuales.")
             return
-        skus = pron[_grupos(pron, nivel) == grupo]
-        excl = excluidos[_grupos(excluidos, nivel) == grupo]
-        titulo = f"{nivel}: {grupo}"
-        col_sel.markdown(f"##### {titulo}")
 
-    promedio = float(skus["pronostico calc"].sum())
-    total = float(skus[pc.COL_PRONOSTICO_LRI].sum())
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("SKUs con pronóstico", f"{len(skus):,}")
-    c2.metric(
-        "⚠️ Excluidos",
-        f"{len(excl):,}",
-        "Sin política aún",
-        delta_color="off",
-        help="No certificados (CV mayor a 30%): sin pronóstico hasta definir su política.",
-        delta_arrow="off",
-    )
-    c3.metric("Promedio 12 meses (mes)", f"{promedio:,.0f}")
-    c4.metric(
-        "Pronóstico (mes)",
-        f"{total:,.0f}",
-        f"+{total - promedio:,.0f} por K × σ",
-        delta_color="off",
-        delta_arrow="off",
-    )
-
-    _grafico_pronostico_skus(skus, titulo)
-    _mostrar_pronostico_sku(skus, altura=420 if len(skus) > 12 else "auto")
-
-    if not excl.empty:
-        with st.expander(f"⚠️ Artículos excluidos del pronóstico ({len(excl):,}) · pendientes de política"):
-            st.caption(
-                f"CV mayor a {limite:.0%}: no se les calcula pronóstico hasta definir su política "
-                "(por el usuario o por la AI)."
+        if _NIVELES_CERTIFICACION[nivel] is None:
+            skus, excl, titulo = pron, excluidos, "Todos los SKUs"
+        else:
+            clave = _clave_grupo(nivel)
+            if st.session_state.get(clave) not in set(_grupos(pron, nivel)):
+                st.session_state[clave] = None
+            if st.session_state.pop(_CLAVE_ABRIR_GRUPO, False):
+                _dialogo_grupo_pronostico(pron, nivel)
+            grupo = st.session_state.get(clave)
+            col_sel, col_boton = st.columns([3, 1], vertical_alignment="center")
+            col_boton.button(
+                f"🔎 Elegir {nivel.lower()}",
+                key="pron_btn_elegir_grupo",
+                on_click=_abrir_panel_grupo,
+                width="stretch",
             )
-            _tabla_certificacion(excl)
+            if grupo is None:
+                col_sel.info(f"Elige {_articulo_nivel(nivel)} para ver sus artículos con pronóstico.")
+                return
+            skus = pron[_grupos(pron, nivel) == grupo]
+            excl = excluidos[_grupos(excluidos, nivel) == grupo]
+            titulo = f"{nivel}: {grupo}"
+            col_sel.caption(titulo)
 
-    if st.session_state.get(_CLAVE_MOSTRAR_REPORTES):
-        st.download_button(
-            f"📥 Artículos a pedir · {titulo} (Excel)",
-            data=_reporte_pedido(skus, excl),
-            file_name=f"{_nombre_archivo(f'pronostico {titulo}')}.xlsx",
-            mime=_MIME_XLSX,
-            help="SKUs con descripción, clase, fill rate, K, promedio, σ, CV, K × σ y pronóstico (mayor a menor).",
+        if buscar.strip():
+            q = pexcel.normalizar_codigo(buscar.strip()).lower()
+            mask = skus["codigo"].map(lambda c: q in pexcel.normalizar_codigo(c).lower())
+            skus = skus[mask]
+            excl = excl[excl["codigo"].map(lambda c: q in pexcel.normalizar_codigo(c).lower())]
+            if skus.empty and excl.empty:
+                st.warning(f"Ningún SKU coincide con «{buscar.strip()}».")
+                return
+
+        promedio = float(skus["pronostico calc"].sum()) if not skus.empty else 0.0
+        total = float(skus[pc.COL_PRONOSTICO_LRI].sum()) if not skus.empty else 0.0
+        st.caption(
+            f"**{titulo}** · {len(skus):,} SKUs · "
+            f"excl. {len(excl):,} · "
+            f"promedio {promedio:,.0f} · "
+            f"pronóstico {total:,.0f}"
+            + (f" (+{total - promedio:,.0f} K×σ)" if total > promedio else "")
         )
+        if len(skus) == 1:
+            fila = skus.iloc[0]
+            fr = fila.get(pc.COL_FILL_RATE)
+            fr_txt = f"{float(fr):.1%}" if fr is not None and np.isfinite(fr) else "—"
+            st.caption(
+                f"{fila['codigo']} · LRI **{fila[pc.COL_PRONOSTICO_LRI]:,.1f}** · "
+                f"clase {fila.get('clase', '—')} · fill {fr_txt}"
+            )
+
+        if skus.empty:
+            st.info("Sin SKUs certificados en este filtro.")
+            return
+
+        _grafico_pronostico_skus(skus, titulo)
+        _mostrar_pronostico_sku(skus)
+
+        if not excl.empty:
+            with st.expander(f"⚠️ Excluidos ({len(excl):,}) · pendientes de política"):
+                st.caption(f"CV > {limite:.0%}: sin pronóstico hasta definir política.")
+                _tabla_certificacion(excl)
+
+        if st.session_state.get(_CLAVE_MOSTRAR_REPORTES):
+            st.download_button(
+                f"📥 Artículos a pedir · {titulo} (Excel)",
+                data=_reporte_pedido(skus, excl),
+                file_name=f"{_nombre_archivo(f'pronostico {titulo}')}.xlsx",
+                mime=_MIME_XLSX,
+                help="SKUs con descripción, clase, fill rate, K, promedio, σ, CV, K × σ y pronóstico.",
+            )
 
 
 def _vista_serie(df: pd.DataFrame, calc: pd.DataFrame, meses: list[str]) -> None:
@@ -1073,6 +1345,7 @@ def _vista_serie(df: pd.DataFrame, calc: pd.DataFrame, meses: list[str]) -> None
     fig.add_hline(y=fila["pronostico calc"], line=dict(color=COLOR_PRONOSTICO, dash="dash"), annotation_text="Pronóstico")
     fig.add_hline(y=fila["pronostico ajustado calc"], line=dict(color=COLOR_AJUSTADO, dash="dash"), annotation_text="Pronóstico ajustado")
     fig.update_layout(xaxis_title="Mes", yaxis_title="Demanda (bultos)", hovermode="x unified", margin=dict(t=30))
+    _estilo_fondo_plotly(fig)
     st.plotly_chart(fig, width="stretch")
 
     resultados = pc.comparar_metodos(serie, ventana=ventana, alpha=alpha)
@@ -1115,92 +1388,216 @@ def _vista_estacionalidad(df: pd.DataFrame) -> None:
     fig = px.line(largo, x="mes", y="indice", color="grupo", markers=True)
     fig.add_hline(y=1.0, line=dict(color="gray", dash="dot"))
     fig.update_layout(yaxis_title="Índice (1.0 = mes promedio)", xaxis_title="", margin=dict(t=30))
+    _estilo_fondo_plotly(fig)
     st.plotly_chart(fig, width="stretch")
     st.dataframe(indices.style.format("{:.2f}"), width="stretch")
     st.caption("Con un solo año de historia el índice es indicativo; se confirma con más años.")
 
 
 def _vista_normal(df: pd.DataFrame, calc: pd.DataFrame, meses: list[str]) -> None:
-    st.subheader("Distribución normal de la demanda")
-    etiquetas = {_etiqueta_sku(f): i for i, f in calc.iterrows()}
-    elegido = st.selectbox("SKU", list(etiquetas), key="sku_normal")
+    """Simulación Monte Carlo (@RISK): gráfico → probabilidad → bultos | delimitadores."""
+    del meses  # ya no se muestra el histograma de meses reales
+    st.subheader("Simulación Monte Carlo")
+    col_sku, _ = st.columns([2, 3])
+    with col_sku:
+        etiquetas = {_etiqueta_sku(f): i for i, f in calc.iterrows()}
+        elegido = st.selectbox("SKU", list(etiquetas), key="sku_normal", label_visibility="collapsed")
     idx = etiquetas[elegido]
     fila = calc.loc[idx]
     media, desv, nivel = fila["pronostico calc"], fila["desviacion calc"], fila["nivel servicio"]
     if not (np.isfinite(desv) and desv > 0):
         st.warning("El SKU no tiene variabilidad suficiente para una distribución normal.")
         return
-    dist = NormalDist(media, desv)
-    xs = np.linspace(max(0.0, media - 4 * desv), media + 4 * desv, 300)
-    ys = [dist.pdf(v) for v in xs]
-    corte = fila["pronostico ajustado calc"]
+    corte = float(fila["pronostico ajustado calc"])
 
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", name="Normal", line=dict(color=COLOR_REAL)))
-    zona = xs <= corte
-    fig.add_trace(go.Scatter(x=xs[zona], y=np.array(ys)[zona], fill="tozeroy", mode="none", name=f"Cubierto {nivel:.0%}", fillcolor="rgba(34,197,94,0.3)"))
-    fig.add_trace(go.Histogram(x=df.loc[idx, meses].astype(float), histnorm="probability density", name="Meses reales", opacity=0.35, marker_color="#64748b"))
-    fig.add_vline(x=corte, line=dict(color=COLOR_AJUSTADO, dash="dash"), annotation_text="Pronóstico ajustado")
-    fig.update_layout(xaxis_title="Demanda mensual (bultos)", yaxis_title="Densidad", margin=dict(t=30), barmode="overlay")
+    clave_val = "pron_demanda_consulta_bultos"
+    clave_izq = "pron_delimitador_izq"
+    clave_sku = "pron_demanda_consulta_sku"
+    if st.session_state.get(clave_sku) != elegido or clave_val not in st.session_state:
+        st.session_state[clave_val] = float(round(corte))
+        st.session_state[clave_izq] = 0.0
+        st.session_state[clave_sku] = elegido
+
+    def _aplicar_bultos(valor: float) -> None:
+        st.session_state[clave_val] = max(0.0, float(valor))
+
+    def _desde_slider_bultos() -> None:
+        _aplicar_bultos(st.session_state["pron_sl_demanda_bultos"])
+
+    def _desde_slider_prob() -> None:
+        _aplicar_bultos(
+            bultos_desde_probabilidad(media, desv, float(st.session_state["pron_sl_prob_objetivo"]))
+        )
+
+    def _desde_rango() -> None:
+        lo, hi = st.session_state["pron_sl_rango_delimitadores"]
+        st.session_state[clave_izq] = float(min(lo, hi))
+        _aplicar_bultos(float(max(lo, hi)))
+
+    tope_slider = float(max(media + 5.0 * desv, float(st.session_state[clave_val]), corte, 300.0))
+    consulta = float(st.session_state[clave_val])
+    p_sync = probabilidad_desde_bultos(media, desv, consulta)
+    if not np.isfinite(p_sync):
+        p_sync = float(nivel) if np.isfinite(nivel) else 0.8
+    p_sync = float(min(max(p_sync, 0.001), 0.999))
+
+    st.session_state["pron_sl_demanda_bultos"] = float(min(max(0.0, consulta), tope_slider))
+    st.session_state["pron_sl_prob_objetivo"] = p_sync
+
+    eje = rango_eje_x_demanda(media, desv, consulta)
+    x_min_eje = min(float(eje[0]), 0.0)
+    x_max_eje = max(float(eje[-1]), consulta, media + 4 * desv)
+    st.session_state.setdefault(clave_izq, 0.0)
+    x_izq = float(st.session_state[clave_izq])
+    if x_izq > consulta:
+        x_izq = max(0.0, min(x_izq, consulta))
+        st.session_state[clave_izq] = x_izq
+    st.session_state["pron_sl_rango_delimitadores"] = (
+        float(min(max(x_min_eje, x_izq), x_max_eje)),
+        float(min(max(x_min_eje, consulta), x_max_eje)),
+    )
+
+    p_izq, p_centro, p_der, x_lo, x_hi = zonas_probabilidad_delimitadores(
+        media, desv, x_izq, consulta
+    )
+
+    st.markdown(
+        f"""
+        <div style="display:flex;width:100%;max-width:720px;border-radius:5px;overflow:hidden;
+        font-weight:600;font-size:0.8rem;text-align:center;margin:0.15rem 0 0.4rem 0;">
+          <div style="flex:{max(p_izq, 0.001):.4f};background:#FED7AA;color:#9A3412;padding:0.28rem 0.2rem;">
+            {p_izq:.1%}
+          </div>
+          <div style="flex:{max(p_centro, 0.001):.4f};background:#EA580C;color:#fff;padding:0.28rem 0.2rem;">
+            {p_centro:.1%}
+          </div>
+          <div style="flex:{max(p_der, 0.001):.4f};background:#FED7AA;color:#9A3412;padding:0.28rem 0.2rem;">
+            {p_der:.1%}
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    centers, heights, width = discretizar_normal_barras(
+        media, desv, x_min_eje, x_max_eje, n_bins=52
+    )
+    colores = colores_barras_zonas(centers, x_lo, x_hi)
+    fig = go.Figure(
+        go.Bar(
+            x=centers,
+            y=heights,
+            width=width * 0.92,
+            marker=dict(color=colores, line=dict(width=0)),
+            name="Densidad normal",
+            hovertemplate="Demanda %{x:.0f} bultos<br>Densidad %{y:.5f}<extra></extra>",
+        )
+    )
+    fig.add_vline(x=x_lo, line=dict(color="#1E293B", width=2), annotation_text=f"{x_lo:,.0f}")
+    fig.add_vline(x=x_hi, line=dict(color="#EA580C", width=2), annotation_text=f"{x_hi:,.0f}")
+    fig.update_layout(
+        xaxis_title="Demanda mensual (bultos)",
+        yaxis_title="Densidad",
+        margin=dict(t=28, b=36),
+        showlegend=False,
+        bargap=0.05,
+        xaxis_range=[x_min_eje, x_max_eje],
+        height=380,
+    )
+    _estilo_fondo_plotly(fig)
     st.plotly_chart(fig, width="stretch")
 
-    consulta = st.number_input("¿Probabilidad de que la demanda no supere…? (bultos)", min_value=0.0, value=float(round(corte)))
-    st.metric("Probabilidad", f"{dist.cdf(consulta):.1%}")
+    st.caption(
+        f"Cola izq. {p_izq:.1%} · Centro {p_centro:.1%} · Cola der. {p_der:.1%} · "
+        f"ref. ajustado {corte:,.1f} · nivel Excel {nivel:.0%}"
+    )
 
-
-def _vista_montecarlo(calc: pd.DataFrame) -> None:
-    st.subheader("Simulación Monte Carlo")
-    etiquetas = {_etiqueta_sku(f): i for i, f in calc.iterrows()}
-    elegido = st.selectbox("SKU", list(etiquetas), key="sku_mc")
-    fila = calc.loc[etiquetas[elegido]]
-    c1, c2 = st.columns(2)
-    n = c1.select_slider("Simulaciones", options=[1_000, 5_000, 10_000, 50_000], value=10_000)
-    semilla = c2.number_input("Semilla", min_value=0, value=42, step=1)
-    sim = pc.simular_montecarlo(fila["pronostico calc"], fila["desviacion calc"], n, int(semilla))
-    corte = fila["pronostico ajustado calc"]
-
-    p50, p90, p95 = np.percentile(sim, [50, 90, 95])
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Media simulada", f"{sim.mean():,.1f}")
-    c2.metric("P50 / P90", f"{p50:,.0f} / {p90:,.0f}")
-    c3.metric("P95", f"{p95:,.0f}")
-    c4.metric("Cobertura del pronóstico ajustado", f"{(sim <= corte).mean():.1%}", f"objetivo {fila['nivel servicio']:.0%}")
-
-    fig = px.histogram(x=sim, nbins=60, labels={"x": "Demanda mensual simulada (bultos)"})
-    fig.update_traces(marker_color=COLOR_REAL, opacity=0.8)
-    fig.add_vline(x=corte, line=dict(color=COLOR_AJUSTADO, dash="dash"), annotation_text="Pronóstico ajustado")
-    fig.update_layout(yaxis_title="Frecuencia", margin=dict(t=30))
-    st.plotly_chart(fig, width="stretch")
+    with st.container(key="pron_risk_controles"):
+        # 1) Probabilidad a todo el ancho, justo debajo del gráfico
+        st.slider(
+            "Probabilidad P(demanda ≤ x)",
+            min_value=0.001,
+            max_value=0.999,
+            step=0.001,
+            format="%.3f",
+            key="pron_sl_prob_objetivo",
+            on_change=_desde_slider_prob,
+        )
+        # 2) Bultos y delimitadores al mismo nivel
+        col_bultos, col_delim = st.columns(2)
+        with col_bultos:
+            st.slider(
+                "Bultos",
+                min_value=0.0,
+                max_value=tope_slider,
+                step=1.0,
+                key="pron_sl_demanda_bultos",
+                on_change=_desde_slider_bultos,
+            )
+        with col_delim:
+            st.slider(
+                "Delimitadores",
+                min_value=float(x_min_eje),
+                max_value=float(x_max_eje),
+                step=1.0,
+                key="pron_sl_rango_delimitadores",
+                on_change=_desde_rango,
+            )
 
 
 def main() -> None:
     st.markdown(
-        "#### 📈 LRI Forecast Pro "
-        "<span style='font-size:0.8rem;font-weight:400;opacity:0.7'>"
-        "· Módulo 1 · Pronóstico de demanda sobre el archivo compartido de LRI</span>",
+        '<div class="lri-fc-header">'
+        "<h4>📈 LRI Forecast Pro "
+        '<span class="lri-fc-sub">'
+        "· Módulo 1 · Pronóstico de demanda sobre el archivo compartido de LRI</span></h4>"
+        "</div>",
         unsafe_allow_html=True,
     )
 
     fuente = _seccion_archivo()
-    hojas, err_hojas = _cargar_hojas(fuente.contenido, fuente.mtime)
-    df, err = _cargar_demanda(fuente.contenido, fuente.mtime)
+    # Si acabamos de escribir el Excel, releer con el mtime nuevo (no el de la fuente previa).
+    mtime_lectura = fuente.mtime
+    if fuente.ruta and os.path.isfile(fuente.ruta):
+        mtime_lectura = os.path.getmtime(fuente.ruta)
+    hojas, err_hojas = _cargar_hojas(fuente.contenido, mtime_lectura)
+    df, err = _cargar_demanda(fuente.contenido, mtime_lectura)
     if err or df is None:
         st.error(err or err_hojas or "No se pudieron cargar los datos.")
         st.stop()
 
     resultado = _seccion_calculo(df, fuente)
 
-    vista = st.session_state[_CLAVE_VISTA]
+    # Tras calcular/escribir: releer el Excel para que «Mostrar archivo» no use una copia vieja.
+    if (
+        fuente.ruta
+        and os.path.isfile(fuente.ruta)
+        and st.session_state.get(_CLAVE_ESCRITURA_PRONOSTICO) is not None
+    ):
+        mtime_lectura = os.path.getmtime(fuente.ruta)
+        _cargar_hojas.clear()
+        hojas, err_hojas = _cargar_hojas(None, mtime_lectura)
 
-    if st.session_state[_CLAVE_MOSTRAR_ARCHIVO]:
+    vista = st.session_state.get(_CLAVE_VISTA, VISTA_PRONOSTICO)
+    if vista in _VISTAS_LEGACY:
+        vista = _VISTAS_LEGACY[vista]
+        st.session_state[_CLAVE_VISTA] = vista
+
+    # Una sola vista a la vez: archivo XOR pronóstico/alternativa.
+    if st.session_state.get(_CLAVE_MOSTRAR_ARCHIVO):
         if hojas:
-            _vista_archivo(hojas, fuente)
+            calc_vista = resultado["calc"] if resultado is not None else None
+            _vista_archivo(hojas, fuente, calc=calc_vista)
         else:
             st.error(err_hojas or "No se pudo leer el archivo completo.")
-        if resultado is not None:
-            st.divider()
+        return
 
     if resultado is None:
+        st.info(
+            "Pulse **📈 Cálculo del pronóstico** para ver el resultado, "
+            "**📁 Abrir archivo** para ver solo el Excel, "
+            "o una alternativa de cálculo en el panel lateral."
+        )
         return
 
     st.sidebar.subheader("Filtros")
@@ -1215,14 +1612,12 @@ def main() -> None:
         _vista_pronostico(calc)
     elif vista == "Certificación":
         _vista_certificacion(df_f, calc, meses, nivel_override=resultado["nivel"] is not None)
+    elif vista == "Simulación Monte Carlo":
+        _vista_normal(df_f, calc, meses)
     elif vista == "Serie por SKU":
         _vista_serie(df_f, calc, meses)
     elif vista == "Estacionalidad":
         _vista_estacionalidad(df_f)
-    elif vista == "Distribución normal":
-        _vista_normal(df_f, calc, meses)
-    elif vista == "Monte Carlo":
-        _vista_montecarlo(calc)
 
 
 main()

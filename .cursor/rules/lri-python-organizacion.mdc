@@ -90,9 +90,33 @@ OpenAI **nunca** calcula sobre filas ni genera imágenes; el resultado oficial e
 | Archivo | Rol |
 |---------|-----|
 | `profile1.py` | **Producción / Render** |
+| `ui_theme_executive.py` | Tema visual local opcional (no sustituye `profile1` en deploy) |
 | `profile2.py` | Laboratorio (ChatGPT cruces); no sustituye `profile1` en deploy |
 | `analisis_chatgpt_profile.py` | Interpretación de matriz de cruces (lab) |
 | `matriz_perfilado_actual.json` | Matriz X/Y regenerable del Excel |
+
+## Paleta visual LRI — Premium Dark Blue (oficial 2026-10-20)
+
+Misma base para Forecast Pro, Profile Pro e Inventory Pro (solo apariencia).
+
+| Uso | Hex |
+|-----|-----|
+| Fondo general | `#040E1A` |
+| Fondo interfaz / Plotly | `#051426` |
+| Fondo sidebar | `#041C38` |
+| Sidebar secundario / hover | `#053560` |
+| Contenedores | `#061C36` |
+| Tablas | `#05182C` |
+| Encabezados tabla / botón normal | `#052A4A` |
+| Filas alternas | `#07223C` |
+| Azul corporativo / activo | `#008DFF` |
+| Azul resaltado | `#00B7FF` |
+| Bordes | `#065A94` |
+| Texto | `#FFFFFF` |
+| Texto secundario | `#C5D8E8` |
+| Botón Cálculo (verde) | `#779d40` |
+
+Fuente CSS: `modules/pronostico/forecast_theme.css`. Barras de pronóstico (datos): verde `#22c55e` / rojo `#ef4444` — no son colores de tema.
 
 ## Forecast Pro (`modules/pronostico/`) — Módulo 1 (de inicio)
 
@@ -103,7 +127,8 @@ se habilitan después en el orden que indique el usuario.
 
 | Archivo | Resultado |
 |---------|-----------|
-| `pronostico_app.py` | Panel lateral en orden fijo (formato Profile Pro): 1) 📁 Cargar datos, 2) casilla «Mostrar archivo», 3) botón «📈 Cálculo del pronóstico» (estilo botones de Inventarios), 4) «Alternativas de cálculo» como botones verticales con ícono (Certificación, Serie por SKU, Estacionalidad, Distribución normal, Monte Carlo), 5) casilla «📥 Mostrar reportes (Excel)» (los reportes solo se muestran si se piden), 6) ⚙️ Nivel de servicio plegable, 7) 🎨 Gráficos plegable (slider «Ancho de barras»), 8) filtros |
+| `pronostico_app.py` | Panel lateral: 1) 📁 Cargar datos, 2) «Abrir archivo» (vista exclusiva del Excel), 3) «📈 Cálculo del pronóstico» + «📥 Crear archivo Excel del pronóstico», 4) Alternativas (Certificación, Simulación Monte Carlo @RISK, Serie por SKU, Estacionalidad). Una sola vista a la vez: archivo XOR cálculo/alternativa. |
+| `forecast_theme.css` | Tema visual Premium Dark Blue (solo apariencia; no altera cálculos ni datos) |
 | `pronostico_calculos.py` | Cálculos sin UI (fórmulas oficiales + análisis de apoyo) |
 | `pronostico_excel.py` | Escribe `fill rate deseado` y el pronóstico LRI (columna `pronostico`) en la hoja `data` (edición XML; conserva el resto de fórmulas y valores en caché) |
 | `view.py` | Solo aviso al orquestador; **no** es la app |

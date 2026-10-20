@@ -179,6 +179,14 @@ class TestEscrituraPronostico(_ConCarpetaTemporal):
         self.assertEqual(pexcel.normalizar_codigo(77001046.0), "77001046")
         self.assertEqual(pexcel.normalizar_codigo(" 34-067284 "), "34-067284")
 
+    def test_leer_pronosticos_tras_escritura(self) -> None:
+        ruta = self._crear()
+        pexcel.escribir_pronostico_excel({"P1": 50.0, "2": 60.0}, ruta, forzar=True)
+        leidos = pexcel.leer_pronosticos_excel(ruta, {"P1", "2", "P3"})
+        self.assertAlmostEqual(leidos["P1"], 50.0)
+        self.assertAlmostEqual(leidos["2"], 60.0)
+        self.assertAlmostEqual(leidos["P3"], 55.0)
+
     def test_reemplaza_maestra_compartida_y_conserva_las_demas(self) -> None:
         ruta = self._crear()
         resultado = pexcel.escribir_pronostico_excel({"P1": 50.0, "2": 60.0, "P3": float("nan")}, ruta)

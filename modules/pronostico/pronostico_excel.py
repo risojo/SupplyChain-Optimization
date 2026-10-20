@@ -199,6 +199,46 @@ def normalizar_codigo(valor: object) -> str:
     return str(int(numero)) if numero.is_integer() else texto
 
 
+def leer_pronosticos_excel(
+    ruta: str | None = None,
+    codigos: set[str] | None = None,
+) -> dict[str, float]:
+    """Lee la columna «pronostico» del Excel (valor en caché del XML) por código normalizado."""
+    ruta = ruta or pc.ARCHIVO_EXCEL_PATH
+    with zipfile.ZipFile(ruta) as z:
+        hoja = z.read(_ruta_hoja(z, pc.HOJA_DATOS)).decode("utf-8")
+        compartidos = _textos_compartidos(z)
+    filas = list(_RE_FILA.finditer(hoja))
+    encabezado = next((f for f in filas if re.search(r'\br="1"', f.group(1))), None)
+    if encabezado is None:
+        return {}
+    columnas = {
+        pc._nombre_canonico((_texto_celda(m.group(0), compartidos) or "").strip()): m.group(1)
+        for m in _RE_CELDA.finditer(encabezado.group(2) or "")
+    }
+    col_codigo = columnas.get("codigo")
+    col_pron = columnas.get(pc.COL_PRONOSTICO)
+    if col_codigo is None or col_pron is None:
+        return {}
+    buscados = {normalizar_codigo(c) for c in codigos} if codigos is not None else None
+    out: dict[str, float] = {}
+    for f in filas:
+        numero = int(re.search(r'\br="(\d+)"', f.group(1)).group(1))
+        if numero < 2:
+            continue
+        celdas = {m.group(1): m.group(0) for m in _RE_CELDA.finditer(f.group(2) or "")}
+        codigo = normalizar_codigo(_texto_celda(celdas.get(col_codigo, ""), compartidos) or "")
+        if not codigo or (buscados is not None and codigo not in buscados):
+            continue
+        valor = _valor_numerico(celdas.get(col_pron, ""))
+        if valor is None:
+            continue
+        out[codigo] = valor
+        if buscados is not None and len(out) >= len(buscados):
+            break
+    return out
+
+
 def _desplazar_filas(formula: str, delta: int) -> str:
     """Traslada las referencias relativas de una fórmula compartida ``delta`` filas."""
 
@@ -252,13 +292,21 @@ def _quitar_calc_chain(z: zipfile.ZipFile) -> tuple[dict[str, bytes], frozenset[
     )
 
 
-def escribir_pronostico_excel(pronosticos: dict[str, float], ruta: str | None = None) -> ResultadoEscritura:
+def escribir_pronostico_excel(
+    pronosticos: dict[str, float],
+    ruta: str | None = None,
+    *,
+    forzar: bool = False,
+) -> ResultadoEscritura:
     """Pone el pronóstico calculado como valor en la columna «pronostico» de la hoja ``data``.
 
     ``pronosticos`` va por código (``normalizar_codigo``); solo se escriben valores finitos.
     En esas filas «pronostico ajustado» pasa a ``=pronostico`` (el pronóstico LRI ya trae
     K × σ; NORMINV sumaría un segundo margen de seguridad). Las filas sin pronóstico
     (no certificados) conservan sus fórmulas.
+
+    ``forzar=True`` reescribe aunque el XML coincida (actualiza fecha del archivo;
+    útil si Excel o la app muestran datos en caché).
     """
     ruta = ruta or pc.ARCHIVO_EXCEL_PATH
     try:
@@ -311,7 +359,8 @@ def escribir_pronostico_excel(pronosticos: dict[str, float], ruta: str | None = 
                 nuevas[col_ajust] = _celda_numero(
                     col_ajust, numero, valor, celdas.get(col_ajust), formula=f"{col_pron}{numero}"
                 )
-        nuevas = {col: nueva for col, nueva in nuevas.items() if nueva != celdas.get(col)}
+        if not forzar:
+            nuevas = {col: nueva for col, nueva in nuevas.items() if nueva != celdas.get(col)}
         if not nuevas:
             continue
         if valor is not None:
@@ -324,7 +373,11 @@ def escribir_pronostico_excel(pronosticos: dict[str, float], ruta: str | None = 
         ultimo = f.end()
 
     if not partes:
-        return ResultadoEscritura("sin cambios", columna=col_pron)
+        return ResultadoEscritura(
+            "sin cambios",
+            columna=col_pron,
+            mensaje="El Excel ya tiene el mismo pronóstico LRI en disco (nada que cambiar).",
+        )
     partes.append(hoja[ultimo:])
     try:
         _guardar(ruta, {ruta_hoja: "".join(partes).encode("utf-8"), **extra}, quitar)
@@ -332,6 +385,21 @@ def escribir_pronostico_excel(pronosticos: dict[str, float], ruta: str | None = 
         return ResultadoEscritura("bloqueado", columna=col_pron, mensaje=pc.MSG_ARCHIVO_ABIERTO)
     except OSError as exc:
         return ResultadoEscritura("error", columna=col_pron, mensaje=f"No se pudo guardar el Excel: {exc}")
+
+    # Comprobar en disco que lo escrito coincide con el LRI (evita falsos «actualizado»).
+    leidos = leer_pronosticos_excel(ruta, set(pronosticos))
+    desvios = [
+        f"{c}: app {pronosticos[c]:,.1f} ≠ Excel {leidos.get(c, float('nan')):,.1f}"
+        for c in list(pronosticos)[:20]
+        if c in leidos and abs(leidos[c] - pronosticos[c]) > 1e-6
+    ]
+    if desvios:
+        return ResultadoEscritura(
+            "error",
+            columna=col_pron,
+            celdas=escritas,
+            mensaje="Se guardó el archivo pero la lectura de control no coincide: " + "; ".join(desvios[:5]),
+        )
     return ResultadoEscritura("actualizado", columna=col_pron, celdas=escritas)
 
 

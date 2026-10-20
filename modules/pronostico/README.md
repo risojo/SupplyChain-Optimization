@@ -1,22 +1,26 @@
 # Módulo 1 — Pronóstico (Forecast Pro)
 
 Módulo de inicio de la plataforma (primero en `core/registry.py`).
-Pronóstico de demanda: certificación del pronóstico oficial, tendencia,
-estacionalidad, distribución normal y simulación Monte Carlo.
+Pronóstico de demanda: certificación del pronóstico oficial, simulación Monte Carlo
+(estilo @RISK), serie por SKU y estacionalidad.
 
 ## Panel lateral (orden fijo, mismo formato que Profile Pro)
 
 1. **📁 Cargar datos** — cargador de Excel opcional. Sin archivo subido se usa el
    compartido `perfilado.xlsx` (mismo de Inventarios, Compras y Profile Pro).
-2. **Mostrar archivo** (casilla, activa al inicio) — muestra el archivo completo
-   (todas las hojas) arriba del panel principal, resaltando las columnas que usa el pronóstico.
-3. **Cálculo** — botón **📈 Cálculo del pronóstico** (formato de Inventarios: botón a todo
-   el ancho, resaltado cuando ya se calculó). Calcula todo y desmarca «Mostrar archivo».
-4. **Alternativas de cálculo** (botones verticales debajo) — ✅ Certificación, 📉 Serie por SKU,
-   📅 Estacionalidad, 🔔 Distribución normal, 🎲 Monte Carlo. Si aún no se calculó, el
-   botón de la alternativa calcula primero. Debajo, la casilla **📥 Mostrar reportes (Excel)**
-   (apagada: los reportes se muestran solo si se piden). Luego **⚙️ Nivel de servicio** (plegable), **🎨 Gráficos** (plegable, slider «Ancho de barras»
-para todos los gráficos de barras) y los filtros.
+2. **Abrir archivo** (botón) — vista exclusiva del Excel (oculta pronóstico y alternativas).
+   Al pulsar cálculo o una alternativa, el archivo se oculta y solo se muestra esa vista.
+   Las tablas usan un marco de altura fija (barra horizontal siempre a la vista).
+3. **Cálculo** — botón **📈 Cálculo del pronóstico** (calcula y escribe `pronostico` en
+   `perfilado.xlsx`). Debajo: **📥 Crear archivo Excel del pronóstico** (descarga un
+   libro con código, descripción, cat/subcat/proveedor, nivel de servicio, inventario,
+   variabilidad y pronóstico LRI).
+4. **Alternativas de cálculo** (botones verticales debajo) — ✅ Certificación,
+   🎲 Simulación Monte Carlo (@RISK), 📉 Serie por SKU, 📅 Estacionalidad.
+   Si aún no se calculó, el botón de la alternativa calcula primero. Debajo, la casilla
+   **📥 Mostrar reportes (Excel)** (apagada: los reportes se muestran solo si se piden).
+   Luego **⚙️ Nivel de servicio** (plegable), **🎨 Gráficos** (plegable, slider «Ancho de barras»
+   para todos los gráficos de barras) y los filtros.
 
 Futuro: un archivo de resultados en blanco (`pronostico.xlsx`) que llenarán los cálculos.
 
@@ -41,6 +45,7 @@ Excel maestro compartido: `data/sources/perfilado.xlsx`, hoja `data`
 | Archivo | Resultado / responsabilidad |
 |---------|-----------------------------|
 | `pronostico_app.py` | App Streamlit: panel lateral (archivo → calcular → vistas), filtros y vistas |
+| `forecast_theme.css` | Tema visual Premium Dark Blue (solo apariencia; no altera cálculos ni datos) |
 | `pronostico_calculos.py` | Cálculos sin UI: carga/normalización, pronóstico, certificación, métodos, estacionalidad, Monte Carlo |
 | `pronostico_excel.py` | Escribe `fill rate deseado` y el pronóstico LRI (columna `pronostico`) en la hoja `data` del Excel, editando el XML para conservar el resto de fórmulas y valores |
 | `view.py` | Solo aviso al orquestador; **no** es la app |
@@ -53,10 +58,9 @@ Excel maestro compartido: `data/sources/perfilado.xlsx`, hoja `data`
 |---------|-----------|
 | **Pronóstico** (botón «📈 Cálculo del pronóstico») | Pronóstico mensual = promedio 12 meses + K × σ solo de SKUs certificados; «Ver por» SKU (todos) o categoría / subcategoría / proveedor: al pulsarlo se abre un panel con los grupos; al elegir uno se muestran el gráfico de barras de **sus SKUs** (promedio + K × σ, mayor a menor) y la tabla de esos SKUs con descripción y pronóstico. Sin resúmenes por grupo: los pedidos son por SKU (administrador de categorías o comprador por proveedor). Con reportes activos, «📥 Artículos a pedir · …» exporta esos SKUs a Excel; excluidos (no certificados) en un plegable, pendientes de política; Excel si se piden reportes |
 | Certificación | SKUs certificados (CV 0–30 %) vs no certificados (CV > 30 %), gráfico de CV con línea del límite, tablas (primero los no certificados, con casilla «📈 Ver gráfico» que sustituye el gráfico de arriba por la dispersión mensual del SKU), cada tabla con su «🔎 Ver por» (ventana con categorías / subcategorías / proveedores y su conteo; al elegir uno filtra esa tabla; ✕ vuelve a todos). Reportes Excel (por tabla, reporte de certificación con resúmenes por grupo y pronóstico completo) **solo si se marca «📥 Mostrar reportes (Excel)»** en el panel lateral |
+| Simulación Monte Carlo | Histograma estilo @RISK (barras anaranjadas): delimitadores, probabilidad por zona y slicer; helpers en `_experimentos/sync_linea_helpers.py` |
 | Serie por SKU | Demanda real, tendencia, pronóstico y ajustado; comparación de métodos (MAD, MAPE, sesgo) |
 | Estacionalidad | Índice mensual por total / categoría / subcategoría / proveedor |
-| Distribución normal | Curva normal del SKU, zona cubierta por el nivel de servicio, probabilidad consultable |
-| Monte Carlo | Demanda simulada, percentiles P50/P90/P95 y cobertura real del pronóstico ajustado |
 
 ## Fórmulas oficiales (igual que el Excel)
 

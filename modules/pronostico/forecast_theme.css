@@ -1,0 +1,353 @@
+/* LRI Forecast Pro — Premium Dark Blue Enterprise (solo apariencia).
+   Se carga únicamente desde pronostico_app.py; no afecta otros módulos.
+
+   PALETA OFICIAL LRI (reutilizar en Profile Pro / Inventory Pro):
+   Fondo general #040E1A · Interfaz/Plotly #051426 · Sidebar #041C38
+   Sidebar 2 / hover #053560 · Contenedores #061C36 · Tablas #05182C
+   Encabezado tabla #052A4A · Filas alt. #07223C
+   Corporativo #008DFF · Resaltado #00B7FF · Bordes #065A94
+   Texto #FFFFFF · Secundario #C5D8E8 · Cálculo verde #779d40
+*/
+
+:root {
+  --lri-fc-bg: #040E1A;
+  --lri-fc-main: #051426;
+  --lri-fc-sidebar: #041C38;
+  --lri-fc-sidebar-2: #053560;
+  --lri-fc-card: #061C36;
+  --lri-fc-table: #05182C;
+  --lri-fc-table-header: #052A4A;
+  --lri-fc-table-alt: #07223C;
+  --lri-fc-table-hover: #053560;
+  --lri-fc-corp: #008DFF;
+  --lri-fc-accent: #00B7FF;
+  --lri-fc-border: #065A94;
+  --lri-fc-text: #FFFFFF;
+  --lri-fc-text-sec: #C5D8E8;
+  --lri-fc-calc-green: #779d40;
+  --lri-fc-calc-green-dark: #5f7e32;
+}
+
+/* ——— App / fondo principal ——— */
+.stApp {
+  background: linear-gradient(180deg, var(--lri-fc-bg) 0%, var(--lri-fc-card) 100%) !important;
+  color: var(--lri-fc-text) !important;
+}
+
+.stApp [data-testid="stAppViewContainer"] {
+  background: transparent !important;
+}
+
+.stApp .main .block-container {
+  background: transparent !important;
+  color: var(--lri-fc-text) !important;
+}
+
+.stApp [data-testid="stHeader"] {
+  background: transparent !important;
+}
+
+.stApp [data-testid="stToolbar"] {
+  background: transparent !important;
+}
+
+/* ——— Encabezado principal ——— */
+.stApp .lri-fc-header {
+  background: linear-gradient(90deg, #041C38 0%, #053560 100%);
+  border-bottom: 2px solid var(--lri-fc-corp);
+  padding: 0.55rem 0.85rem;
+  margin: 0 0 0.75rem 0;
+  border-radius: 4px;
+}
+
+.stApp .lri-fc-header h4 {
+  color: var(--lri-fc-text) !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  font-size: 1.15rem !important;
+}
+
+.stApp .lri-fc-header .lri-fc-sub {
+  font-size: 0.8rem;
+  font-weight: 400;
+  opacity: 0.75;
+  color: var(--lri-fc-text-sec);
+}
+
+/* ——— Tipografía general ——— */
+.stApp .main p,
+.stApp .main label,
+.stApp .main span,
+.stApp .main div[data-testid="stMarkdownContainer"],
+.stApp .main [data-testid="stCaptionContainer"] {
+  color: var(--lri-fc-text-sec);
+}
+
+.stApp .main h1,
+.stApp .main h2,
+.stApp .main h3,
+.stApp .main h4,
+.stApp .main h5,
+.stApp .main h6 {
+  color: var(--lri-fc-text) !important;
+}
+
+/* ——— Sidebar ——— */
+.stApp [data-testid="stSidebar"] {
+  background: linear-gradient(180deg, #030F1F 0%, #041C38 45%, #053560 100%) !important;
+  border-right: 1px solid var(--lri-fc-border) !important;
+}
+
+.stApp [data-testid="stSidebar"] > div:first-child {
+  background: transparent !important;
+}
+
+.stApp [data-testid="stSidebar"] [data-testid="stMarkdownContainer"],
+.stApp [data-testid="stSidebar"] label,
+.stApp [data-testid="stSidebar"] p,
+.stApp [data-testid="stSidebar"] span,
+.stApp [data-testid="stSidebar"] [data-testid="stWidgetLabel"] {
+  color: var(--lri-fc-text) !important;
+}
+
+.stApp [data-testid="stSidebar"] hr,
+.stApp [data-testid="stSidebar"] [data-testid="stSidebarDivider"],
+.stApp [data-testid="stSidebar"] [data-testid="stDivider"] {
+  border-color: rgba(8, 118, 185, 0.45) !important;
+  background-color: rgba(8, 118, 185, 0.35) !important;
+}
+
+/* Botones sidebar (secundarios = azul corporativo) */
+.stApp [data-testid="stSidebar"] .stButton > button,
+.stApp [data-testid="stSidebar"] .stDownloadButton > button {
+  background-color: var(--lri-fc-table-header) !important;
+  border: 1px solid var(--lri-fc-corp) !important;
+  color: var(--lri-fc-text) !important;
+  box-shadow: none !important;
+}
+
+.stApp [data-testid="stSidebar"] .stButton > button:hover,
+.stApp [data-testid="stSidebar"] .stDownloadButton > button:hover {
+  background-color: #0a4a7a !important;
+  border-color: var(--lri-fc-accent) !important;
+  color: var(--lri-fc-text) !important;
+}
+
+/* Botón activo / primary en sidebar → azul brillante + glow */
+.stApp [data-testid="stSidebar"] .stButton > button[kind="primary"],
+.stApp [data-testid="stSidebar"] button[data-testid="baseButton-primary"] {
+  background-color: var(--lri-fc-corp) !important;
+  border: 1px solid var(--lri-fc-accent) !important;
+  color: var(--lri-fc-text) !important;
+  box-shadow: 0 0 14px rgba(0, 141, 255, 0.45) !important;
+}
+
+/* Cálculo del pronóstico: conservar verde del theme (primaryColor) */
+.stApp [data-testid="stSidebar"] [class*="st-key-pron_btn_calculo"] .stButton > button,
+.stApp [data-testid="stSidebar"] [class*="st-key-pron_btn_calculo"] button {
+  background: linear-gradient(180deg, #8bb34a 0%, var(--lri-fc-calc-green) 55%, var(--lri-fc-calc-green-dark) 100%) !important;
+  border: 1px solid #9bc85a !important;
+  color: var(--lri-fc-text) !important;
+  box-shadow: 0 0 10px rgba(119, 157, 64, 0.35) !important;
+}
+
+.stApp [data-testid="stSidebar"] [class*="st-key-pron_btn_calculo"] .stButton > button:hover,
+.stApp [data-testid="stSidebar"] [class*="st-key-pron_btn_calculo"] button:hover {
+  background: linear-gradient(180deg, #9bc85a 0%, #8bb34a 55%, var(--lri-fc-calc-green) 100%) !important;
+  border-color: #b4d87a !important;
+}
+
+/* Expanders / controles sidebar */
+.stApp [data-testid="stSidebar"] [data-testid="stExpander"] {
+  background-color: rgba(8, 39, 71, 0.65) !important;
+  border: 1px solid rgba(8, 118, 185, 0.5) !important;
+  border-radius: 6px;
+}
+
+.stApp [data-testid="stSidebar"] [data-baseweb="select"] > div,
+.stApp [data-testid="stSidebar"] [data-baseweb="input"] > div,
+.stApp [data-testid="stSidebar"] [data-baseweb="base-input"],
+.stApp [data-testid="stSidebar"] input,
+.stApp [data-testid="stSidebar"] textarea {
+  background-color: var(--lri-fc-card) !important;
+  color: var(--lri-fc-text) !important;
+  border-color: var(--lri-fc-border) !important;
+}
+
+.stApp [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] {
+  background-color: var(--lri-fc-card) !important;
+  border: 1px dashed var(--lri-fc-border) !important;
+  color: var(--lri-fc-text-sec) !important;
+}
+
+/* ——— Área principal: botones / filtros ——— */
+.stApp .main .stButton > button {
+  background-color: var(--lri-fc-table-header) !important;
+  border: 1px solid var(--lri-fc-corp) !important;
+  color: var(--lri-fc-text) !important;
+}
+
+.stApp .main .stButton > button:hover {
+  background-color: #0a4a7a !important;
+  border-color: var(--lri-fc-accent) !important;
+}
+
+.stApp .main .stButton > button[kind="primary"],
+.stApp .main button[data-testid="baseButton-primary"] {
+  background-color: var(--lri-fc-corp) !important;
+  border: 1px solid var(--lri-fc-accent) !important;
+  color: var(--lri-fc-text) !important;
+  box-shadow: 0 0 12px rgba(0, 141, 255, 0.4) !important;
+}
+
+.stApp .main [data-baseweb="select"] > div,
+.stApp .main [data-baseweb="input"] > div,
+.stApp .main [data-baseweb="base-input"],
+.stApp .main input,
+.stApp .main textarea,
+.stApp .main [data-testid="stTextInput"] input,
+.stApp .main [data-testid="stNumberInput"] input {
+  background-color: var(--lri-fc-card) !important;
+  color: var(--lri-fc-text) !important;
+  border-color: var(--lri-fc-border) !important;
+}
+
+.stApp .main [data-baseweb="tag"] {
+  background-color: var(--lri-fc-corp) !important;
+  color: var(--lri-fc-text) !important;
+  border-color: var(--lri-fc-accent) !important;
+}
+
+.stApp .main [data-testid="stExpander"] {
+  background-color: var(--lri-fc-card) !important;
+  border: 1px solid var(--lri-fc-border) !important;
+}
+
+.stApp .main [data-testid="stAlert"] {
+  background-color: var(--lri-fc-card) !important;
+  border: 1px solid var(--lri-fc-border) !important;
+  color: var(--lri-fc-text) !important;
+}
+
+/* ——— Contenedores / gráficos Plotly (sin borde) ——— */
+.stApp [data-testid="stPlotlyChart"] {
+  background-color: transparent !important;
+  border: none !important;
+  border-radius: 0;
+  padding: 0;
+  box-shadow: none !important;
+}
+
+.stApp [data-testid="stVerticalBlockBorderWrapper"] {
+  background-color: rgba(8, 39, 71, 0.35);
+  border-color: var(--lri-fc-border) !important;
+}
+
+/* ——— Tablas (dataframe) ——— */
+.stApp [data-testid="stDataFrame"],
+.stApp [data-testid="stDataFrameResizable"] {
+  background-color: var(--lri-fc-table) !important;
+  border: 1px solid var(--lri-fc-border) !important;
+  border-radius: 6px;
+}
+
+.stApp [data-testid="stDataFrame"] [data-testid="stDataFrameGlideDataEditor"],
+.stApp [data-testid="stDataFrame"] canvas {
+  background-color: var(--lri-fc-table) !important;
+}
+
+/* Filas / encabezados vía variables del grid (best-effort Streamlit) */
+.stApp [data-testid="stDataFrame"] {
+  --gdg-bg-header: #052A4A;
+  --gdg-bg-cell: #05182C;
+  --gdg-bg-cell-medium: #07223C;
+  --gdg-bg-cell-odd: #07223C;
+  --gdg-text-dark: #FFFFFF;
+  --gdg-text-header: #FFFFFF;
+  --gdg-text-group-header: #FFFFFF;
+  --gdg-border-color: #065A94;
+  --gdg-accent-color: #008DFF;
+  --gdg-accent-fg: #FFFFFF;
+  --gdg-bg-header-has-focus: #053560;
+  --gdg-bg-cell-focused: #053560;
+}
+
+/* Compactación existente (conservada del CSS previo) */
+.stApp [data-testid="stHeader"] {
+  height: 2.25rem;
+}
+
+.stApp .block-container {
+  padding-top: 2.25rem;
+  padding-bottom: 0.5rem;
+}
+
+.stApp .block-container h4 {
+  padding: 0 0 0.25rem 0;
+  margin-bottom: 0.15rem !important;
+  font-size: 1.15rem !important;
+}
+
+.stApp [class*="st-key-pron_tabla_archivo"],
+.stApp [class*="st-key-pron_tabla_pronostico"] {
+  flex: 0 0 auto !important;
+  overflow: hidden !important;
+}
+
+.stApp [class*="st-key-pron_tabla_"] [data-testid="stDataFrame"] {
+  width: 100% !important;
+}
+
+.stApp [class*="st-key-pron_risk_controles"] [data-testid="stSlider"] {
+  padding-top: 0.15rem !important;
+  padding-bottom: 0.15rem !important;
+}
+
+.stApp [class*="st-key-pron_risk_controles"] [data-baseweb="slider"] {
+  margin-top: 0.1rem !important;
+  margin-bottom: 0.1rem !important;
+}
+
+.stApp [class*="st-key-pron_risk_controles"] label,
+.stApp [class*="st-key-pron_risk_controles"] [data-testid="stWidgetLabel"] p {
+  font-size: 0.8rem !important;
+  margin-bottom: 0.1rem !important;
+}
+
+.stApp [class*="st-key-pron_risk_controles"] [data-testid="stNumberInput"] input {
+  font-size: 0.85rem !important;
+  padding-top: 0.25rem !important;
+  padding-bottom: 0.25rem !important;
+}
+
+.stApp [class*="st-key-pron_vista_pron"] {
+  margin-top: 0 !important;
+}
+
+.stApp [class*="st-key-pron_vista_pron"] h4,
+.stApp [class*="st-key-pron_vista_pron"] h5 {
+  margin: 0.1rem 0 0.25rem 0 !important;
+  font-size: 1.05rem !important;
+  padding: 0 !important;
+}
+
+.stApp [class*="st-key-pron_vista_pron"] [data-testid="stCaptionContainer"] {
+  margin-top: 0.1rem !important;
+  margin-bottom: 0.25rem !important;
+  font-size: 0.78rem !important;
+}
+
+.stApp [class*="st-key-pron_vista_pron"] [data-testid="stTextInput"] input {
+  font-size: 0.85rem !important;
+  padding-top: 0.2rem !important;
+  padding-bottom: 0.2rem !important;
+  min-height: 1.75rem !important;
+}
+
+.stApp [class*="st-key-pron_vista_pron"] [data-testid="stWidgetLabel"] {
+  margin-bottom: 0.1rem !important;
+}
+
+.stApp [class*="st-key-pron_vista_pron"] [data-testid="stVerticalBlockBorderWrapper"] {
+  gap: 0.35rem !important;
+}
