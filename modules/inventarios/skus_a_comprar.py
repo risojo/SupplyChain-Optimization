@@ -1153,12 +1153,19 @@ def _selectbox_compacto(
     """Selectbox ~1/3 del ancho (no ocupa toda la fila)."""
     if clave not in st.session_state or st.session_state[clave] not in opciones:
         st.session_state[clave] = opciones[0]
-    col, _ = st.columns([1, 2])
-    with col:
+    col_tit, col_box, _resto = st.columns([0.7, 1.3, 1.4], vertical_alignment="center")
+    with col_tit:
+        st.markdown(
+            f"<div style='display:flex;align-items:center;height:2.4rem;margin:0;"
+            f"font-weight:600;white-space:nowrap;'>{label}</div>",
+            unsafe_allow_html=True,
+        )
+    with col_box:
         return st.selectbox(
             label,
             options=opciones,
             key=clave,
+            label_visibility="collapsed",
             help=help_txt,
         )
 
@@ -1289,17 +1296,25 @@ def _controles_filtro_vista_comprar(tabla: pd.DataFrame) -> tuple[pd.DataFrame, 
     """Radio + menú: filtra tabla y gráfico por SKU / categoría / subcategoría / proveedor."""
     # Voz: aplicar ANTES de instanciar widgets (si no, Streamlit ignora el cambio).
     _aplicar_filtro_voz_pendiente()
-    st.markdown("##### Vista de compras")
-    nivel = st.radio(
-        "Ver por",
-        options=list(_NIVELES_GRAFICO),
-        horizontal=True,
-        key=_CLAVE_GRAFICO_NIVEL,
-        help=(
-            "SKU: elige un artículo concreto o todos. "
-            "Categoría / Subcategoría / Proveedor: filtra y ChatGPT lista cada SKU."
-        ),
-    )
+    col_tit, col_nivel = st.columns([0.9, 2.4], vertical_alignment="center")
+    with col_tit:
+        st.markdown(
+            "<div style='display:flex;align-items:center;height:2.4rem;margin:0;"
+            "font-weight:700;'>Vista de compras</div>",
+            unsafe_allow_html=True,
+        )
+    with col_nivel:
+        nivel = st.radio(
+            "Ver por",
+            options=list(_NIVELES_GRAFICO),
+            horizontal=True,
+            key=_CLAVE_GRAFICO_NIVEL,
+            label_visibility="collapsed",
+            help=(
+                "SKU: elige un artículo concreto o todos. "
+                "Categoría / Subcategoría / Proveedor: filtra y ChatGPT lista cada SKU."
+            ),
+        )
     return _filtrar_tabla_grafico(tabla, nivel)
 
 

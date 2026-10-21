@@ -11,6 +11,7 @@ Ejecutar:
 """
 from __future__ import annotations
 
+import html
 import io
 import os
 import sys
@@ -591,6 +592,38 @@ def _fmt_moneda(v: float) -> str:
     return f"$ {v:,.0f}"
 
 
+def _tarjeta_kpi(titulo: str, valor: str, clase_color: str) -> str:
+    """Tarjeta KPI: título y valor centrados sobre un color de fondo."""
+    return (
+        f'<div class="lri-kpi-card {clase_color}">'
+        f'<div class="lri-kpi-titulo">{html.escape(titulo)}</div>'
+        f'<div class="lri-kpi-valor">{html.escape(valor)}</div>'
+        "</div>"
+    )
+
+
+def _fila_kpis_gmroi(
+    registros: str,
+    gmroi: str,
+    evai_pos: str,
+    evai_neg: str,
+    evai_neto: str,
+) -> None:
+    tarjetas = "".join(
+        (
+            _tarjeta_kpi("Registros", registros, "lri-kpi-azul"),
+            _tarjeta_kpi("GMROI", gmroi, "lri-kpi-verde"),
+            _tarjeta_kpi("EVAI+", evai_pos, "lri-kpi-naranja"),
+            _tarjeta_kpi("EVAI-", evai_neg, "lri-kpi-gris"),
+            _tarjeta_kpi("EVAI neto", evai_neto, "lri-kpi-azul-oscuro"),
+        )
+    )
+    st.markdown(
+        f'<div class="lri-kpi-row">{tarjetas}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def _exportar_excel(df: pd.DataFrame, hoja: str = "datos") -> bytes:
     salida = io.BytesIO()
     with pd.ExcelWriter(salida, engine="openpyxl") as writer:
@@ -751,12 +784,17 @@ def vista_drivers(df: pd.DataFrame, params: dict) -> None:
         f"(ventas calculadas: $ {float(ventas):,.0f}). "
         "Use las ventanas laterales para comparar valores y participación."
     )
-    dimension = st.radio(
-        "Agrupar por:",
-        options=["categoria", "subcategoria"],
-        format_func=lambda x: "Categoría" if x == "categoria" else "Subcategoría",
-        horizontal=True,
-    )
+    col_ag, col_rd = st.columns([0.7, 2], vertical_alignment="center")
+    with col_ag:
+        _etiqueta_al_lado("Agrupar por")
+    with col_rd:
+        dimension = st.radio(
+            "Agrupar por:",
+            options=["categoria", "subcategoria"],
+            format_func=lambda x: "Categoría" if x == "categoria" else "Subcategoría",
+            horizontal=True,
+            label_visibility="collapsed",
+        )
 
     pivote = _tabla_pivote(df, dimension)
     fs = _tabla_font_px()
@@ -908,35 +946,58 @@ def _on_cambio_nivel_gmroi() -> None:
         st.session_state["inv_gmroi_icc_por"] = "categoria"
 
 
+def _etiqueta_al_lado(titulo: str) -> None:
+    st.markdown(
+        f"<div style='display:flex;align-items:center;height:2.4rem;margin:0;"
+        f"font-weight:600;white-space:nowrap;'>{titulo}</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def _controles_opciones_gmroi() -> None:
     """Nivel de presentación (siempre visible) + ICC/Pareto/límite en expander."""
-    st.radio(
-        "Presentar GMROI y EVAI por",
-        options=list(scorecard._NIVELES_GMROI),
-        format_func=lambda x: scorecard._ETIQUETAS_NIVEL[x],
-        horizontal=True,
-        key="inv_gmroi_nivel",
-        on_change=_on_cambio_nivel_gmroi,
-        help="Código (SKU) · Categoría · Subcategoría. "
-        "Al elegir categoría o subcategoría, el ICC se alinea automáticamente.",
-    )
+    col_tit, col_ctrl = st.columns([1.15, 2], vertical_alignment="center")
+    with col_tit:
+        _etiqueta_al_lado("Presentar GMROI y EVAI por")
+    with col_ctrl:
+        st.radio(
+            "Presentar GMROI y EVAI por",
+            options=list(scorecard._NIVELES_GMROI),
+            format_func=lambda x: scorecard._ETIQUETAS_NIVEL[x],
+            horizontal=True,
+            key="inv_gmroi_nivel",
+            label_visibility="collapsed",
+            on_change=_on_cambio_nivel_gmroi,
+            help="Código (SKU) · Categoría · Subcategoría. "
+            "Al elegir categoría o subcategoría, el ICC se alinea automáticamente.",
+        )
     with st.expander("Opciones (ICC, Pareto, límite de gráfico)", expanded=False):
         c1, c2 = st.columns(2)
         with c1:
-            st.selectbox(
-                "Asignar ICC por",
-                options=["categoria", "subcategoria"],
-                format_func=lambda x: "Categoría" if x == "categoria" else "Subcategoría",
-                key="inv_gmroi_icc_por",
-                help="Grupo del scorecard para repartir el costo de mantener inventario. "
-                "Debe coincidir con el nivel de presentación para EVAI coherente.",
-            )
-            st.selectbox(
-                "Análisis Pareto",
-                options=scorecard.OPCIONES_PARETO_GMROI,
-                key="inv_gmroi_pareto_set",
-                help="Segmenta ítems en tramos (verde · amarillo · rojo) como en Perfilado.",
-            )
+            t1, b1 = st.columns([0.9, 1.4], vertical_alignment="center")
+            with t1:
+                _etiqueta_al_lado("Asignar ICC por")
+            with b1:
+                st.selectbox(
+                    "Asignar ICC por",
+                    options=["categoria", "subcategoria"],
+                    format_func=lambda x: "Categoría" if x == "categoria" else "Subcategoría",
+                    key="inv_gmroi_icc_por",
+                    label_visibility="collapsed",
+                    help="Grupo del scorecard para repartir el costo de mantener inventario. "
+                    "Debe coincidir con el nivel de presentación para EVAI coherente.",
+                )
+            t2, b2 = st.columns([0.9, 1.4], vertical_alignment="center")
+            with t2:
+                _etiqueta_al_lado("Análisis Pareto")
+            with b2:
+                st.selectbox(
+                    "Análisis Pareto",
+                    options=scorecard.OPCIONES_PARETO_GMROI,
+                    key="inv_gmroi_pareto_set",
+                    label_visibility="collapsed",
+                    help="Segmenta ítems en tramos (verde · amarillo · rojo) como en Perfilado.",
+                )
         with c2:
             st.slider(
                 "Máx. registros (solo nivel Código)",
@@ -982,12 +1043,17 @@ def _controles_filtro_gmroi(df: pd.DataFrame) -> tuple[str | None, str | None, s
     categorias = [_OPCION_TODAS_CAT, *sorted(df["categoria"].dropna().astype(str).unique())]
     c1, c2, c3 = st.columns(3)
     with c1:
-        cat_sel = st.selectbox(
-            "Categoría",
-            categorias,
-            key="inv_gmroi_filtro_categoria",
-            on_change=_reset_filtros_gmroi_subcategoria,
-        )
+        t_cat, b_cat = st.columns([0.7, 1.5], vertical_alignment="center")
+        with t_cat:
+            _etiqueta_al_lado("Categoría")
+        with b_cat:
+            cat_sel = st.selectbox(
+                "Categoría",
+                categorias,
+                key="inv_gmroi_filtro_categoria",
+                label_visibility="collapsed",
+                on_change=_reset_filtros_gmroi_subcategoria,
+            )
     cat_filtro = cat_sel if cat_sel != _OPCION_TODAS_CAT else None
 
     if cat_filtro:
@@ -997,12 +1063,17 @@ def _controles_filtro_gmroi(df: pd.DataFrame) -> tuple[str | None, str | None, s
     sub_opts = sorted(df.loc[mask_sub, "subcategoria"].dropna().astype(str).unique())
 
     with c2:
-        sub_sel = st.selectbox(
-            "Subcategoría",
-            [_OPCION_TODAS_SUB, *sub_opts],
-            key="inv_gmroi_filtro_subcategoria",
-            on_change=_reset_filtros_gmroi_codigo,
-        )
+        t_sub, b_sub = st.columns([0.85, 1.4], vertical_alignment="center")
+        with t_sub:
+            _etiqueta_al_lado("Subcategoría")
+        with b_sub:
+            sub_sel = st.selectbox(
+                "Subcategoría",
+                [_OPCION_TODAS_SUB, *sub_opts],
+                key="inv_gmroi_filtro_subcategoria",
+                label_visibility="collapsed",
+                on_change=_reset_filtros_gmroi_codigo,
+            )
     sub_filtro = sub_sel if sub_sel != _OPCION_TODAS_SUB else None
 
     mask_cod = mask_sub
@@ -1011,12 +1082,17 @@ def _controles_filtro_gmroi(df: pd.DataFrame) -> tuple[str | None, str | None, s
     cod_opts = sorted(df.loc[mask_cod, "codigo"].dropna().astype(str).unique())
 
     with c3:
-        cod_sel = st.selectbox(
-            "Código",
-            [_OPCION_TODOS_COD, *cod_opts],
-            key="inv_gmroi_filtro_codigo",
-            help="Un artículo específico: GMROI y EVAI de ese SKU.",
-        )
+        t_cod, b_cod = st.columns([0.55, 1.6], vertical_alignment="center")
+        with t_cod:
+            _etiqueta_al_lado("Código")
+        with b_cod:
+            cod_sel = st.selectbox(
+                "Código",
+                [_OPCION_TODOS_COD, *cod_opts],
+                key="inv_gmroi_filtro_codigo",
+                label_visibility="collapsed",
+                help="Un artículo específico: GMROI y EVAI de ese SKU.",
+            )
     cod_filtro = cod_sel if cod_sel != _OPCION_TODOS_COD else None
 
     return cat_filtro, sub_filtro, cod_filtro
@@ -1136,12 +1212,13 @@ def vista_gmroi_evai(df: pd.DataFrame, params: dict) -> None:
     evai_neto = float(evai_vals.sum())
     gmroi_prom = tabla["GMROI"].replace(0, np.nan).mean()
 
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Registros", f"{len(tabla):,}")
-    m2.metric("GMROI prom.", f"{gmroi_prom:.2f}" if pd.notna(gmroi_prom) else "—")
-    m3.metric("EVAI +", _fmt_moneda(evai_pos))
-    m4.metric("EVAI − (pérdida)", _fmt_moneda(abs(evai_neg)))
-    m5.metric("EVAI neto", _fmt_moneda(evai_neto))
+    _fila_kpis_gmroi(
+        f"{len(tabla):,}",
+        f"{gmroi_prom:.2f}" if pd.notna(gmroi_prom) else "—",
+        _fmt_moneda(evai_pos),
+        _fmt_moneda(abs(evai_neg)),
+        _fmt_moneda(evai_neto),
+    )
 
     st.caption("Gráficos verticales — mayor a menor (desplácese horizontalmente si hay muchos códigos)")
     g1, g2 = st.columns(2, gap="large")
@@ -1220,13 +1297,18 @@ def vista_scorecard(df: pd.DataFrame, params: dict) -> None:
         "Tablero en tres niveles: **almacenaje**, **inventarios** y **resumen de métricas**. "
         "Los drivers se asignan en la vista *Drivers (tentativo)*."
     )
-    dimension = st.radio(
-        "Agrupar por:",
-        options=["categoria", "subcategoria"],
-        format_func=lambda x: "Categoría" if x == "categoria" else "Subcategoría",
-        horizontal=True,
-        key="scorecard_dimension",
-    )
+    col_ag, col_rd = st.columns([0.7, 2], vertical_alignment="center")
+    with col_ag:
+        _etiqueta_al_lado("Agrupar por")
+    with col_rd:
+        dimension = st.radio(
+            "Agrupar por:",
+            options=["categoria", "subcategoria"],
+            format_func=lambda x: "Categoría" if x == "categoria" else "Subcategoría",
+            horizontal=True,
+            key="scorecard_dimension",
+            label_visibility="collapsed",
+        )
 
     tabla_valor = scorecard.tabla_pivote_valores(df, dimension)
     tabla_pct = scorecard.tabla_pivote_porcentajes(tabla_valor)
@@ -1464,12 +1546,17 @@ def vista_parametros_generales(df: pd.DataFrame, params: dict) -> None:
         "(GMROI, EVAI, Scorecard). También se actualiza sola si cambia el Excel en disco."
     )
 
-    pestaña = st.radio(
-        "Sección de parámetros",
-        ["Parámetros Almacenaje", "Parámetros Inventario", "Parámetros Generales"],
-        horizontal=True,
-        key="inv_pestaña_parametros",
-    )
+    col_sec, col_tab = st.columns([0.7, 2.6], vertical_alignment="center")
+    with col_sec:
+        _etiqueta_al_lado("Sección")
+    with col_tab:
+        pestaña = st.radio(
+            "Sección de parámetros",
+            ["Parámetros Almacenaje", "Parámetros Inventario", "Parámetros Generales"],
+            horizontal=True,
+            key="inv_pestaña_parametros",
+            label_visibility="collapsed",
+        )
 
     if pestaña == "Parámetros Almacenaje":
         _parametros_calculados_setbox(params, "alm_datos", "Datos (desde Excel parámetros)")

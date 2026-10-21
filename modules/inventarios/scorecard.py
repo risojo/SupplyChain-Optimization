@@ -1046,6 +1046,24 @@ def _color_en_escala(t: float) -> str:
     return stops[-1][1]
 
 
+_COLOR_EVAI_POSITIVO = "#22c55e"
+_COLOR_EVAI_NEGATIVO = "#ef4444"
+_COLOR_EVAI_CERO = "#94a3b8"
+
+
+def _colores_evai(valores: pd.Series) -> list[str]:
+    """Verde si EVAI suma, rojo si resta, gris si es cero."""
+    colores: list[str] = []
+    for valor in valores:
+        if pd.isna(valor) or float(valor) == 0:
+            colores.append(_COLOR_EVAI_CERO)
+        elif float(valor) > 0:
+            colores.append(_COLOR_EVAI_POSITIVO)
+        else:
+            colores.append(_COLOR_EVAI_NEGATIVO)
+    return colores
+
+
 def _colores_degradado_azul(n: int) -> list[str]:
     if n <= 0:
         return []
@@ -1160,8 +1178,8 @@ def _ancho_figura_gmroi(n: int) -> int:
 
 
 def _altura_figura_gmroi(n: int) -> int:
-    """Altura generosa para que las barras no se vean achatadas."""
-    return int(max(540, min(920, 500 + n * 6)))
+    """Altura de las barras GMROI/EVAI en la pantalla de inicio."""
+    return 520
 
 
 def _rango_eje_y_gmroi(ys: pd.Series, metrica: str) -> tuple[float, float]:
@@ -1221,6 +1239,8 @@ def grafico_gmroi_barras(
 
     xs = coloreado["_etiqueta"].astype(str)
     ys = coloreado[metrica].astype(float)
+    if metrica == "EVAI":
+        colores = _colores_evai(ys)
     titulo_metrica = "GMROI" if metrica == "GMROI" else "EVAI"
     etiqueta_n = f"todos ({n})" if n == n_total else f"top {n}"
 

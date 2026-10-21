@@ -1154,6 +1154,45 @@ section[data-testid="stMain"] div[data-testid="stMarkdownContainer"]:has(.inv-ta
 section[data-testid="stMain"] [data-testid="stVerticalBlock"] {{
     gap: 0.35rem !important;
 }}
+.lri-kpi-row {{
+    display: flex !important;
+    gap: 10px;
+    width: 100%;
+    margin: 2px 0 10px 0;
+}}
+.lri-kpi-card {{
+    flex: 1 1 0;
+    min-width: 0;
+    border-radius: 8px;
+    padding: 4px 8px;
+    text-align: center !important;
+    color: #ffffff !important;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+}}
+.lri-kpi-card .lri-kpi-titulo,
+.lri-kpi-card .lri-kpi-valor {{
+    text-align: center !important;
+    color: #ffffff !important;
+    width: 100%;
+}}
+.lri-kpi-card .lri-kpi-titulo {{
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.1;
+    white-space: nowrap !important;
+}}
+.lri-kpi-card .lri-kpi-valor {{
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.1;
+    margin-top: 1px;
+    white-space: nowrap !important;
+}}
+.lri-kpi-azul {{ background: #008DFF !important; }}
+.lri-kpi-verde {{ background: #1B8F4A !important; }}
+.lri-kpi-naranja {{ background: #C2410C !important; }}
+.lri-kpi-gris {{ background: #6B7280 !important; }}
+.lri-kpi-azul-oscuro {{ background: #0A3358 !important; }}
 </style>
 """
 
