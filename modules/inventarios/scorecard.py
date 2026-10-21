@@ -1288,8 +1288,8 @@ def grafico_gmroi_barras(
         ),
         width=ancho_fig,
         height=alto_fig,
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="#0f1419",
+        paper_bgcolor="#051426",
+        plot_bgcolor="#051426",
         bargap=bargap,
         xaxis=dict(
             title="",

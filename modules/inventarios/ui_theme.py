@@ -722,6 +722,46 @@ def css_interfaz(zoom_pct: int, tabla_font_px: int) -> str:
 <style>
 .stApp {{
     zoom: {zoom_pct / 100};
+    background: linear-gradient(180deg, #040E1A 0%, #061C36 100%) !important;
+}}
+.stApp [data-testid="stAppViewContainer"],
+.stApp [data-testid="stHeader"],
+.stApp [data-testid="stToolbar"],
+section[data-testid="stMain"],
+section[data-testid="stMain"] > div,
+section[data-testid="stMain"] .block-container {{
+    background: transparent !important;
+}}
+section[data-testid="stSidebar"] {{
+    background: linear-gradient(180deg, #030F1F 0%, #041C38 45%, #053560 100%) !important;
+}}
+section[data-testid="stSidebar"] > div,
+section[data-testid="stSidebar"] [data-testid="stSidebarContent"],
+section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {{
+    background: transparent !important;
+}}
+section[data-testid="stMain"] [data-testid="stExpander"],
+section[data-testid="stSidebar"] [data-testid="stExpander"],
+section[data-testid="stMain"] [data-testid="stAlert"],
+section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"],
+section[data-testid="stMain"] [data-baseweb="select"] > div,
+section[data-testid="stSidebar"] [data-baseweb="select"] > div,
+section[data-testid="stMain"] [data-baseweb="input"] > div,
+section[data-testid="stSidebar"] [data-baseweb="input"] > div {{
+    background-color: #061C36 !important;
+}}
+section[data-testid="stMain"] [data-testid="stVerticalBlockBorderWrapper"] {{
+    background-color: rgba(6, 28, 54, 0.55) !important;
+}}
+[data-testid="stPlotlyChart"] {{
+    background-color: transparent !important;
+}}
+[data-testid="stDataFrame"] {{
+    background-color: #05182C !important;
+    --gdg-bg-header: #052A4A;
+    --gdg-bg-cell: #05182C;
+    --gdg-bg-cell-medium: #07223C;
+    --gdg-bg-cell-odd: #07223C;
 }}
 section[data-testid="stMain"] > div {{
     padding-top: 4px !important;
