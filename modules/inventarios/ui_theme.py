@@ -479,7 +479,6 @@ def _estilo_columna_ws(
     cat = _categoria_columna_ws(nombre)
     est = _WS_ESTILOS[cat]
     pad = _padding_celda(font_px)
-    bg = _fondo_intercalado_ws(est, fila_idx=fila_idx, col_idx=col_idx, es_header=es_header)
     align = "center" if es_header else (
         _align_columna_ws(nombre, col_idx, columnas) if columnas else est.align
     )
@@ -493,10 +492,19 @@ def _estilo_columna_ws(
         sticky = "position:sticky;top:0;z-index:35;"
     else:
         sticky = ""
+    # Hoja Base de datos: filas alternas, sin cambiar anclaje, anchos ni alto.
+    hoja = "#101F31" if fila_idx % 2 == 0 else "#1B2E44"
+    cl = nombre.lower().strip()
+    if cl == "codigo":
+        color_txt = "#55C7F7"
+    elif cat == "identidad" or cl == "clase":
+        color_txt = "#F1F5F9"
+    else:
+        color_txt = "#E5EDF5"
     if es_header:
         return (
-            f"{base}font-weight:600;color:{WS_HEADER_FG};background:{WS_HEADER_BG};"
-            f"border-bottom:none;border-right:1px solid {WS_HEADER_BORDE};"
+            f"{base}font-weight:600;color:#FFFFFF;background:#1B3658;"
+            f"border-bottom:none;border-right:1px solid #385373;"
             f"{sticky}overflow:visible;text-overflow:clip;"
         )
     clip = "overflow:hidden;text-overflow:ellipsis;"
@@ -504,8 +512,8 @@ def _estilo_columna_ws(
     if align == "left" and left_fijo is None:
         clip += "max-width:0;"
     return (
-        f"{base}{nums}{clip}color:{est.td_fg};background:{bg};"
-        f"border-bottom:1px solid #243b53;border-right:1px solid #1e293b;{sticky}"
+        f"{base}{nums}{clip}color:{color_txt};background:{hoja};"
+        f"border-bottom:1px solid #26394E;border-right:1px solid #30445C;{sticky}"
     )
 
 # Manual = editable. Rojo suave = calculado por el sistema (solo lectura).
@@ -1145,12 +1153,12 @@ section[data-testid="stMain"] div[data-testid="stMarkdownContainer"]:has(.inv-ta
     z-index: 30 !important;
 }}
 .inv-tabla-scorecard-wrap {{
-    box-shadow: inset 0 0 0 1px #334155;
+    box-shadow: inset 0 0 0 1px #30445C;
     overflow-x: scroll !important;
     overflow-y: auto !important;
     scrollbar-gutter: stable both-edges;
     scrollbar-width: auto;
-    scrollbar-color: #38bdf8 #0a0f1a;
+    scrollbar-color: #79A9D8 #142338;
 }}
 .inv-tabla-scorecard-wrap .inv-tabla-scorecard thead th {{
     position: sticky !important;
@@ -1170,22 +1178,22 @@ section[data-testid="stMain"] div[data-testid="stMarkdownContainer"]:has(.inv-ta
     width: 22px;
 }}
 .inv-tabla-scorecard-wrap::-webkit-scrollbar-track {{
-    background: #0a0f1a;
+    background: #142338;
     border-radius: 10px;
     margin: 2px;
 }}
 .inv-tabla-scorecard-wrap::-webkit-scrollbar-thumb {{
-    background: linear-gradient(180deg, #7dd3fc 0%, #0ea5e9 55%, #0284c7 100%);
+    background: #79A9D8;
     border-radius: 10px;
-    border: 3px solid #0a0f1a;
+    border: 3px solid #142338;
     min-height: 48px;
     min-width: 48px;
 }}
 .inv-tabla-scorecard-wrap::-webkit-scrollbar-thumb:hover {{
-    background: linear-gradient(180deg, #bae6fd 0%, #38bdf8 55%, #0ea5e9 100%);
+    background: #79A9D8;
 }}
 .inv-tabla-scorecard-wrap::-webkit-scrollbar-corner {{
-    background: #0a0f1a;
+    background: #142338;
 }}
 .inv-tabla-scorecard-wrap.inv-tabla-kpi-completa {{
     overflow-y: hidden !important;
@@ -1233,6 +1241,51 @@ section[data-testid="stMain"] [data-testid="stVerticalBlock"] {{
 .lri-kpi-naranja {{ background: #C2410C !important; }}
 .lri-kpi-gris {{ background: #6B7280 !important; }}
 .lri-kpi-azul-oscuro {{ background: #0A3358 !important; }}
+/* Colores solo de la hoja Base de datos (.inv-bd-hoja y .lri-bd-kpis). */
+.inv-tabla-ws-wrap.inv-bd-hoja {{
+    box-shadow: inset 0 0 0 1px #30445C;
+    scrollbar-color: #79A9D8 #142338;
+}}
+.inv-tabla-ws-wrap.inv-bd-hoja .inv-tabla-ws thead tr {{
+    border-bottom-color: #385373;
+}}
+.inv-tabla-ws-wrap.inv-bd-hoja .inv-tabla-ws thead th {{
+    background: #1B3658 !important;
+    color: #FFFFFF !important;
+    border-right-color: #385373 !important;
+}}
+.inv-tabla-ws-wrap.inv-bd-hoja::-webkit-scrollbar-track,
+.inv-tabla-ws-wrap.inv-bd-hoja::-webkit-scrollbar-corner {{
+    background: #142338;
+}}
+.inv-tabla-ws-wrap.inv-bd-hoja::-webkit-scrollbar-thumb {{
+    background: #79A9D8;
+    border-color: #142338;
+}}
+.inv-tabla-ws-wrap.inv-bd-hoja::-webkit-scrollbar-thumb:hover {{
+    background: #79A9D8;
+}}
+[data-testid="stElementContainer"]:has(.lri-bd-kpis) {{
+    height: 0 !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+}}
+[data-testid="stElementContainer"]:has(.lri-bd-kpis) + [data-testid="stLayoutWrapper"] [data-testid="stColumn"]:nth-child(1) [data-testid="stMetricLabel"] p,
+[data-testid="stElementContainer"]:has(.lri-bd-kpis) + [data-testid="stLayoutWrapper"] [data-testid="stColumn"]:nth-child(2) [data-testid="stMetricLabel"] p,
+[data-testid="stElementContainer"]:has(.lri-bd-kpis) + [data-testid="stLayoutWrapper"] [data-testid="stColumn"]:nth-child(5) [data-testid="stMetricLabel"] p {{
+    color: #55C7F7 !important;
+}}
+[data-testid="stElementContainer"]:has(.lri-bd-kpis) + [data-testid="stLayoutWrapper"] [data-testid="stColumn"]:nth-child(3) [data-testid="stMetricLabel"] p {{
+    color: #A3D977 !important;
+}}
+[data-testid="stElementContainer"]:has(.lri-bd-kpis) + [data-testid="stLayoutWrapper"] [data-testid="stColumn"]:nth-child(4) [data-testid="stMetricLabel"] p {{
+    color: #E8C46A !important;
+}}
+[data-testid="stElementContainer"]:has(.lri-bd-kpis) + [data-testid="stLayoutWrapper"] [data-testid="stMetricValue"] p {{
+    color: #FFFFFF !important;
+}}
 </style>
 """
 
@@ -1269,7 +1322,7 @@ def leyenda_scorecard_columnas(
     chips = []
     n_mostrar = n_categorias if nombres is None else len(nombres)
     for i in range(n_mostrar):
-        bg, fg = SCORECARD_PALETA_COLUMNAS[i % len(SCORECARD_PALETA_COLUMNAS)]
+        bg, fg = "#1B3658", "#F1F5F9"
         etiqueta = (
             str(nombres[i])
             if nombres is not None and i < len(nombres)
@@ -1283,7 +1336,7 @@ def leyenda_scorecard_columnas(
     st.markdown(
         f'<div style="margin:4px 0 10px 0;">{"".join(chips)}'
         '<span style="color:#64748b;font-size:13px;margin-left:6px;">'
-        "Color por columna (categoría o subcategoría)</span></div>",
+        "Nombres de columna (categoría o subcategoría)</span></div>",
         unsafe_allow_html=True,
     )
 
@@ -1295,7 +1348,7 @@ def leyenda_scorecard_colores(n_filas: int) -> None:
         return
     chips = []
     for i in range(n):
-        bg, fg = PALETA_FILAS_SCORECARD[i]
+        bg, fg = ("#101F31", "#F1F5F9") if i % 2 == 0 else ("#1B2E44", "#F1F5F9")
         chips.append(
             f'<span style="display:inline-block;margin:0 8px 4px 0;padding:2px 10px;'
             f"border-radius:4px;background:{bg};color:{fg};font-size:13px;"
@@ -1303,8 +1356,8 @@ def leyenda_scorecard_colores(n_filas: int) -> None:
         )
     chips.append(
         f'<span style="display:inline-block;margin:0 8px 4px 0;padding:2px 10px;'
-        f"border-radius:4px;background:{SCORECARD_CELDA_TOTAL[0]};"
-        f'color:{SCORECARD_CELDA_TOTAL[1]};font-size:13px;">Total</span>'
+        f"border-radius:4px;background:#1B3658;"
+        f'color:#FFFFFF;font-size:13px;">Total</span>'
     )
     st.markdown(
         f'<div style="margin:4px 0 10px 0;">{"".join(chips)}'
@@ -1620,7 +1673,7 @@ def _estilo_celda_scorecard(
     base = (
         f"font-size:{font_px}px;line-height:1.35;vertical-align:middle;"
         f"padding:{pad};min-height:{alto}px;height:{alto}px;"
-        f"box-sizing:border-box;border-bottom:1px solid #334155;"
+        f"box-sizing:border-box;border-bottom:1px solid #26394E;border-right:1px solid #30445C;"
     )
     meta_cols, tail_cols = _meta_scorecard(columnas, hide_index)
     es_tabla_resumen = columnas is not None and not hide_index
@@ -1639,35 +1692,24 @@ def _estilo_celda_scorecard(
     )
     usar_banda_resumen = es_tabla_resumen and not es_header and not es_cola
 
+    hoja = "#101F31" if fila_i % 2 == 0 else "#1B2E44"
+    texto_nombre = "#55C7F7"
+    texto_num = "#E5EDF5"
     if es_header:
-        if es_meta:
-            bg, fg = SCORECARD_CELDA_META
-        elif es_cola:
-            bg, fg = SCORECARD_CELDA_TOTAL
-        else:
-            cat_i = col_i - meta_cols
-            bg, fg = SCORECARD_PALETA_COLUMNAS[cat_i % len(SCORECARD_PALETA_COLUMNAS)]
+        bg, fg = "#1B3658", "#FFFFFF"
         peso = "font-weight:700;"
-    elif es_total or es_cola:
-        bg, fg = SCORECARD_CELDA_TOTAL
+    elif es_total:
+        bg, fg = "#1B3658", "#FFFFFF"
         peso = "font-weight:700;"
-    elif usar_banda_resumen:
-        bg, fg = PALETA_FILAS_RESUMEN_KPI[fila_i % len(PALETA_FILAS_RESUMEN_KPI)]
-        peso = "font-weight:600;" if es_meta else "font-weight:500;"
-    elif usar_color_fila:
-        bg, fg = PALETA_FILAS_SCORECARD[fila_i % len(PALETA_FILAS_SCORECARD)]
+    elif usar_banda_resumen or usar_color_fila:
+        bg = hoja
+        fg = texto_nombre if es_meta else texto_num
         peso = "font-weight:600;" if es_meta else "font-weight:500;"
     elif es_meta:
-        if col_i == 0:
-            bg, fg = SCORECARD_CELDA_META
-        else:
-            bg, fg = SCORECARD_CELDA_DRIVER
+        bg, fg = hoja, texto_nombre
         peso = "font-weight:500;"
     else:
-        cat_i = col_i - meta_cols
-        bg, fg = SCORECARD_PALETA_COLUMNAS[cat_i % len(SCORECARD_PALETA_COLUMNAS)]
-        if fila_i % 2 == 1:
-            bg = _oscurecer_hex(bg, 0.12)
+        bg, fg = hoja, texto_num
         peso = ""
 
     align = "left" if col_i < meta_cols else "right"
@@ -1676,7 +1718,10 @@ def _estilo_celda_scorecard(
     else:
         wrap = "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
     sticky = _sticky_scorecard(col_i, meta_cols, anchos, es_header=es_header)
-    return f"{base}{peso}color:{fg};background:{bg};text-align:{align};{wrap}{sticky}"
+    borde_cab = ""
+    if es_header or es_total:
+        borde_cab = "border-bottom-color:#385373;border-right-color:#385373;"
+    return f"{base}{peso}color:{fg};background:{bg};text-align:{align};{wrap}{sticky}{borde_cab}"
 
 
 def _oscurecer_hex(hex_color: str, factor: float) -> str:
@@ -2165,7 +2210,7 @@ def _html_tabla_wall_street_cached(
     ancho_tabla_px: int | None,
     anchos_key: tuple[tuple[str, int], ...],
 ) -> str:
-    """Genera HTML estilo WS; se invalida al cambiar datos o sliders de ancho."""
+    """Genera HTML estilo WS; se invalida al cambiar datos, anchos o la paleta de la hoja."""
     fmt = dict(format_items)
     styler = df.style.format(fmt)
     if hide_index:
@@ -2276,9 +2321,9 @@ def mostrar_tabla_html(
     ancho_wrap = _max_ancho_contenedor(layout, font_px, ancho_tabla_px=ancho_tabla_px)
     clase_origen = " inv-tabla-calculado" if origen == "calculado" else ""
     if layout == "ancha" and columnas:
-        clase_origen += " inv-tabla-ws-wrap"
-        fondo = WS_FONDO_TABLA
-        borde = WS_BORDE_TABLA
+        clase_origen += " inv-tabla-ws-wrap inv-bd-hoja"
+        fondo = "#0B1726"
+        borde = "#30445C"
     elif layout == "alternada" and columnas:
         clase_origen += " inv-tabla-alternada-wrap"
         if ajustar_pantalla:
@@ -2295,8 +2340,8 @@ def mostrar_tabla_html(
         clase_origen += " inv-tabla-scorecard-wrap"
         if mostrar_completa:
             clase_origen += " inv-tabla-kpi-completa"
-        fondo = "#0a0f18"
-        borde = "#334155"
+        fondo = "#0B1726"
+        borde = "#30445C"
     else:
         fondo = "#0e1117"
         borde = "#2d3142"

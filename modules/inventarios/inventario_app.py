@@ -671,6 +671,7 @@ def vista_base_datos(df: pd.DataFrame, _params: dict) -> None:
         "Revise el paso 1 (parámetros) antes de analizar drivers."
     )
 
+    st.markdown('<span class="lri-bd-kpis" hidden></span>', unsafe_allow_html=True)
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("SKUs", f"{df['codigo'].nunique():,}")
     c2.metric("Categorías", f"{df['categoria'].nunique():,}")
