@@ -1,4 +1,4 @@
-"""LRI Inventarios — app Streamlit file-based (sin login ni base de datos).
+"""LRI Inventarios — app Streamlit file-based (clave web compartida LRI).
 
 Versión de trabajo del módulo de Inventarios. Reusa la lógica analítica del
 proyecto original del freelance, pero leyendo directamente el Excel maestro en
@@ -34,8 +34,12 @@ except ImportError:
 # Permite importar data_loader tanto si se ejecuta como script suelto
 # (streamlit run modules/inventarios/inventario_app.py) como dentro del paquete.
 _DIR_ACTUAL = os.path.dirname(os.path.abspath(__file__))
-if _DIR_ACTUAL not in sys.path:
-    sys.path.insert(0, _DIR_ACTUAL)
+_RAIZ_PROYECTO = os.path.abspath(os.path.join(_DIR_ACTUAL, "..", ".."))
+for _p in (_DIR_ACTUAL, _RAIZ_PROYECTO):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+from core.auth import exigir_clave_web  # noqa: E402
 
 import data_loader  # noqa: E402
 import destruccion_valor  # noqa: E402
@@ -49,6 +53,7 @@ import ui_theme  # noqa: E402
 ARCHIVO_DRIVERS_GUARDADO = scorecard.ARCHIVO_DRIVERS_GUARDADO
 
 st.set_page_config(page_title="LRI Inventory Pro", page_icon="📦", layout="wide")
+exigir_clave_web(titulo="LRI Inventory Pro")
 
 ESCALA_INTERFAZ_PCT = 100
 # Micrófono en sidebar: genera/reproduce requerimiento de compra (SKUs a comprar).

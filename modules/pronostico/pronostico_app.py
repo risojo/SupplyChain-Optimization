@@ -30,9 +30,12 @@ from openpyxl.utils import get_column_letter
 
 _DIR_ACTUAL = os.path.dirname(os.path.abspath(__file__))
 _DIR_EXPERIMENTOS = os.path.join(_DIR_ACTUAL, "_experimentos")
-for _p in (_DIR_ACTUAL, _DIR_EXPERIMENTOS):
+_RAIZ_PROYECTO = os.path.abspath(os.path.join(_DIR_ACTUAL, "..", ".."))
+for _p in (_DIR_ACTUAL, _DIR_EXPERIMENTOS, _RAIZ_PROYECTO):
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+from core.auth import exigir_clave_web  # noqa: E402
 
 import pronostico_calculos as pc  # noqa: E402
 import pronostico_excel as pexcel  # noqa: E402
@@ -46,6 +49,7 @@ from sync_linea_helpers import (  # noqa: E402
 )
 
 st.set_page_config(page_title="LRI Forecast Pro", page_icon="📈", layout="wide")
+exigir_clave_web(titulo="LRI Forecast Pro")
 
 _CLAVE_CONTENEDOR_TABLA = "pron_tabla_archivo"
 _CLAVE_CONTENEDOR_PRON = "pron_tabla_pronostico"

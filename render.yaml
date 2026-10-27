@@ -25,6 +25,8 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.13.4
+      - key: LRI_APP_PASSWORD
+        value: lri1975
   - type: web
     name: lri-inventarios
     runtime: python
@@ -39,6 +41,8 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.13.4
+      - key: LRI_APP_PASSWORD
+        value: lri1975
   - type: web
     name: lri-forecast-pro
     runtime: python
@@ -53,3 +57,5 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.13.4
+      - key: LRI_APP_PASSWORD
+        value: lri1975

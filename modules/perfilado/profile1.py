@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import tempfile
 import unicodedata
 from textwrap import dedent, wrap
@@ -20,10 +21,18 @@ import streamlit as st
 import streamlit.components.v1 as components
 from audio_recorder_streamlit import audio_recorder
 
+_DIR_PERFILADO = os.path.dirname(os.path.abspath(__file__))
+_RAIZ_PROYECTO = os.path.abspath(os.path.join(_DIR_PERFILADO, "..", ".."))
+if _RAIZ_PROYECTO not in sys.path:
+    sys.path.insert(0, _RAIZ_PROYECTO)
+
+from core.auth import exigir_clave_web  # noqa: E402
+
 # ==============================================================================
 # CONFIGURACIÓN GLOBAL DE LA APLICACIÓN
 # ==============================================================================
 st.set_page_config(page_title="Profile Pro", page_icon="📊", layout="wide")
+exigir_clave_web(titulo="LRI Profile Pro")
 
 # ------------------------------------------------------------------------------
 # Escala visual de la interfaz. Base calibrada en 1920×1080; en pantallas más
