@@ -5,6 +5,8 @@
 #   Servicio Render: lri-inventarios
 # Forecast Pro (módulo 1, pronóstico) = modules/pronostico/pronostico_app.py
 #   Servicio Render: lri-forecast-pro
+# Transportes = modules/transportes/transportes_app.py
+#   Servicio Render: lri-transportes  →  https://lri-transportes.onrender.com
 #
 # Nota: «Supply Chain Optimization» es el nombre del repositorio GitHub (monorepo).
 # El servicio mantiene el slug lri-analytics-pro para conservar la URL pública.
@@ -52,6 +54,22 @@ services:
     branch: main
     buildCommand: pip install --upgrade pip && pip install -r requirements.txt
     startCommand: streamlit run modules/pronostico/pronostico_app.py --server.port $PORT --server.address 0.0.0.0
+    healthCheckPath: /_stcore/health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.4
+      - key: LRI_APP_PASSWORD
+        value: lri1975
+  - type: web
+    name: lri-transportes
+    runtime: python
+    plan: free
+    region: oregon
+    repo: https://github.com/risojo/SupplyChain-Optimization
+    branch: main
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: streamlit run modules/transportes/transportes_app.py --server.port $PORT --server.address 0.0.0.0
     healthCheckPath: /_stcore/health
     autoDeploy: true
     envVars:

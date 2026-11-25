@@ -39,6 +39,7 @@ streamlit run modules/transportes/transportes_app.py
 |----------|-----|----------|
 | `lri-inventarios` | https://lri-inventarios.onrender.com | `inventario_app.py` |
 | `lri-analytics-pro` | https://lri-analytics-pro.onrender.com | `profile1.py` |
+| `lri-transportes` | https://lri-transportes.onrender.com | `transportes_app.py` |
 
 Crear servicios: ver [DEPLOY_AHORA.md](../DEPLOY_AHORA.md).
 

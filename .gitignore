@@ -21,6 +21,8 @@ __pycache__/
 !data/sources/inventarios.xlsx
 !data/sources/perfilado.xlsx
 !data/sources/template_inventarios.xlsx
+!modules/transportes/data/basedatos_ transporte.xlsx
+!modules/transportes/data/basedatos_ transporte.xlsx
 
 # Streamlit
 .streamlit/secrets.toml

@@ -201,6 +201,7 @@ El modelo de clusters y el diseño de rutas nuevas van en un módulo de cálculo
 - Inventarios Render: comando → `inventario_app.py`
 - Perfilado Render: comando → `profile1.py` (no `profile2`)
 - Forecast Pro Render: servicio `lri-forecast-pro` → `pronostico_app.py` (en `render.yaml`)
+- Transportes Render: servicio `lri-transportes` → `transportes_app.py` → https://lri-transportes.onrender.com
 
 ## Checklist al reorganizar código
 

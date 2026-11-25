@@ -17,6 +17,7 @@ Un 404 significa: **ese servicio aún no está creado** (o fue eliminado).
 | **Perfilado** (`profile1.py`) | https://lri-analytics-pro.onrender.com |
 | **Inventarios** (`inventario_app.py`) | https://lri-inventarios.onrender.com |
 | **Forecast Pro** (`pronostico_app.py`) | https://lri-forecast-pro.onrender.com |
+| **Transportes** (`transportes_app.py`) | https://lri-transportes.onrender.com |
 
 Repositorio GitHub: https://github.com/risojo/SupplyChain-Optimization
 
