@@ -11,7 +11,7 @@ habilitan después, en el orden que defina el usuario.
 | 3 | **Compras** | `modules/compras/` | `view.py` (esqueleto) | En construcción |
 | 4 | **Inventarios** | `modules/inventarios/` | **`inventario_app.py`** | En desarrollo (activo) |
 | 5 | **Perfilado** | `modules/perfilado/` | **`profile1.py`** | Terminado / operativo |
-| 6 | **Transportes** | `modules/transportes/` | `view.py` (esqueleto) | Pendiente (último) |
+| 6 | **Transportes** | `modules/transportes/` | **`transportes_app.py`** | Menú operativo (LRI Transportes PRO) |
 
 ## Datos (`data/sources/`)
 
@@ -30,6 +30,7 @@ Pronóstico, Inventarios, Compras y Perfilado leen el **mismo archivo compartido
 streamlit run modules/pronostico/pronostico_app.py
 streamlit run modules/inventarios/inventario_app.py
 streamlit run modules/perfilado/profile1.py
+streamlit run modules/transportes/transportes_app.py
 ```
 
 ## Render (solo módulos operativos hoy)

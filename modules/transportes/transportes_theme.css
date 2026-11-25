@@ -1,0 +1,219 @@
+/* LRI Transportes PRO — Premium Dark Blue (solo apariencia).
+   Paleta oficial LRI, la misma de Forecast Pro / Inventory Pro.
+   Fondo #040E1A · Interfaz #051426 · Sidebar #041C38
+   Corporativo #008DFF · Resaltado #00B7FF · Bordes #065A94
+   Texto #FFFFFF · Secundario #C5D8E8
+*/
+
+:root {
+  --lri-tr-bg: #040E1A;
+  --lri-tr-main: #051426;
+  --lri-tr-sidebar: #041C38;
+  --lri-tr-sidebar-2: #053560;
+  --lri-tr-card: #061C36;
+  --lri-tr-table: #05182C;
+  --lri-tr-table-header: #052A4A;
+  --lri-tr-corp: #008DFF;
+  --lri-tr-accent: #00B7FF;
+  --lri-tr-border: #065A94;
+  --lri-tr-text: #FFFFFF;
+  --lri-tr-text-sec: #C5D8E8;
+}
+
+.stApp {
+  background: linear-gradient(180deg, var(--lri-tr-bg) 0%, var(--lri-tr-card) 100%) !important;
+  color: var(--lri-tr-text) !important;
+}
+
+.stApp [data-testid="stAppViewContainer"],
+.stApp [data-testid="stMain"] .block-container {
+  background: transparent !important;
+  color: var(--lri-tr-text) !important;
+}
+
+.stApp [data-testid="stHeader"],
+.stApp [data-testid="stToolbar"] {
+  background: transparent !important;
+}
+
+.stApp [data-testid="stMain"] h1,
+.stApp [data-testid="stMain"] h2,
+.stApp [data-testid="stMain"] h3,
+.stApp [data-testid="stMain"] h4,
+.stApp [data-testid="stMain"] h5,
+.stApp [data-testid="stMain"] h6 {
+  color: var(--lri-tr-text) !important;
+}
+
+.stApp [data-testid="stMain"] p,
+.stApp [data-testid="stMain"] label,
+.stApp [data-testid="stMain"] span,
+.stApp [data-testid="stMain"] div[data-testid="stMarkdownContainer"] {
+  color: var(--lri-tr-text-sec);
+}
+
+.stApp [data-testid="stSidebar"] {
+  background: linear-gradient(180deg, #030F1F 0%, #041C38 45%, #053560 100%) !important;
+  border-right: 1px solid var(--lri-tr-border) !important;
+}
+
+.stApp [data-testid="stSidebar"] > div:first-child {
+  background: transparent !important;
+}
+
+.stApp [data-testid="stSidebar"] [data-testid="stMarkdownContainer"],
+.stApp [data-testid="stSidebar"] label,
+.stApp [data-testid="stSidebar"] p,
+.stApp [data-testid="stSidebar"] span,
+.stApp [data-testid="stSidebar"] [data-testid="stWidgetLabel"] {
+  color: var(--lri-tr-text) !important;
+}
+
+.stApp [data-testid="stSidebar"] hr,
+.stApp [data-testid="stSidebar"] [data-testid="stDivider"] {
+  border-color: rgba(8, 118, 185, 0.45) !important;
+  background-color: rgba(8, 118, 185, 0.35) !important;
+}
+
+.stApp [data-testid="stSidebar"] .stButton > button,
+.stApp [data-testid="stSidebar"] button[data-testid="stBaseButton-secondary"] {
+  background-color: var(--lri-tr-table-header) !important;
+  border: 1px solid var(--lri-tr-corp) !important;
+  color: var(--lri-tr-text) !important;
+  box-shadow: none !important;
+}
+
+.stApp [data-testid="stSidebar"] .stButton > button:hover,
+.stApp [data-testid="stSidebar"] button[data-testid="stBaseButton-secondary"]:hover {
+  background-color: #0a4a7a !important;
+  border-color: var(--lri-tr-accent) !important;
+  color: var(--lri-tr-text) !important;
+}
+
+.stApp [data-testid="stSidebar"] .stButton > button[kind="primary"],
+.stApp [data-testid="stSidebar"] button[data-testid="baseButton-primary"],
+.stApp [data-testid="stSidebar"] button[data-testid="stBaseButton-primary"] {
+  background-color: var(--lri-tr-corp) !important;
+  border: 1px solid var(--lri-tr-accent) !important;
+  color: var(--lri-tr-text) !important;
+  box-shadow: 0 0 14px rgba(0, 141, 255, 0.45) !important;
+}
+
+.stApp [data-testid="stSidebar"] [data-baseweb="select"] > div,
+.stApp [data-testid="stSidebar"] [data-baseweb="input"] > div,
+.stApp [data-testid="stSidebar"] input {
+  background-color: var(--lri-tr-card) !important;
+  color: var(--lri-tr-text) !important;
+  border-color: var(--lri-tr-border) !important;
+}
+
+.stApp [data-testid="stMain"] [data-testid="stAlert"] {
+  background-color: var(--lri-tr-card) !important;
+  border: 1px solid var(--lri-tr-border) !important;
+  color: var(--lri-tr-text) !important;
+}
+
+/* Secciones de distrito, cantón y otros cortes */
+.stApp [data-testid="stMain"] [data-testid="stSelectbox"],
+.stApp [data-testid="stMain"] [data-testid="stRadio"] {
+  background-color: var(--lri-tr-card) !important;
+  border: 1px solid var(--lri-tr-border) !important;
+  border-radius: 8px;
+  padding: 0.45rem 0.75rem 0.55rem 0.75rem;
+}
+
+.stApp [data-testid="stMain"] [data-testid="stSelectbox"] [role="group"],
+.stApp [data-testid="stMain"] [data-testid="stSelectbox"] input,
+.stApp [data-testid="stMain"] [data-baseweb="select"] > div,
+.stApp [data-testid="stMain"] [data-baseweb="input"] > div,
+.stApp [data-testid="stMain"] [data-baseweb="base-input"],
+.stApp [data-testid="stMain"] input {
+  background-color: #041C38 !important;
+  color: #FFFFFF !important;
+  -webkit-text-fill-color: #FFFFFF !important;
+  border-color: var(--lri-tr-border) !important;
+}
+
+.stApp [data-testid="stMain"] [data-testid="stRadio"] label,
+.stApp [data-testid="stMain"] [data-testid="stSelectbox"] label {
+  color: var(--lri-tr-text) !important;
+}
+
+div[data-baseweb="popover"] [data-baseweb="menu"],
+div[data-baseweb="popover"] ul,
+div[data-baseweb="popover"] li,
+div[data-baseweb="popover"] [role="option"],
+[role="listbox"],
+[role="option"] {
+  background-color: #041C38 !important;
+  color: #FFFFFF !important;
+}
+
+div[data-baseweb="popover"] li:hover,
+div[data-baseweb="popover"] [role="option"]:hover,
+div[data-baseweb="popover"] [aria-selected="true"] {
+  background-color: #053560 !important;
+  color: #FFFFFF !important;
+}
+
+.stApp [data-testid="stVerticalBlockBorderWrapper"] {
+  background-color: #061C36 !important;
+  border: 1px solid #065A94 !important;
+  border-radius: 8px;
+}
+
+.stApp [data-testid="stDataFrame"] {
+  background-color: var(--lri-tr-table) !important;
+  border: 1px solid var(--lri-tr-border) !important;
+  border-radius: 6px;
+  --gdg-bg-header: #052A4A;
+  --gdg-bg-cell: #05182C;
+  --gdg-bg-cell-medium: #07223C;
+  --gdg-text-dark: #FFFFFF;
+  --gdg-text-header: #FFFFFF;
+  --gdg-border-color: #065A94;
+  --gdg-accent-color: #008DFF;
+}
+
+.stApp .block-container {
+  padding-top: 1.5rem;
+  padding-bottom: 1rem;
+}
+
+.lri-tr-titulo-main {
+  margin: 0.35rem 0 0.85rem 0;
+  padding: 8px 0 4px 0;
+}
+
+.lri-tr-titulo-main .lri-app-title {
+  font-size: 24px;
+  font-weight: 700;
+  color: #f8fafc;
+  line-height: 1.25;
+  display: block;
+}
+
+.lri-tr-titulo-main .lri-app-pro {
+  color: #00B7FF;
+  font-weight: 800;
+}
+
+.lri-tr-titulo-main .lri-app-sub {
+  font-size: 0.95rem;
+  color: #C5D8E8;
+  margin-top: 4px;
+}
+
+section[data-testid="stSidebar"] .lri-tr-sidebar-titulo {
+  margin: 0.15rem 0 0.35rem 0 !important;
+  padding: 0 !important;
+  font-size: 1.15rem !important;
+  font-weight: 700 !important;
+  color: #f8fafc !important;
+  line-height: 1.2 !important;
+}
+
+section[data-testid="stSidebar"] .lri-tr-sidebar-titulo .lri-app-pro {
+  color: #00B7FF !important;
+  font-weight: 800 !important;
+}

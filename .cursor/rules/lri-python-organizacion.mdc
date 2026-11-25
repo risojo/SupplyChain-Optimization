@@ -165,6 +165,36 @@ Tras escribirla, copiar `perfilado.xlsx` → `inventarios.xlsx`. Base futura del
 
 **Pruebas:** `modules/pronostico/tests/` (`test_pronostico_calculos`, `test_pronostico_excel`).
 
+## Transportes (`modules/transportes/`) — LRI Transportes PRO
+
+**Entrada local:** `streamlit run modules/transportes/transportes_app.py`
+
+Sidebar al estilo Inventory Pro. Acciones: Base de datos; Perfilado; Mapas (distrito,
+cantón, otros — se mantiene para el mapa de rutas); Cluster (distrito o cantón);
+Rutas (distrito o cantón).
+
+| Archivo | Resultado |
+|---------|-----------|
+| `transportes_app.py` | Shell Streamlit: menú, título y vistas. Solo UI |
+| `transportes_datos.py` | Lee hoja `Template clientes y rutas` |
+| `transportes_theme.css` | Premium Dark Blue (solo apariencia) |
+| `view.py` | Aviso al orquestador; **no** es la app |
+
+Datos: `modules/transportes/data/basedatos_ transporte.xlsx` (hoja `Template clientes y rutas`).
+
+**Perfilado** baja en escalera, no con un cuarto atributo suelto. Se empieza por
+provincia, cantón o distrito; el segundo paso es el nombre de ese nivel; el gráfico
+muestra el peldaño siguiente (cantones o distritos de la provincia, distritos del
+cantón). El nombre del cliente sale solo dentro de un distrito. Hasta tres variables.
+**Clientes** cuenta códigos. El resto (unidades vendidas, margen bruto, km desde el
+origen, km por año por cliente, % distribución, costo de distribución, TVA) se suma
+o se promedia. El gráfico va de mayor a menor, en una sola vista; un TVA negativo
+baja de cero. Debajo, el mapa de `recorte_perfil` muestra esos clientes por zonas de color
+o solo por puntos de tonalidades separadas. La tabla
+completa del Excel está en Base de datos.
+
+El modelo de clusters y el diseño de rutas nuevas van en un módulo de cálculo, no en `transportes_app.py`.
+
 ## Deploy
 
 - Repo: `https://github.com/risojo/SupplyChain-Optimization` · rama `main`
