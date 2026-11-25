@@ -193,7 +193,7 @@ baja de cero. Debajo, el mapa de `recorte_perfil` muestra esos clientes por zona
 o solo por puntos de tonalidades separadas. La tabla
 completa del Excel está en Base de datos.
 
-El modelo de clusters y el diseño de rutas nuevas van en un módulo de cálculo, no en `transportes_app.py`.
+El modelo de clusters está en `transportes_datos.segmentar_por_cercania`: segmentos de 15 a 25 clientes, juntos por latitud y longitud. El diseño de rutas nuevas sigue pendiente, no va en `transportes_app.py`.
 
 ## Deploy
 

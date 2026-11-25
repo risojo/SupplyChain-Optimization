@@ -52,7 +52,7 @@ ACCIONES: tuple[tuple[str, str, str], ...] = (
     (
         "cluster",
         "Cluster",
-        "Agrupación de clientes por distrito o cantón.",
+        "Agrupación de clientes cercanos, de 15 a 25 por segmento.",
     ),
     (
         "rutas",
@@ -644,9 +644,26 @@ _COLORES_PUNTOS = (
     "#0E7C3A",
     "#FF6A00",
     "#7C2D12",
-    "#F4F4F5",
     "#064E3B",
     "#BE185D",
+    "#1D4ED8",
+)
+
+# Un color distinto por clúster marcado: negro, rojo, verde, azul oscuro, y siguen
+# tonalidades que no se parecen entre sí.
+_COLORES_CLUSTER = (
+    "#111111",
+    "#E10600",
+    "#0E7C3A",
+    "#0B3A82",
+    "#5B21B6",
+    "#FF6A00",
+    "#F5C400",
+    "#38BDF8",
+    "#7C2D12",
+    "#BE185D",
+    "#064E3B",
+    "#1D4ED8",
 )
 
 
@@ -938,26 +955,213 @@ def _render_mapas(df: pd.DataFrame, corte: str) -> None:
     _render_clientes_distrito(df, _distritos_del_clic(evento, puntos))
 
 
+def _color_visible(hex_color: str) -> str:
+    """Un blanco casi puro desaparece sobre el mapa; se cambia por negro."""
+    rojo, verde, azul = _rgb(hex_color)
+    if 0.299 * rojo + 0.587 * verde + 0.114 * azul > 210:
+        return "#111111"
+    return hex_color
+
+
+def _flechas_ruta(coords: list[tuple[float, float]]) -> tuple[list[float | None], list[float | None]]:
+    """Flecha negra de cada cliente al siguiente más cercano, hasta unirlos a todos."""
+    orden = datos.orden_por_cercania(
+        [p[0] for p in coords],
+        [p[1] for p in coords],
+    )
+    lats: list[float | None] = []
+    lons: list[float | None] = []
+    for inicio, fin in zip(orden, orden[1:], strict=False):
+        a, b = coords[inicio], coords[fin]
+        lats.extend([a[0], b[0], None])
+        lons.extend([a[1], b[1], None])
+        dlat = (b[0] - a[0]) * 111.0
+        coseno = max(0.2, math.cos(math.radians((a[0] + b[0]) / 2)))
+        dlon = (b[1] - a[1]) * 111.0 * coseno
+        dist = math.hypot(dlat, dlon) or 1e-6
+        norte, este = dlat / dist, dlon / dist
+        largo = min(0.28, dist * 0.32)
+        ala = largo * 0.45
+        base_lat = b[0] - (norte * largo) / 111.0
+        base_lon = b[1] - (este * largo) / (111.0 * coseno)
+        lats.extend(
+            [
+                base_lat + (este * ala) / 111.0,
+                b[0],
+                None,
+                base_lat - (este * ala) / 111.0,
+                b[0],
+                None,
+            ]
+        )
+        lons.extend(
+            [
+                base_lon - (norte * ala) / (111.0 * coseno),
+                b[1],
+                None,
+                base_lon + (norte * ala) / (111.0 * coseno),
+                b[1],
+                None,
+            ]
+        )
+    return lats, lons
+
+
 def _render_cluster(df: pd.DataFrame, corte: str) -> None:
     columna = datos.columna_corte("cluster", corte)
     _cabecera(f"Cluster por {corte.lower()}")
     st.caption(
-        "Agrupación por el corte elegido. El modelo de clusters se conecta en el siguiente paso."
+        "Segmentos de 15 a 25 clientes, lo más juntos posible por latitud y longitud. "
+        f"Un {corte.lower()} que ya cae en ese rango se queda. "
+        "Si tiene de más, se parte. Si tiene de menos, se pega al vecino más cercano."
     )
     if columna not in df.columns:
         st.error(f"La base no trae «{columna}».")
         return
-    resumen = (
-        df.groupby(columna, dropna=False)
-        .agg(
-            clientes=(datos.COL_CLIENTE, "nunique") if datos.COL_CLIENTE in df.columns else (columna, "size"),
-            margen=(datos.COL_MARGEN, "sum") if datos.COL_MARGEN in df.columns else (columna, "size"),
-        )
-        .reset_index()
-        .sort_values("clientes", ascending=False)
+    if datos.COL_LATITUD not in df.columns or datos.COL_LONGITUD not in df.columns:
+        st.error("La base no trae Latitud y Longitud.")
+        return
+    objetivo = st.slider(
+        "Clientes por segmento",
+        min_value=datos.MIN_SEGMENTO,
+        max_value=datos.MAX_SEGMENTO,
+        value=20,
+        key="tr_cluster_objetivo",
+        help="Tamaño al que se apunta. El segmento queda entre 15 y 25 clientes.",
     )
+    puntos, resumen = datos.segmentar_por_cercania(df, columna, int(objetivo))
+    if resumen.empty:
+        st.info("No hay clientes con coordenada para armar segmentos.")
+        return
+    en_rango = int(((resumen["Clientes"] >= datos.MIN_SEGMENTO) & (resumen["Clientes"] <= datos.MAX_SEGMENTO)).sum())
+    debajo = int((resumen["Clientes"] < datos.MIN_SEGMENTO).sum())
+    st.caption(
+        f"{len(resumen)} segmentos · {en_rango} entre 15 y 25 · "
+        f"{int((resumen['Forma'] == 'Partido por cercanía').sum())} salen de partir un {corte.lower()} · "
+        f"{int((resumen['Forma'] == 'Unido al vecino').sum())} unen vecinos."
+        + (f" {debajo} quedaron por debajo de 15 porque el vecino ya no tenía cupo." if debajo else "")
+    )
+    mapa = puntos.rename(columns={"Segmento": "Zona"})
+    zonas = resumen.sort_values("Segmento")["Segmento"].astype(str).tolist()
+    lugares = {
+        str(fila["Segmento"]): str(fila["Lugares"])
+        for _, fila in resumen.iterrows()
+    }
+    clientes_de = {
+        str(fila["Segmento"]): int(fila["Clientes"])
+        for _, fila in resumen.iterrows()
+    }
+    st.markdown("**Ver en el mapa**")
+    st.caption("Marque un segmento para ver solo sus clientes. Sin marcas se ven todos.")
+    columnas_check = st.columns(4)
+    elegidos: list[str] = []
+    for i, zona in enumerate(zonas):
+        lugar = lugares.get(zona, zona).split(" · ")[0]
+        with columnas_check[i % 4]:
+            if st.checkbox(
+                f"{zona} · {clientes_de.get(zona, 0)} · {lugar}",
+                key=f"tr_cluster_ver_{corte}_{int(objetivo)}_{zona}",
+            ):
+                elegidos.append(zona)
+    visibles = elegidos or zonas
+    detalle = bool(elegidos)
+    if detalle:
+        color_de = {
+            zona: _COLORES_CLUSTER[i % len(_COLORES_CLUSTER)]
+            for i, zona in enumerate(visibles)
+        }
+    else:
+        color_de = {
+            zona: _color_visible(color)
+            for zona, color in _colores_separados(mapa, zonas).items()
+        }
+    fig = go.Figure()
+    for zona in visibles:
+        grupo = mapa[mapa["Zona"] == zona]
+        lat = grupo[datos.COL_LATITUD].astype(float).tolist()
+        lon = grupo[datos.COL_LONGITUD].astype(float).tolist()
+        if not lat:
+            continue
+        nombres = (
+            grupo[datos.COL_NOMBRE].astype(str).tolist()
+            if datos.COL_NOMBRE in grupo.columns
+            else [zona] * len(lat)
+        )
+        if detalle:
+            fl_lat, fl_lon = _flechas_ruta(list(zip(lat, lon, strict=False)))
+            fig.add_trace(
+                go.Scattermap(
+                    lat=fl_lat,
+                    lon=fl_lon,
+                    mode="lines",
+                    line=dict(color="#111111", width=2),
+                    name=zona,
+                    hoverinfo="skip",
+                    showlegend=False,
+                )
+            )
+        fig.add_trace(
+            go.Scattermap(
+                lat=lat,
+                lon=lon,
+                mode="markers",
+                marker=dict(size=18 if detalle else 11, color=color_de[zona]),
+                name=zona,
+                text=nombres,
+                hovertemplate="%{text}<br>" + zona + "<extra></extra>",
+            )
+        )
+        if detalle:
+            fig.add_trace(
+                go.Scattermap(
+                    lat=lat,
+                    lon=lon,
+                    mode="markers",
+                    marker=dict(size=7, color="#FFFFFF"),
+                    name=zona,
+                    text=nombres,
+                    hovertemplate="%{text}<br>" + zona + "<extra></extra>",
+                    showlegend=False,
+                )
+            )
+    vistos = mapa[mapa["Zona"].isin(visibles)]
+    span = max(
+        float(vistos[datos.COL_LATITUD].max() - vistos[datos.COL_LATITUD].min()),
+        float(vistos[datos.COL_LONGITUD].max() - vistos[datos.COL_LONGITUD].min()),
+    )
+    if span > 0.8:
+        zoom = 8
+    elif span > 0.25:
+        zoom = 10
+    elif span > 0.08:
+        zoom = 12
+    elif span > 0.03:
+        zoom = 13
+    else:
+        zoom = 14
+    fig.update_layout(
+        map_style="open-street-map",
+        map_center=dict(
+            lat=float(vistos[datos.COL_LATITUD].mean()),
+            lon=float(vistos[datos.COL_LONGITUD].mean()),
+        ),
+        map_zoom=zoom,
+        height=560,
+        margin=dict(l=0, r=0, t=0, b=0),
+        paper_bgcolor=_PLOTLY_PAPER,
+        legend=dict(font=dict(color="#FFFFFF"), bgcolor="rgba(4,14,26,0.82)"),
+        showlegend=len(visibles) <= 16,
+    )
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+    if elegidos:
+        st.caption(
+            "Solo "
+            + ", ".join(f"{zona} ({clientes_de.get(zona, 0)} clientes)" for zona in elegidos)
+            + ". La flecha negra une cada cliente con el más cercano. "
+            "Más adelante se ajusta a las carreteras."
+        )
     with st.container(border=True):
-        st.dataframe(resumen, width="stretch", height=480)
+        st.dataframe(resumen, width="stretch", height=420, hide_index=True)
 
 
 def _render_rutas(df: pd.DataFrame, corte: str) -> None:

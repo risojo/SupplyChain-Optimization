@@ -33,4 +33,4 @@ Perfilado baja en escalera: provincia, cantón y distrito. Se elige el nivel, lu
 ## Estado
 
 Menú operativo. Cluster y el diseño de rutas nuevas quedan para el siguiente paso;
-hoy Cluster resume clientes por el corte y Rutas muestra las rutas ya cargadas.
+hoy Cluster arma segmentos de 15 a 25 clientes por cercanía y Rutas muestra las rutas ya cargadas.
