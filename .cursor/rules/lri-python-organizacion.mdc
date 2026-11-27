@@ -182,18 +182,23 @@ Rutas (distrito o cantón).
 
 Datos: `modules/transportes/data/basedatos_ transporte.xlsx` (hoja `Template clientes y rutas`).
 
-**Perfilado** baja en escalera, no con un cuarto atributo suelto. Se empieza por
-provincia, cantón o distrito; el segundo paso es el nombre de ese nivel; el gráfico
-muestra el peldaño siguiente (cantones o distritos de la provincia, distritos del
-cantón). El nombre del cliente sale solo dentro de un distrito. Hasta tres variables.
+**Perfilado** abre con el número de clientes por distrito: la barra es el distrito
+y la variable **Clientes** cuenta códigos. Distrito no es una variable numérica.
+**Todos** en el nombre incluye todos los distritos; un distrito elegido baja al
+nombre del cliente. Cantón agrupa por cantón. Hasta tres variables.
+Dos controles del gráfico ajustan el tamaño de los números y la altura del eje Y.
+El gráfico de perfilado tiene barra vertical propia; la rueda no mueve las barras.
+El mapa de Cluster es más alto.
 **Clientes** cuenta códigos. El resto (unidades vendidas, margen bruto, km desde el
 origen, km por año por cliente, % distribución, costo de distribución, TVA) se suma
 o se promedia. El gráfico va de mayor a menor, en una sola vista; un TVA negativo
 baja de cero. Debajo, el mapa de `recorte_perfil` muestra esos clientes por zonas de color
-o solo por puntos de tonalidades separadas. La tabla
+o solo por puntos de tonalidades separadas. El centro de distribución
+(9.968705177, -84.13418) se dibuja en los mapas como triángulo rojo con borde negro.
+La tabla
 completa del Excel está en Base de datos.
 
-El modelo de clusters está en `transportes_datos.segmentar_por_cercania`: segmentos de 15 a 25 clientes, juntos por latitud y longitud. El diseño de rutas nuevas sigue pendiente, no va en `transportes_app.py`.
+El modelo de clusters está en `transportes_datos.segmentar_por_cercania`: segmentos de 15 a 25 clientes, juntos por latitud y longitud. Cada segmento sale del centro de distribución con una línea punteada negra hasta el cliente más cercano. El diseño de rutas nuevas sobre carretera sigue pendiente, no va en `transportes_app.py`.
 
 ## Deploy
 

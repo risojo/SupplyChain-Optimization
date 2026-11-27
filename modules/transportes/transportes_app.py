@@ -334,8 +334,29 @@ def _texto_barra(valor: float, variable: str) -> str:
     return f"{valor:,.1f}"
 
 
-_COLORES_VARIABLES = ("#008DFF", "#00B7FF", "#779d40")
+# Celeste, rojo y blanco: se distinguen entre sí sobre el fondo oscuro.
+_COLORES_VARIABLES = ("#00B7FF", "#E10600", "#FFFFFF")
 _SIN_VARIABLE = "Ninguna"
+
+
+def _estilo_valores_barras(
+    n: int,
+    n_var: int,
+    textos: list[str],
+    tamano: int,
+) -> tuple[int, int, int]:
+    """Ángulo y margen superior para el tamaño de número elegido.
+
+    Quedan horizontales mientras caben. Si a ese tamaño se pegarían con el de
+    al lado, giran -90° (vertical) para que cada dato se lea aparte.
+    """
+    mas_largo = max((len(str(texto)) for texto in textos), default=1)
+    px_barra = 980 / max(n * max(n_var, 1), 1)
+    ancho_texto = mas_largo * tamano * 0.62
+    if ancho_texto <= px_barra * 0.9 and n * n_var <= 18:
+        return tamano, 0, max(72, 24 + tamano)
+    margen = max(120, 36 + int(mas_largo * tamano * 0.72))
+    return tamano, -90, min(margen, 320)
 
 
 def _grafico_barras_perfil(
@@ -344,6 +365,35 @@ def _grafico_barras_perfil(
     variables: list[str],
 ) -> None:
     """Barras de mayor a menor, ocupando el eje X, con la cantidad arriba de cada una."""
+    if "tr_perfil_tamano_numeros" not in st.session_state:
+        st.session_state["tr_perfil_tamano_numeros"] = 16
+    if "tr_perfil_altura_eje" not in st.session_state:
+        st.session_state["tr_perfil_altura_eje"] = 980
+    elif (
+        st.session_state.get("tr_perfil_altura_eje") == 720
+        and not st.session_state.get("tr_perfil_altura_subida")
+    ):
+        st.session_state["tr_perfil_altura_eje"] = 980
+        st.session_state["tr_perfil_altura_subida"] = True
+    s1, s2 = st.columns(2)
+    with s1:
+        tamano = st.slider(
+            "Tamaño de los números",
+            min_value=8,
+            max_value=32,
+            step=1,
+            key="tr_perfil_tamano_numeros",
+            help="Tamaño de los números encima de cada barra.",
+        )
+    with s2:
+        altura = st.slider(
+            "Altura del eje Y",
+            min_value=420,
+            max_value=1600,
+            step=20,
+            key="tr_perfil_altura_eje",
+            help="Estira el gráfico hacia arriba cuando las barras se ven muy angostas.",
+        )
     resumen = resumen.sort_values(variables[0], ascending=False, kind="mergesort")
     categorias = resumen[nombre_x].astype(str).tolist()
     n = len(resumen)
@@ -352,13 +402,7 @@ def _grafico_barras_perfil(
         variable = variables[0]
         textos = [_texto_barra(v, variable) for v in resumen[variable]]
         fig = px.bar(resumen, x=nombre_x, y=variable, text=textos)
-        fig.update_traces(
-            marker_color="#008DFF",
-            marker_line_width=0,
-            textposition="outside",
-            textfont=dict(color="#FFFFFF", size=13 if n <= 12 else 9),
-            cliponaxis=False,
-        )
+        fig.update_traces(marker_color=_COLORES_VARIABLES[0], marker_line_width=0)
         fig.update_yaxes(
             title=variable,
             tickformat=_formato_variable(variable),
@@ -371,10 +415,11 @@ def _grafico_barras_perfil(
             var_name="Variable",
             value_name="Valor",
         )
-        largo["Texto"] = [
+        textos = [
             _texto_barra(valor, variable)
             for valor, variable in zip(largo["Valor"], largo["Variable"])
         ]
+        largo["Texto"] = textos
         fig = px.bar(
             largo,
             x=nombre_x,
@@ -385,19 +430,14 @@ def _grafico_barras_perfil(
             category_orders={nombre_x: categorias, "Variable": variables},
             color_discrete_sequence=list(_COLORES_VARIABLES[:n_var]),
         )
-        fig.update_traces(
-            textposition="outside",
-            textfont=dict(color="#FFFFFF", size=11 if n <= 12 else 8),
-            cliponaxis=False,
-        )
         fig.update_layout(
             barmode="group",
             bargroupgap=0.02,
             legend=dict(
                 orientation="h",
                 yanchor="bottom",
-                y=1.02,
-                font=dict(color="#FFFFFF"),
+                y=1.08,
+                font=dict(color="#FFFFFF", size=14),
             ),
         )
         fig.update_yaxes(
@@ -405,12 +445,29 @@ def _grafico_barras_perfil(
             range=_rango_eje(largo["Valor"]),
         )
 
+    size, angulo, margen_sup = _estilo_valores_barras(n, n_var, textos, int(tamano))
+    fig.update_traces(
+        textposition="outside",
+        textangle=angulo,
+        textfont=dict(color="#FFFFFF", size=size, family="Arial, sans-serif"),
+        cliponaxis=False,
+        constraintext="none",
+    )
     fig.update_layout(
         paper_bgcolor=_PLOTLY_PAPER,
         plot_bgcolor=_PLOTLY_PAPER,
-        font=dict(color=_PLOTLY_TEXTO),
-        bargap=0.08,
-        margin=dict(l=56, r=12, t=48, b=120),
+        font=dict(color=_PLOTLY_TEXTO, size=15),
+        bargap=0.04 if n > 16 else 0.08,
+        height=int(altura),
+        dragmode="zoom",
+        uniformtext=dict(minsize=size, mode="show"),
+        margin=dict(l=64, r=72, t=margen_sup, b=130),
+        modebar=dict(
+            orientation="v",
+            bgcolor="#041C38",
+            color="#C5D8E8",
+            activecolor="#008DFF",
+        ),
     )
     fig.update_xaxes(
         title=nombre_x,
@@ -418,22 +475,59 @@ def _grafico_barras_perfil(
         categoryorder="array",
         categoryarray=categorias,
         tickangle=-60 if n > 8 else 0,
-        tickfont=dict(color="#C5D8E8"),
-        title_font=dict(color="#C5D8E8"),
+        tickfont=dict(color="#C5D8E8", size=14),
+        title_font=dict(color="#C5D8E8", size=15),
         gridcolor="rgba(8, 118, 185, 0.22)",
         automargin=True,
     )
     fig.update_yaxes(
-        tickfont=dict(color="#C5D8E8"),
-        title_font=dict(color="#C5D8E8"),
+        tickfont=dict(color="#C5D8E8", size=14),
+        title_font=dict(color="#C5D8E8", size=15),
         gridcolor="rgba(8, 118, 185, 0.22)",
     )
-    fig.update_layout(height=560, bargap=0.04 if n > 16 else 0.08)
-    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+    _grafico_con_scroll(fig)
     st.caption(
         f"{n} grupos de {nombre_x} en una sola vista, de mayor a menor. "
-        "Un TVA negativo baja de cero."
+        "Un TVA negativo baja de cero. "
+        "La barra de la derecha sube y baja el gráfico sin mover las barras. "
+        "Los íconos marcan una zona y vuelven al tamaño original."
     )
+
+
+def _grafico_con_scroll(fig: go.Figure) -> None:
+    """El gráfico tiene su propia barra vertical. La rueda no lo descuadra."""
+    alto = 680
+    html = fig.to_html(
+        full_html=False,
+        include_plotlyjs="cdn",
+        config={
+            "displayModeBar": True,
+            "displaylogo": False,
+            "scrollZoom": False,
+            "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+        },
+    )
+    marco = f"""
+    <style>
+      .lri-scroll-grafico {{
+        height: {alto}px;
+        overflow-y: scroll;
+        overflow-x: hidden;
+        background: #051426;
+        border: 1px solid #065A94;
+        border-radius: 8px;
+      }}
+      .lri-scroll-grafico::-webkit-scrollbar {{ width: 16px; }}
+      .lri-scroll-grafico::-webkit-scrollbar-track {{ background: #041C38; }}
+      .lri-scroll-grafico::-webkit-scrollbar-thumb {{
+        background: #008DFF;
+        border-radius: 8px;
+        border: 3px solid #041C38;
+      }}
+    </style>
+    <div class="lri-scroll-grafico">{html}</div>
+    """
+    st.components.v1.html(marco, height=alto + 8, scrolling=False)
 
 
 def _elegir_nombre(
@@ -442,19 +536,26 @@ def _elegir_nombre(
     filtros: dict[str, str],
     clave: str,
     rotulo: str,
+    vacio: str = "Todos",
 ) -> str:
-    opciones = ["Todos"] + datos.valores_atributo(df, etiqueta, filtros or None)
+    """Lista todos los nombres del nivel. ``vacio`` es la opción de verlos todos."""
+    opciones = [vacio] + datos.valores_atributo(df, etiqueta, filtros or None)
     if st.session_state.get(clave) not in opciones:
-        st.session_state[clave] = "Todos"
-    return st.selectbox(rotulo, opciones, key=clave)
+        st.session_state[clave] = vacio
+    elegido = st.selectbox(rotulo, opciones, key=clave)
+    return "" if elegido == vacio else elegido
 
 
 def _atributos_de_hoja(hoja: str, acotar: dict[str, str], nivel: str) -> list[str]:
     """El gráfico muestra el peldaño actual. Si el padre ya está elegido, la barra lleva solo ese nombre."""
+    if hoja == "Provincia":
+        return ["Provincia"]
     if hoja == "Nombre del cliente":
-        return ["Nombre del cliente"]
+        return ["Nombre del cliente", "Código de cliente"]
     if hoja == "Cantón":
         return ["Cantón"] if "Provincia" in acotar else ["Provincia", "Cantón"]
+    if hoja == "Distrito":
+        return ["Distrito"] if "Cantón" in acotar else ["Cantón", "Distrito"]
     if "Cantón" in acotar or nivel == "Distrito":
         return ["Distrito"]
     if "Provincia" in acotar or nivel == "Cantón":
@@ -462,8 +563,14 @@ def _atributos_de_hoja(hoja: str, acotar: dict[str, str], nivel: str) -> list[st
     return ["Provincia", "Cantón", "Distrito"]
 
 
-def _relato_cascada(hoja: str, acotar: dict[str, str]) -> str:
-    titulo = {"Cantón": "Cantones", "Distrito": "Distritos"}.get(hoja, "Clientes")
+def _relato_cascada(hoja: str, acotar: dict[str, str], variable: str = "") -> str:
+    titulo = {"Provincia": "Provincias", "Cantón": "Cantones", "Distrito": "Distritos"}.get(
+        hoja, "Clientes"
+    )
+    if hoja == "Distrito" and not acotar and variable in ("", datos.VARIABLE_CLIENTES):
+        return "Número de clientes por distrito: cada barra es un distrito"
+    if hoja == "Nombre del cliente" and not acotar:
+        return "Clientes del distrito elegido"
     if not acotar:
         return f"{titulo} de todo el perfil"
     return f"{titulo} de " + " · ".join(acotar.values())
@@ -493,72 +600,92 @@ def _render_perfilado(df: pd.DataFrame) -> None:
     if not niveles:
         st.error("La base no trae provincia, cantón o distrito.")
         return
+    if "Distrito" in niveles and not st.session_state.get("tr_perfil_inicio_clientes_distrito"):
+        st.session_state["tr_perfil_nivel"] = "Distrito"
+        st.session_state["tr_perfil_ver"] = "Distrito"
+        st.session_state["tr_perfil_y"] = datos.VARIABLE_CLIENTES
+        st.session_state["tr_perfil_y2"] = _SIN_VARIABLE
+        st.session_state["tr_perfil_y3"] = _SIN_VARIABLE
+        st.session_state["tr_perfil_provincia"] = "Todos"
+        st.session_state["tr_perfil_nom_canton"] = "Todos"
+        st.session_state["tr_perfil_nom_distrito"] = "Todos"
+        st.session_state["tr_perfil_inicio_clientes_distrito"] = True
     if st.session_state.get("tr_perfil_nivel") not in niveles:
-        st.session_state["tr_perfil_nivel"] = "Provincia" if "Provincia" in niveles else niveles[0]
+        st.session_state["tr_perfil_nivel"] = "Distrito" if "Distrito" in niveles else niveles[0]
 
     with st.container(border=True):
         c1, c2, c3 = st.columns(3)
         with c1:
             nivel = st.selectbox("Empezar por", niveles, key="tr_perfil_nivel")
-        rotulos = {
-            "Provincia": "Nombre de la provincia",
-            "Cantón": "Nombre del cantón",
-            "Distrito": "Nombre del distrito",
-        }
         with c2:
-            nombre = _elegir_nombre(df, nivel, {}, "tr_perfil_nombre", rotulos[nivel])
-        acotar: dict[str, str] = {}
-        if nombre != "Todos":
-            acotar[nivel] = nombre
-        ver = "Distrito"
-        if nivel == "Provincia":
-            with c3:
-                ver = st.selectbox(
-                    "Mostrar",
-                    ["Cantón", "Distrito"],
-                    key="tr_perfil_ver",
-                    help="Dentro de la provincia: sus cantones o sus distritos.",
-                )
-        else:
-            with c3:
-                st.caption(
-                    "El siguiente paso es el distrito."
-                    if nivel == "Cantón"
-                    else "Dentro del distrito se ve el nombre del cliente."
-                )
-
-        if nivel == "Provincia":
-            d1, d2 = st.columns(2)
-            with d1:
-                nombre_canton = _elegir_nombre(
-                    df, "Cantón", acotar, "tr_perfil_nom_canton", "Nombre del cantón"
-                )
-            if nombre_canton != "Todos":
-                acotar["Cantón"] = nombre_canton
-            pedir_distrito = ver == "Distrito" or nombre_canton != "Todos"
-            if pedir_distrito:
-                with d2:
-                    nombre_distrito = _elegir_nombre(
-                        df, "Distrito", acotar, "tr_perfil_nom_distrito", "Nombre del distrito"
-                    )
-                if nombre_distrito != "Todos":
-                    acotar["Distrito"] = nombre_distrito
-        elif nivel == "Cantón":
-            nombre_distrito = _elegir_nombre(
-                df, "Distrito", acotar, "tr_perfil_nom_distrito", "Nombre del distrito"
+            provincia = _elegir_nombre(
+                df,
+                "Provincia",
+                {},
+                "tr_perfil_provincia",
+                "Nombre de la provincia",
+                "Todos",
             )
-            if nombre_distrito != "Todos":
-                acotar["Distrito"] = nombre_distrito
+        if st.session_state.get("tr_perfil_ver") not in ("Todos", "Cantón", "Distrito"):
+            st.session_state["tr_perfil_ver"] = "Distrito"
+        with c3:
+            ver = st.selectbox(
+                "Mostrar",
+                ["Distrito", "Cantón", "Todos"],
+                key="tr_perfil_ver",
+                help=(
+                    "Distrito: una barra por distrito y, con la variable Clientes, "
+                    "cuántos clientes tiene. Cantón agrupa por cantón. "
+                    "Todos sigue el nivel de «Empezar por»."
+                ),
+            )
 
-        if "Distrito" in acotar or nivel == "Distrito":
+        acotar: dict[str, str] = {}
+        if provincia:
+            acotar["Provincia"] = provincia
+        d1, d2, d3 = st.columns(3)
+        with d1:
+            canton = _elegir_nombre(
+                df,
+                "Cantón",
+                acotar,
+                "tr_perfil_nom_canton",
+                "Nombre del cantón",
+                "Todos",
+            )
+        if canton:
+            acotar["Cantón"] = canton
+        with d2:
+            distrito = _elegir_nombre(
+                df,
+                "Distrito",
+                acotar,
+                "tr_perfil_nom_distrito",
+                "Nombre del distrito",
+                "Todos",
+            )
+        if distrito:
+            acotar["Distrito"] = distrito
+        with d3:
+            st.caption(
+                "Distrito no es una variable: es el grupo de la barra. "
+                "Clientes cuenta cuántos hay en cada distrito. "
+                "Todos incluye todos los nombres; un nombre solo recorta a ese lugar."
+            )
+
+        if distrito:
             hoja = "Nombre del cliente"
-        elif nivel == "Cantón" or ver == "Distrito" or "Cantón" in acotar:
+        elif ver == "Distrito" or (ver == "Todos" and nivel == "Distrito") or canton:
             hoja = "Distrito"
-        else:
+        elif ver == "Cantón" or nivel == "Cantón" or provincia:
             hoja = "Cantón"
+        else:
+            hoja = "Provincia"
         atributos = _atributos_de_hoja(hoja, acotar, nivel)
         atributos_mapa = ["Distrito"] if hoja == "Nombre del cliente" else atributos
-        st.caption(_relato_cascada(hoja, acotar))
+        st.caption(
+            _relato_cascada(hoja, acotar, st.session_state.get("tr_perfil_y", ""))
+        )
 
         v1, v2, v3, v4 = st.columns(4)
         with v1:
@@ -767,6 +894,32 @@ def _engrosar(anillo: list[tuple[float, float]], minimo: float = 0.004) -> list[
     return nuevo
 
 
+def _marca_centro(fig: go.Figure) -> None:
+    """Triángulo rojo, más grande, con borde negro: de aquí salen las rutas."""
+    base = dict(
+        lat=[datos.LAT_CENTRO],
+        lon=[datos.LON_CENTRO],
+        mode="markers",
+        text=[datos.NOMBRE_CENTRO],
+        hovertemplate=datos.NOMBRE_CENTRO + "<br>De aquí salen las rutas<extra></extra>",
+    )
+    fig.add_trace(
+        go.Scattermap(
+            **base,
+            marker=dict(size=28, color="#111111", symbol="triangle", allowoverlap=True),
+            name=datos.NOMBRE_CENTRO,
+            showlegend=False,
+        )
+    )
+    fig.add_trace(
+        go.Scattermap(
+            **base,
+            marker=dict(size=20, color="#E10600", symbol="triangle", allowoverlap=True),
+            name=datos.NOMBRE_CENTRO,
+        )
+    )
+
+
 def _mapa_perfil(
     df: pd.DataFrame,
     atributos: list[str],
@@ -866,6 +1019,7 @@ def _mapa_perfil(
         ),
         showlegend=len(zonas) <= 14 or modo == "Puntos de color",
     )
+    _marca_centro(fig)
     st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
     if modo == "Puntos de color":
         st.caption(
@@ -945,6 +1099,7 @@ def _render_mapas(df: pd.DataFrame, corte: str) -> None:
         legend=dict(font=dict(color=_PLOTLY_TEXTO)),
         clickmode="event+select",
     )
+    _marca_centro(fig)
     evento = st.plotly_chart(
         fig,
         width="stretch",
@@ -963,11 +1118,45 @@ def _color_visible(hex_color: str) -> str:
     return hex_color
 
 
-def _flechas_ruta(coords: list[tuple[float, float]]) -> tuple[list[float | None], list[float | None]]:
+def _linea_punteada(
+    origen: tuple[float, float],
+    destino: tuple[float, float],
+    tramos: int = 28,
+) -> tuple[list[float | None], list[float | None]]:
+    """Segmentos negros separados: Scattermap no tiene línea punteada."""
+    lats: list[float | None] = []
+    lons: list[float | None] = []
+    for i in range(tramos):
+        if i % 2:
+            continue
+        t0 = i / tramos
+        t1 = min(1.0, (i + 0.42) / tramos)
+        lats.extend(
+            [
+                origen[0] + (destino[0] - origen[0]) * t0,
+                origen[0] + (destino[0] - origen[0]) * t1,
+                None,
+            ]
+        )
+        lons.extend(
+            [
+                origen[1] + (destino[1] - origen[1]) * t0,
+                origen[1] + (destino[1] - origen[1]) * t1,
+                None,
+            ]
+        )
+    return lats, lons
+
+
+def _flechas_ruta(
+    coords: list[tuple[float, float]],
+    inicio: int | None = None,
+) -> tuple[list[float | None], list[float | None]]:
     """Flecha negra de cada cliente al siguiente más cercano, hasta unirlos a todos."""
     orden = datos.orden_por_cercania(
         [p[0] for p in coords],
         [p[1] for p in coords],
+        inicio=inicio,
     )
     lats: list[float | None] = []
     lons: list[float | None] = []
@@ -1076,6 +1265,9 @@ def _render_cluster(df: pd.DataFrame, corte: str) -> None:
             for zona, color in _colores_separados(mapa, zonas).items()
         }
     fig = go.Figure()
+    salida_lat: list[float | None] = []
+    salida_lon: list[float | None] = []
+    origen_centro = (datos.LAT_CENTRO, datos.LON_CENTRO)
     for zona in visibles:
         grupo = mapa[mapa["Zona"] == zona]
         lat = grupo[datos.COL_LATITUD].astype(float).tolist()
@@ -1087,8 +1279,18 @@ def _render_cluster(df: pd.DataFrame, corte: str) -> None:
             if datos.COL_NOMBRE in grupo.columns
             else [zona] * len(lat)
         )
+        primero = datos.indice_mas_cercano(lat, lon, origen_centro)
+        tramo_lat, tramo_lon = _linea_punteada(
+            origen_centro,
+            (lat[primero], lon[primero]),
+        )
+        salida_lat.extend(tramo_lat)
+        salida_lon.extend(tramo_lon)
         if detalle:
-            fl_lat, fl_lon = _flechas_ruta(list(zip(lat, lon, strict=False)))
+            fl_lat, fl_lon = _flechas_ruta(
+                list(zip(lat, lon, strict=False)),
+                inicio=primero,
+            )
             fig.add_trace(
                 go.Scattermap(
                     lat=fl_lat,
@@ -1146,18 +1348,34 @@ def _render_cluster(df: pd.DataFrame, corte: str) -> None:
             lon=float(vistos[datos.COL_LONGITUD].mean()),
         ),
         map_zoom=zoom,
-        height=560,
+        height=760,
         margin=dict(l=0, r=0, t=0, b=0),
         paper_bgcolor=_PLOTLY_PAPER,
         legend=dict(font=dict(color="#FFFFFF"), bgcolor="rgba(4,14,26,0.82)"),
         showlegend=len(visibles) <= 16,
     )
+    if salida_lat:
+        fig.add_trace(
+            go.Scattermap(
+                lat=salida_lat,
+                lon=salida_lon,
+                mode="lines",
+                line=dict(color="#111111", width=2),
+                name="Salida del centro",
+                hovertemplate="Salida del centro de distribución<extra></extra>",
+            )
+        )
+    _marca_centro(fig)
     st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+    st.caption(
+        "La línea punteada negra sale del centro de distribución "
+        "hasta el cliente más cercano de cada segmento."
+    )
     if elegidos:
         st.caption(
             "Solo "
             + ", ".join(f"{zona} ({clientes_de.get(zona, 0)} clientes)" for zona in elegidos)
-            + ". La flecha negra une cada cliente con el más cercano. "
+            + ". Desde ese primer cliente, la flecha negra sigue al más cercano. "
             "Más adelante se ajusta a las carreteras."
         )
     with st.container(border=True):

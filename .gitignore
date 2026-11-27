@@ -37,6 +37,7 @@ modules/inventarios/drivers_guardados.json
 *.log
 modules/perfilado/logs/
 modules/perfilado/_backups/
+modules/transportes/_backups/
 
 # Zona temporal de trabajo (importación de inventarios del freelance)
 _inbox_inventarios/

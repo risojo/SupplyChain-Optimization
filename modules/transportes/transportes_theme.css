@@ -217,3 +217,22 @@ section[data-testid="stSidebar"] .lri-tr-sidebar-titulo .lri-app-pro {
   color: #00B7FF !important;
   font-weight: 800 !important;
 }
+
+.stApp [data-testid="stMain"] [data-testid="stWidgetLabel"] p,
+.stApp [data-testid="stMain"] [data-testid="stSelectbox"] label,
+.stApp [data-testid="stMain"] [data-testid="stRadio"] label {
+  font-size: 1.12rem !important;
+}
+
+.stApp [data-testid="stMain"] [data-baseweb="select"],
+.stApp [data-testid="stMain"] [data-baseweb="select"] * {
+  font-size: 1.08rem !important;
+}
+
+.stApp [data-testid="stMain"] [data-baseweb="select"] > div {
+  min-height: 46px !important;
+}
+
+.stApp [data-testid="stMain"] [data-testid="stCaptionContainer"] p {
+  font-size: 1.02rem !important;
+}

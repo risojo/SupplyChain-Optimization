@@ -24,6 +24,11 @@ COL_CANTON = "Cantón"
 COL_DISTRITO = "Distrito"
 COL_LONGITUD = "Longitud"
 COL_LATITUD = "Latitud"
+
+# Origen de las rutas. El mapa lo dibuja como triángulo rojo con borde negro.
+LAT_CENTRO = 9.968705177
+LON_CENTRO = -84.13418
+NOMBRE_CENTRO = "Centro de distribución"
 COL_RUTA = "# de Ruta"
 COL_NOMBRE_RUTA = "Nombre de la Ruta"
 COL_UNIDADES = "Unidades vendidas"
@@ -297,13 +302,34 @@ def _km(a: tuple[float, float], b: tuple[float, float]) -> float:
     return math.hypot(dlat, dlon)
 
 
-def orden_por_cercania(latitudes: list[float], longitudes: list[float]) -> list[int]:
-    """Recorre cada cliente y sigue al más cercano que aún no visitó."""
+def indice_mas_cercano(
+    latitudes: list[float],
+    longitudes: list[float],
+    origen: tuple[float, float],
+) -> int:
+    """Índice del punto más cercano a ``origen`` (lat, lon)."""
+    puntos = list(zip(latitudes, longitudes, strict=False))
+    return min(range(len(puntos)), key=lambda i: _km(origen, puntos[i]))
+
+
+def orden_por_cercania(
+    latitudes: list[float],
+    longitudes: list[float],
+    inicio: int | None = None,
+) -> list[int]:
+    """Recorre cada cliente y sigue al más cercano que aún no visitó.
+
+    Sin ``inicio``, parte del cliente más al norte. Con ``inicio``, ese punto
+    es el primero: en Cluster es el más cercano al centro de distribución.
+    """
     n = len(latitudes)
     if n == 0:
         return []
     puntos = list(zip(latitudes, longitudes, strict=False))
-    actual = max(range(n), key=lambda i: puntos[i][0])
+    if inicio is None or not 0 <= inicio < n:
+        actual = max(range(n), key=lambda i: puntos[i][0])
+    else:
+        actual = inicio
     vistos = {actual}
     orden = [actual]
     while len(orden) < n:
